@@ -110,7 +110,7 @@ cd linux-unpacked
 > 说明：打包需要 ImageMagick（`convert` / `magick`）用于把 SVG Logo 光栅化成 png/ico。
 > 未安装时脚本会自动跳过 Logo 生成、沿用已提交的 `build/` 图标。
 
-### Windows（在 Windows 上执行；本机未验证打包效果）
+### Windows（在 Windows 上执行；已验证）
 
 ```bat
 cd stabstab
@@ -123,6 +123,9 @@ scripts\package.cmd
 |------|------|
 | `StabStab-<版本>-x64-setup.exe` | NSIS 安装包 |
 | `StabStab-<版本>-x64-portable.exe` | 便携可执行文件 |
+
+> 说明：Windows 上脚本仅自动检测 `magick`（ImageMagick 7），`convert` 与系统自带的
+> `C:\Windows\System32\convert.exe` 重名已不再使用。未安装时脚本会跳过 Logo 生成、沿用已提交的 `build/` 图标。
 
 ---
 

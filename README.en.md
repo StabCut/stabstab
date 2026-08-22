@@ -111,7 +111,7 @@ cd linux-unpacked
 > Note: packaging requires ImageMagick (`convert` / `magick`) to rasterize the SVG logo into png/ico.
 > Without it, the script skips logo generation and reuses the committed `build/` icons.
 
-### Windows (run on Windows; packaging not verified on this machine)
+### Windows (run on Windows; verified)
 
 ```bat
 cd stabstab
@@ -124,6 +124,10 @@ Artifacts in `release\`:
 |------|-------------|
 | `StabStab-<version>-x64-setup.exe` | NSIS installer |
 | `StabStab-<version>-x64-portable.exe` | portable executable |
+
+> Note: on Windows the script only auto-detects `magick` (ImageMagick 7); `convert` is no longer used
+> because it collides with the system `C:\Windows\System32\convert.exe`. Without ImageMagick the script
+> skips logo generation and reuses the committed `build/` icons.
 
 ---
 
