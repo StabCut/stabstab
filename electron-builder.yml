@@ -1,0 +1,58 @@
+# electron-builder 打包配置 —— 一套代码，跨 Ubuntu / Windows
+appId: com.stabstab.studio
+productName: StabStab捅捅
+copyright: Copyright © 2026 StabStab Studio
+
+directories:
+  output: release
+  buildResources: build
+
+# 打进安装包的内容。package.json 与生产依赖由 electron-builder 自动附加。
+files:
+  - dist/**/*
+  - electron/**/*
+  - package.json
+
+asar: true
+
+# ---------- Linux（Ubuntu 24）----------
+linux:
+  target:
+    - target: deb
+      arch: [x64]
+    - target: dir
+      arch: [x64]
+  category: Graphics
+  icon: build/icon.png
+  maintainer: StabStab Studio <stabstab@example.com>
+  synopsis: AI 图像生成与编辑工作台
+  description: StabStab捅捅 —— 基于千问图像模型的 AI 文生图 / 图生图工作台。
+  syncDesktopName: true
+
+deb:
+  artifactName: ${name}-${version}-${arch}.${ext}
+
+# dir 目标：生成免安装目录，package.sh 会为其附加一个终端可执行的 .sh 启动器
+# （输出目录 release/linux-unpacked）
+
+# ---------- Windows ----------
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+  icon: build/icon.ico
+  artifactName: ${productName}-${version}-${arch}-setup.${ext}
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: StabStab捅捅
+  artifactName: ${productName}-${version}-${arch}-setup.${ext}
+
+portable:
+  artifactName: ${productName}-${version}-${arch}-portable.${ext}

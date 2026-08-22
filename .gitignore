@@ -1,0 +1,14 @@
+# 依赖
+node_modules/
+
+# 构建产物（package.sh / package.cmd 会自动重新生成）
+dist/
+release/
+
+# 运行时数据（便携运行 / 开发模式）
+dev-data/
+stabstab-data/
+
+# 系统 / 编辑器
+.DS_Store
+*.log
