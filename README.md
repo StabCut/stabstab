@@ -45,13 +45,35 @@ stabstab/
 
 ## 快速开始（开发）
 
-前置：Node.js ≥ 18（推荐 20+）、npm。
+前置：Node.js ≥ 18（推荐 20+）、npm、Git。
 
 ```bash
+# 1. 克隆仓库
+git clone https://github.com/ExploringBB/stabstab.git
 cd stabstab
+
+# 2. 安装依赖（自动配置，见下方说明）
 npm install
-npm run dev        # 启动 Vite + Electron（开发模式，F12 打开 DevTools）
+
+# 3. 开发模式：启动 Vite + Electron（F12 打开 DevTools）
+npm run dev
 ```
+
+> **依赖自动配置**：项目根目录的 `.npmrc` 已内置国内镜像
+> （`electron_mirror` / `electron_builder_binaries_mirror` 指向 npmmirror），
+> 执行 `npm install` 时会自动走镜像加速 Electron 与 electron-builder 的二进制下载，
+> 无需手动设置任何环境变量。
+
+### 构建生产产物（可选）
+
+打包脚本内部会自动构建，通常无需手动执行；如需单独构建渲染进程：
+
+```bash
+npm run build      # Vite 构建渲染进程到 dist/
+```
+
+> **命令名注意**：请使用 `npm run dev` 与 `npm run build`。
+> `npm dev` 不是合法命令会报错；`npm build` 虽为历史别名，但建议统一使用 `npm run build`。
 
 数据在开发模式下写入项目内的 `dev-data/`。
 

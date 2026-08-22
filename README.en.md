@@ -45,13 +45,36 @@ stabstab/
 
 ## Quick Start (Development)
 
-Prerequisites: Node.js ≥ 18 (20+ recommended), npm.
+Prerequisites: Node.js ≥ 18 (20+ recommended), npm, Git.
 
 ```bash
+# 1. Clone the repository
+git clone https://github.com/ExploringBB/stabstab.git
 cd stabstab
+
+# 2. Install dependencies (auto-configured, see note below)
 npm install
-npm run dev        # Start Vite + Electron (dev mode; F12 opens DevTools)
+
+# 3. Development mode: start Vite + Electron (F12 opens DevTools)
+npm run dev
 ```
+
+> **Dependency auto-configuration**: the `.npmrc` in the project root already
+> points `electron_mirror` / `electron_builder_binaries_mirror` to npmmirror,
+> so `npm install` automatically uses the mirror to speed up Electron and
+> electron-builder binary downloads — no environment variables needed.
+
+### Build production assets (optional)
+
+Packaging scripts build automatically, so this is usually unnecessary; to build the
+renderer manually:
+
+```bash
+npm run build      # Vite builds the renderer into dist/
+```
+
+> **Command naming**: use `npm run dev` and `npm run build`.
+> `npm dev` is not a valid command; `npm build` is a legacy alias but `npm run build` is recommended.
 
 In dev mode, data is written to `dev-data/` inside the project.
 
