@@ -100,7 +100,7 @@ export default function Sidebar() {
     <aside className="sidebar">
       <div className="sidebar-header">
         <img className="app-logo" src="./icon.svg" alt="logo" draggable={false} />
-        <span className="app-title">StabStab捅捅</span>
+        <span className="app-title">StabStab</span>
       </div>
 
       <button

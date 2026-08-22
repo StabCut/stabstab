@@ -1,6 +1,6 @@
 'use strict';
 /*
- * StabStab捅捅 —— Electron 主进程入口
+ * StabStab —— Electron 主进程入口
  * - 隐藏默认菜单栏（文件/编辑…），保留系统标题栏的最小化/最大化/关闭按钮
  * - 数据目录：可执行文件同级 stabstab-data/（不可写时回退用户目录）
  * - 自定义协议 appfile:// 提供本地图片（缓存/附件）给渲染进程
@@ -19,7 +19,7 @@ const runner = require('./src/api/runner');
 const { sniffDimensions, uniqueName } = require('./src/imageutil');
 
 const isDev = !app.isPackaged;
-const APP_NAME = 'StabStab捅捅';
+const APP_NAME = 'StabStab';
 
 // ---------- Linux 兼容性：GPU 进程沙箱与部分驱动/受限环境冲突 ----------
 // 症状：GPU process launch failed (error_code=1002) → "GPU process isn't usable. Goodbye."

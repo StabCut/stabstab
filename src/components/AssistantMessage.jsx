@@ -140,7 +140,7 @@ export default function AssistantMessage({ conv, msg }) {
 
   return (
     <div className="msg assistant">
-      <div className="msg-avatar" title="StabStab捅捅">
+      <div className="msg-avatar" title="StabStab">
         <img src="./icon.svg" alt="" draggable={false} />
       </div>
       <div className="msg-bubble assistant-bubble">

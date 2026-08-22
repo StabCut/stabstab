@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # ============================================================
-# StabStab捅捅 —— Ubuntu / Linux 一键打包脚本
+# StabStab —— Ubuntu / Linux 一键打包脚本
 # 在当前目录的上级（项目根目录）执行。产物输出至 release/：
 #   1) stabstab-<版本>-amd64.deb          —— deb 安装包
-#   2) StabStab捅捅-linux-x64.tar.gz      —— 便携目录（内含终端启动 .sh 脚本）
+#   2) StabStab-linux-x64.tar.gz      —— 便携目录（内含终端启动 .sh 脚本）
 # 使用说明见项目 README.md。
 # ============================================================
 set -e
 cd "$(dirname "$0")/.."
 
-APP_NAME="StabStab捅捅"
+APP_NAME="StabStab"
 
 echo "==> 检查 Node.js 环境"
 if ! command -v node >/dev/null 2>&1; then
@@ -50,9 +50,9 @@ echo "==> 生成终端启动脚本 ${APP_NAME}.sh"
 # electron-builder 生成的可执行文件名可能为 stabstab 或 ${APP_NAME}，启动时自动探测
 cat > "$UNPACKED/${APP_NAME}.sh" <<'LAUNCHER'
 #!/usr/bin/env bash
-# StabStab捅捅 终端启动脚本：在解压目录内执行 ./StabStab捅捅.sh 即可运行
+# StabStab 终端启动脚本：在解压目录内执行 ./StabStab.sh 即可运行
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-for BIN in "stabstab" "StabStab捅捅"; do
+for BIN in "stabstab" "StabStab"; do
   if [ -x "$DIR/$BIN" ]; then
     exec "$DIR/$BIN" "$@"
   fi

@@ -1,6 +1,6 @@
 # electron-builder 打包配置 —— 一套代码，跨 Ubuntu / Windows
 appId: com.stabstab.studio
-productName: StabStab捅捅
+productName: StabStab
 copyright: Copyright © 2026 StabStab Studio
 
 directories:
@@ -26,7 +26,7 @@ linux:
   icon: build/icon.png
   maintainer: StabStab Studio <stabstab@example.com>
   synopsis: AI 图像生成与编辑工作台
-  description: StabStab捅捅 —— 基于千问图像模型的 AI 文生图 / 图生图工作台。
+  description: StabStab —— 基于千问图像模型的 AI 文生图 / 图生图工作台。
   syncDesktopName: true
 
 deb:
@@ -51,7 +51,7 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  shortcutName: StabStab捅捅
+  shortcutName: StabStab
   artifactName: ${productName}-${version}-${arch}-setup.${ext}
 
 portable:

@@ -97,7 +97,7 @@ function Shell() {
     return (
       <div className="boot-screen">
         <div className="boot-logo" />
-        <div className="boot-text">StabStab捅捅 正在启动…</div>
+        <div className="boot-text">StabStab 正在启动…</div>
       </div>
     );
   }

@@ -1,4 +1,4 @@
-# StabStab捅捅 — AI 继续开发与调试文档（AIDEV.md）
+# StabStab — AI 继续开发与调试文档（AIDEV.md）
 
 > 本文档面向 **AI 编程助手 / 后续开发者**，用于在既有代码基础上继续开发、调试、扩展与维护。
 > 阅读本文档前请先了解：这是一个 **Electron + React + Vite** 的 AI 图像生成工作台（文生图 / 图生图），
@@ -8,7 +8,7 @@
 
 ## 1. 项目摘要
 
-**StabStab捅捅** 是一个桌面端 AI 图像生成与编辑工具，核心能力：
+**StabStab** 是一个桌面端 AI 图像生成与编辑工具，核心能力：
 
 - **文生图**（text-to-image）：纯文字提示词生成图片。
 - **图生图 / 图像编辑**（image-to-image）：1–3 张输入图片 + 编辑指令，或纯图片输入。
@@ -279,7 +279,7 @@ module.exports = {
 - electron-builder 配置见 `electron-builder.yml`；`files` 只含 `dist/**`、`electron/**`、`package.json`（生产依赖为空，React 被 Vite 打进 bundle）。
 - `build/` 是 buildResources（图标源），**运行时窗口图标**在 `electron/assets/icon.png`（打进 asar）。
 - deb 需要 `package.json` 里的 `homepage` 字段（缺了 fpm 报错）；`desktopName` + `linux.syncDesktopName` 保证窗口与 .desktop 关联。
-- 二进制名会被 electron-builder 规范化为 `stabstab`（productName 含中文时），启动脚本已做 `stabstab`/`StabStab捅捅` 双名探测。
+- 二进制名会被 electron-builder 规范化为 `stabstab`（productName 含中文时），启动脚本已做 `stabstab`/`StabStab` 双名探测。
 
 ### 8.2 已知坑（务必了解）
 
@@ -302,10 +302,10 @@ module.exports = {
 无需 GUI，用本地 HTTP 服务模拟 DashScope 即可验证 runner 的同步/异步/错误/取消全链路：
 
 ```bash
-# 参考实现（已验证通过 15 项断言）
-node /tmp/test_api.js   # 思路：起 http server 模拟 generation/tasks/img 端点，
-                        #       直接 require electron/src/api/runner.js 跑场景
+npm run test:api      # 即 node scripts/test-api.js（已验证通过 15 项断言）
 ```
+
+该脚本自包含：内置一张 16x16 PNG（校验尺寸嗅探）、临时目录自动清理。可直接参考或扩展。
 
 mock 端点需覆盖：
 - `POST {base}/services/aigc/multimodal-generation/generation`（sync 返回 choices，async 返回 task_id）

@@ -1,4 +1,4 @@
-# StabStab捅捅
+# StabStab
 
 <div align="center">
 
@@ -71,7 +71,7 @@ Artifacts in `release/`:
 | File | Description |
 |------|-------------|
 | `stabstab-<version>-amd64.deb` | deb installer |
-| `StabStab捅捅-linux-x64.tar.gz` | portable directory (contains `StabStab捅捅.sh` launcher) |
+| `StabStab-linux-x64.tar.gz` | portable directory (contains `StabStab.sh` launcher) |
 
 Install / run:
 
@@ -80,9 +80,9 @@ Install / run:
 sudo dpkg -i release/stabstab-<version>-amd64.deb
 
 # run portable
-tar -xzf release/StabStab捅捅-linux-x64.tar.gz
+tar -xzf release/StabStab-linux-x64.tar.gz
 cd linux-unpacked
-./StabStab捅捅.sh
+./StabStab.sh
 ```
 
 > Note: packaging requires ImageMagick (`convert` / `magick`) to rasterize the SVG logo into png/ico.
@@ -99,8 +99,8 @@ Artifacts in `release\`:
 
 | File | Description |
 |------|-------------|
-| `StabStab捅捅-<version>-x64-setup.exe` | NSIS installer |
-| `StabStab捅捅-<version>-x64-portable.exe` | portable executable |
+| `StabStab-<version>-x64-setup.exe` | NSIS installer |
+| `StabStab-<version>-x64-portable.exe` | portable executable |
 
 ---
 
@@ -119,7 +119,7 @@ stabstab-data/
 ```
 
 - The main page offers a one-click “open cache directory” button; **deleting `cache/` frees space and does not affect the next run** (result images in history show a "image cleared" placeholder).
-- If the executable directory is not writable (e.g. deb into `/opt`, Windows into `Program Files`), the app automatically falls back to the system user-data directory (`~/.config/StabStab捅捅/` or `%APPDATA%/StabStab捅捅/`).
+- If the executable directory is not writable (e.g. deb into `/opt`, Windows into `Program Files`), the app automatically falls back to the system user-data directory (`~/.config/StabStab/` or `%APPDATA%/StabStab/`).
 
 ---
 
@@ -176,8 +176,8 @@ Based on the workspace docs "图像编辑 - 千问AI平台.html" and "异步任�
 The main process already handles Linux compatibility (disables GPU process sandbox, and fully disables the sandbox when necessary). If issues persist, append flags manually:
 
 ```bash
-./StabStab捅捅.sh --disable-gpu       # fully disable GPU acceleration (software rendering)
-./StabStab捅捅.sh --no-sandbox        # disable sandbox (rare restricted environments)
+./StabStab.sh --disable-gpu       # fully disable GPU acceleration (software rendering)
+./StabStab.sh --no-sandbox        # disable sandbox (rare restricted environments)
 ```
 
 **Where are the logs?**

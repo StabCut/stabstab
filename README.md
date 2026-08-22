@@ -1,4 +1,4 @@
-# StabStab捅捅
+# StabStab
 
 <div align="center">
 
@@ -71,7 +71,7 @@ cd stabstab
 | 文件 | 说明 |
 |------|------|
 | `stabstab-<版本>-amd64.deb` | deb 安装包 |
-| `StabStab捅捅-linux-x64.tar.gz` | 便携目录（解压后内含 `StabStab捅捅.sh`，终端执行即可启动） |
+| `StabStab-linux-x64.tar.gz` | 便携目录（解压后内含 `StabStab.sh`，终端执行即可启动） |
 
 安装 / 运行：
 
@@ -80,9 +80,9 @@ cd stabstab
 sudo dpkg -i release/stabstab-<版本>-amd64.deb
 
 # 便携运行
-tar -xzf release/StabStab捅捅-linux-x64.tar.gz
+tar -xzf release/StabStab-linux-x64.tar.gz
 cd linux-unpacked
-./StabStab捅捅.sh
+./StabStab.sh
 ```
 
 > 说明：打包需要 ImageMagick（`convert` / `magick`）用于把 SVG Logo 光栅化成 png/ico。
@@ -99,8 +99,8 @@ scripts\package.cmd
 
 | 文件 | 说明 |
 |------|------|
-| `StabStab捅捅-<版本>-x64-setup.exe` | NSIS 安装包 |
-| `StabStab捅捅-<版本>-x64-portable.exe` | 便携可执行文件 |
+| `StabStab-<版本>-x64-setup.exe` | NSIS 安装包 |
+| `StabStab-<版本>-x64-portable.exe` | 便携可执行文件 |
 
 ---
 
@@ -119,7 +119,7 @@ stabstab-data/
 ```
 
 - 主页面提供「一键打开缓存目录」按钮；**直接删除 `cache/` 目录可清理空间，不影响下次运行**（历史消息中的结果图会显示为“图片已清理”占位）。
-- 若可执行文件所在目录不可写（例如 deb 装到 `/opt`、Windows 装到 `Program Files`），会自动回退到系统用户数据目录（`~/.config/StabStab捅捅/` 或 `%APPDATA%/StabStab捅捅/`）。
+- 若可执行文件所在目录不可写（例如 deb 装到 `/opt`、Windows 装到 `Program Files`），会自动回退到系统用户数据目录（`~/.config/StabStab/` 或 `%APPDATA%/StabStab/`）。
 
 ---
 
@@ -176,8 +176,8 @@ stabstab-data/
 主进程已对 Linux 做兼容处理（禁用 GPU 进程沙箱，必要时整体禁用沙箱）。若仍异常，可手动追加参数：
 
 ```bash
-./StabStab捅捅.sh --disable-gpu       # 彻底禁用 GPU 加速（软件渲染）
-./StabStab捅捅.sh --no-sandbox        # 禁用沙箱（极少数受限环境）
+./StabStab.sh --disable-gpu       # 彻底禁用 GPU 加速（软件渲染）
+./StabStab.sh --no-sandbox        # 禁用沙箱（极少数受限环境）
 ```
 
 **日志在哪？**

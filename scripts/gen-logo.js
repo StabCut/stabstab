@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * StabStab捅捅 Logo 生成器
+ * StabStab Logo 生成器
  * 视错觉「彭罗斯三角 / 纪念碑谷」风格图标。
  * 产物：
  *   build/icon.svg   —— 矢量源文件
