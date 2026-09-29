@@ -23,6 +23,9 @@ contextBridge.exposeInMainWorld('stab', {
     return () => ipcRenderer.removeListener('api:event', handler);
   },
 
+  // ---- 会话标签自动命名（重命名模型：DeepSeek Responses API）----
+  generateTitle: (text) => ipcRenderer.invoke('title:generate', text),
+
   // ---- 附件（用户输入图片持久化） ----
   saveAttachment: (att) => ipcRenderer.invoke('attachments:save', att),   // {name, mime, dataUrl} -> {file}
   readAttachment: (file) => ipcRenderer.invoke('attachments:read', file), // file -> {dataUrl, mime}

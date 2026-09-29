@@ -2,10 +2,12 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useApp, useToast } from '../lib/store.jsx';
 import { uid } from '../lib/util.js';
 import { sourceConfigOf, sourceKey } from '../lib/models.js';
+import { titleDefaults } from '../lib/title.js';
 import Icon from './Icon.jsx';
 
 const TABS = [
   { id: 'model', label: '模型设置' },
+  { id: 'rename', label: '重命名模型' },
   { id: 'basic', label: '基础设置' },
   { id: 'advanced', label: '高级设置' }
 ];
@@ -19,7 +21,12 @@ export default function SettingsModal({ initialTab = 'model' }) {
   const [draft, setDraft] = useState(() => clone(state.settings));
   // 系列配置草稿（可写字段：hidden / requestMode.value）
   const [draftSeries, setDraftSeries] = useState(() => clone(state.modelSeries || { series: [] }));
+  // 重命名模型配置草稿（可写字段：temperature / topP / 提示模板等，存数据目录的 rename-model.json）
+  const [draftRename, setDraftRename] = useState(() => (
+    state.renameConfig ? clone(state.renameConfig) : clone(titleDefaults(state))
+  ));
   const [showKeys, setShowKeys] = useState({});      // { '<seriesId>.<sourceId>': true }
+  const [showRenameKey, setShowRenameKey] = useState(false);
   const [pickSeriesId, setPickSeriesId] = useState('');
 
   const set = (patch) => setDraft((d) => ({ ...d, ...patch }));
@@ -131,11 +138,35 @@ export default function SettingsModal({ initialTab = 'model' }) {
     }));
   };
 
+  // ---------- 重命名模型（会话标签自动命名） ----------
+  const renameDef = titleDefaults(state);
+  const renameCfg = { apiKey: '', baseUrl: '', modelId: '', ...(draft.renameModel || {}) };
+  const renameBaseShown = renameCfg.baseUrl || renameDef.baseUrl;                 // 留空 = 显示写死的默认地址
+  const renameBaseOverridden = !!renameCfg.baseUrl && renameCfg.baseUrl !== renameDef.baseUrl;
+
+  const setRename = (patch) => setDraft((d) => ({
+    ...d,
+    renameModel: { apiKey: '', baseUrl: '', modelId: '', ...(d.renameModel || {}), ...patch }
+  }));
+
+  /** 滑动条：温度 / Top-P（写回数据目录的 rename-model.json） */
+  const setRenameCfg = (patch) => setDraftRename((c) => ({ ...c, ...patch }));
+  const num = (v, def) => (Number.isFinite(Number(v)) ? Number(v) : def);
+  const renameTemp = num(draftRename.temperature, renameDef.temperature);
+  const renameTopP = num(draftRename.topP, renameDef.topP);
+
   // ---------- 保存 ----------
   const save = () => {
     const cleaned = clone(draft);
     cleaned.requestTimeoutSec = Math.min(3600, Math.max(15, Number(cleaned.requestTimeoutSec) || 300));
     cleaned.compressMaxMB = Math.min(100, Math.max(0.5, Number(cleaned.compressMaxMB) || 10));
+    // 重命名模型：三个字段都是字符串，留空 = 用代码里的默认地址 / 默认模型
+    const rm = cleaned.renameModel || {};
+    cleaned.renameModel = {
+      apiKey: String(rm.apiKey || '').trim(),
+      baseUrl: String(rm.baseUrl || '').trim(),
+      modelId: String(rm.modelId || '').trim()
+    };
 
     // 模型：去掉空白名字；系列：去掉未知系列；密钥/地址：去掉指向不存在来源的键
     const seriesIds = new Set(seriesList.map((s) => s.id));
@@ -164,7 +195,7 @@ export default function SettingsModal({ initialTab = 'model' }) {
       cleaned.defaultModelId = allModels.length ? allModels[0].id : '';
     }
 
-    dispatch({ type: 'SETTINGS_UPDATE', settings: cleaned, modelSeries: draftSeries });
+    dispatch({ type: 'SETTINGS_UPDATE', settings: cleaned, modelSeries: draftSeries, renameConfig: draftRename });
     toast('设置已保存', 'info');
     window.stab.log('info', '设置已更新', {
       theme: cleaned.theme, timeout: cleaned.requestTimeoutSec,
@@ -172,6 +203,9 @@ export default function SettingsModal({ initialTab = 'model' }) {
       series: cleaned.modelGroups.map((g) => `${g.seriesId}:${g.models.length}`).join(','),
       models: allModels.length,
       defaultModel: cleaned.defaultModelId,
+      renameModel: `${cleaned.renameModel.modelId || '（默认）'}@${cleaned.renameModel.baseUrl || '（默认地址）'}`,
+      renameModelConfigured: !!cleaned.renameModel.apiKey,
+      renameLlm: `temperature=${renameTemp},topP=${renameTopP}`,
       requestModes: draftSeries.series.filter((s) => s.requestMode && s.requestMode.supported).map((s) => `${s.id}=${s.requestMode.value}`).join(',')
     });
     close();
@@ -344,6 +378,135 @@ export default function SettingsModal({ initialTab = 'model' }) {
                 <p className="field-hint">
                   API Key 只保存在本机数据目录的 <code>settings.json</code>；模型系列与 API 来源的定义保存在
                   <code>model-series.json</code>（可手工编辑后重启生效）。
+                </p>
+              </div>
+            )}
+
+            {/* ---------- 重命名模型（会话标签自动命名） ---------- */}
+            {tab === 'rename' && (
+              <div className="settings-section">
+                <div className="settings-tip">
+                  提示：使用 <code>deepseek-flash</code> 模型非思考模式（请求体 <code>reasoning.effort = none</code>，
+                  接口走 DeepSeek <code>Responses</code>：<code>POST {renameDef.baseUrl}/responses</code>）。
+                  新会话先按序号命名（空对话保持序号），出现首条文字后由该模型压成一句短标题作为标签名；
+                  未配置 API Key 或调用失败时，直接截取首条文字。
+                </div>
+
+                <div className="field">
+                  <label>API Key</label>
+                  <div className="input-group">
+                    <input
+                      type={showRenameKey ? 'text' : 'password'}
+                      placeholder="sk-xxxxxxxx"
+                      value={renameCfg.apiKey}
+                      onChange={(e) => setRename({ apiKey: e.target.value })}
+                    />
+                    <button className="ghost-btn" onClick={() => setShowRenameKey((v) => !v)}>
+                      {showRenameKey ? '隐藏' : '显示'}
+                    </button>
+                  </div>
+                  <p className="field-hint">DeepSeek 开放平台的 API Key（不填则不做模型命名，只用首条文字）。</p>
+                </div>
+
+                <div className="field">
+                  <label>API 地址</label>
+                  <div className="input-group">
+                    <input
+                      type="text"
+                      value={renameBaseShown}
+                      onChange={(e) => setRename({ baseUrl: e.target.value })}
+                    />
+                    <button
+                      className="ghost-btn"
+                      title={`恢复为内置默认地址：${renameDef.baseUrl}`}
+                      disabled={!renameBaseOverridden}
+                      onClick={() => setRename({ baseUrl: '' })}
+                    >恢复默认</button>
+                  </div>
+                  <p className="field-hint">
+                    默认 <code>{renameDef.baseUrl}</code>（随程序内置，留空即使用默认；也可在数据目录的
+                    <code>rename-model.json</code> 里改）。
+                    填完整端点（如 <code>{renameDef.baseUrl}/responses</code>）也能被原样识别。
+                  </p>
+                </div>
+
+                <div className="field">
+                  <label>模型 id</label>
+                  <input
+                    type="text"
+                    placeholder="模型id"
+                    value={renameCfg.modelId}
+                    onChange={(e) => setRename({ modelId: e.target.value })}
+                  />
+                  <p className="field-hint">
+                    留空 = 内置默认 <code>{renameDef.modelId}</code>。注意这里是 <b>Responses</b> 接口，
+                    与 chat/completions 不是同一套格式，模型 id 需支持 <code>/responses</code>。
+                  </p>
+                </div>
+
+                <div className="field">
+                  <label>模型温度（temperature）</label>
+                  <div className="slider-row">
+                    <input
+                      type="range" min={0} max={2} step={0.1}
+                      value={renameTemp}
+                      onChange={(e) => setRenameCfg({ temperature: Number(e.target.value) })}
+                    />
+                    <span className="slider-value">{renameTemp.toFixed(1)}</span>
+                  </div>
+                  <p className="field-hint">默认 0.5。数值越低标题越稳定收敛，越高越发散。</p>
+                </div>
+
+                <div className="field">
+                  <label>Top-P</label>
+                  <div className="slider-row">
+                    <input
+                      type="range" min={0} max={1} step={0.05}
+                      value={renameTopP}
+                      onChange={(e) => setRenameCfg({ topP: Number(e.target.value) })}
+                    />
+                    <span className="slider-value">{renameTopP.toFixed(2)}</span>
+                  </div>
+                  <p className="field-hint">
+                    默认 0.5。注意：DeepSeek 官方说明非思考模式下 <code>top_p</code> 恒为 1.0，
+                    该项只在思考模式生效，保持默认即可。
+                  </p>
+                </div>
+
+                <div className="field">
+                  <label>标题生成提示模板</label>
+                  <textarea
+                    className="template-area"
+                    rows={10}
+                    spellCheck={false}
+                    value={draftRename.promptTemplate || ''}
+                    onChange={(e) => setRenameCfg({ promptTemplate: e.target.value })}
+                  />
+                  <p className="field-hint">
+                    模板里的 <code>&#123;$$&#125;</code> 会被替换成实际输入片段 <code>"text":"用户首条文字"</code>。
+                    模型按模板生成 5~6 个汉字的标题（只输出 <code>&#123;"title":"…"&#125;</code>）；
+                    改坏了可以点下面「恢复默认模板」。
+                  </p>
+                  <div className="input-group">
+                    <button
+                      className="ghost-btn"
+                      disabled={!draftRename.promptTemplate || draftRename.promptTemplate === renameDef.promptTemplate}
+                      onClick={() => setRenameCfg({ promptTemplate: renameDef.promptTemplate })}
+                    >恢复默认模板</button>
+                    {state.paths && state.paths.renameModelFile && (
+                      <button
+                        className="ghost-btn"
+                        title={state.paths.renameModelFile}
+                        onClick={() => window.stab.showInFolder(state.paths.renameModelFile)}
+                      >打开配置文件位置</button>
+                    )}
+                  </div>
+                </div>
+
+                <p className="field-hint">
+                  API Key 只保存在本机数据目录 <code>settings.json</code> 的 <code>renameModel</code> 字段；
+                  温度 / Top-P / 提示模板保存在数据目录的 <code>rename-model.json</code>（可手工编辑，重启生效）。
+                  该请求只发送「首条文字的前一段」，不发送图片。
                 </p>
               </div>
             )}

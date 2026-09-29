@@ -36,8 +36,10 @@ settings.json（用户数据：添加了哪些系列、系列里有哪些模型�
 
 - **文生图**（text-to-image）：纯文字提示词生成图片。
 - **图生图 / 图像编辑**（image-to-image）：1–3 张输入图片 + 编辑指令，或纯图片输入。
-- 对话式界面（类 Cherry Studio）：左侧数字标签管理会话，右侧聊天流，底部输入框。
+- 对话式界面（类 Cherry Studio）：左侧标签管理会话（空对话按序号 1234…，出现首条文字后自动命名），右侧聊天流，底部输入框。
 - 每个会话**不携带上下文**（上下文长度恒为 0）：每次请求只包含当前这一条输入。
+- **标签自动命名（重命名模型）**：首条文字 → DeepSeek Responses API（默认 `deepseek-flash` 非思考模式）
+  精简成 5~6 字中文标题；未配置 Key 或调用失败时截取首条文字。模板/温度/Top-P 在 `rename-model.json`。
 - **模型系列 → API 来源 → 协议适配器**：内置 3 个系列（Qwen / Doubao Seedream / GPT Image），
   模型 id 由用户填写；每个「系列·来源」独立保存 API Key 与 API 地址。
 - 支持 **同步**（默认，当前会话阻塞等待）与 **异步 Task API**（后台轮询）两种请求模式；
@@ -59,12 +61,14 @@ stabstab/
 │   ├── preload.js                     # contextBridge 桥接（window.stab）
 │   ├── assets/
 │   │   ├── icon.png                   # 运行时窗口图标（打包进 asar）
-│   │   └── model-series.json          # ★ 内置模型系列定义（系列 / 来源 / 默认地址 / 尺寸）
+│   │   ├── model-series.json          # ★ 内置模型系列定义（系列 / 来源 / 默认地址 / 尺寸）
+│   │   └── rename-model.json          # ★ 内置重命名模型配置（标题提示模板 / 温度 / Top-P / 默认地址）
 │   └── src/
 │       ├── paths.js                   # 数据根目录解析（可执行文件同级 + 回退）
 │       ├── logger.js                  # 文件日志 <data>/log/app-YYYYMMDD.log
 │       ├── store.js                   # settings.json / conversations.json 原子读写 + 旧结构迁移
 │       ├── modelSeries.js             # ★ 模型系列配置读写与解析（resolveModel = 发请求的权威口径）
+│       ├── renameModel.js             # ★ 重命名模型：rename-model.json 读写 + DeepSeek Responses API 调用
 │       ├── imageutil.js               # PNG/JPEG/GIF/WEBP 尺寸嗅探、缓存下载（含 data:base64 结果）
 │       └── api/
 │           ├── registry.js            # 适配器注册表 + 预留协议列表 + listProtocols()
@@ -83,12 +87,13 @@ stabstab/
 │   │   ├── UserMessage.jsx            # 用户气泡：文本/图片、编辑重发、复制、删除
 │   │   ├── AssistantMessage.jsx       # 助手气泡：结果图/错误/异步状态卡片/取消
 │   │   ├── Composer.jsx               # 输入框：粘贴/拖入/多选、size/高级参数、发送/停止
-│   │   ├── SettingsModal.jsx          # 设置：模型/基础/高级三页
+│   │   ├── SettingsModal.jsx          # 设置：模型 / 重命名模型 / 基础 / 高级 四页
 │   │   ├── Lightbox.jsx               # 全屏图片预览：滚轮缩放/拖动/ESC
 │   │   └── Toasts.jsx                 # 轻提示
 │   └── lib/
 │       ├── store.jsx                  # React Context + reducer 全局状态 + 防抖落盘
 │       ├── models.js                  # ★ 模型系列/模型解析（界面侧，与主进程同口径）
+│       ├── title.js                   # ★ 会话标签自动命名（首条文字 → 重命名模型 → 回退截取）
 │       ├── send.js                    # 发送/重发公共逻辑（无上下文、消息配对、压缩、参数过滤）
 │       ├── images.js                  # File→dataUrl、尺寸读取、按设置压缩
 │       └── util.js                    # uid/时间/字节/尺寸解析/appfile URL 构造
@@ -153,13 +158,14 @@ for f in electron/src/*.js electron/src/api/*.js; do node --check "$f"; done
 
 | 方法 | IPC 通道 | 方向 | 说明 |
 |------|----------|------|------|
-| `bootstrap()` | `app:bootstrap` | invoke | 一次返回 settings/modelSeries/conversations/paths/platform/resumeCount |
-| `saveState({settings,conversations,modelSeries})` | `state:save` | invoke | 防抖整包落盘（三份数据一起写） |
+| `bootstrap()` | `app:bootstrap` | invoke | 一次返回 settings/modelSeries/renameConfig/conversations/paths/platform/resumeCount |
+| `saveState({settings,conversations,modelSeries,renameConfig})` | `state:save` | invoke | 防抖整包落盘（四份数据一起写） |
 | `listProtocols()` | `protocols:list` | invoke | 协议元信息：sizeOptions / paramSchema / supportsAsync… |
 | `generate(opts)` | `api:generate` | invoke | 发起生成（立即返回 jobId） |
 | `cancelJob(jobId)` | `api:cancel` | invoke | 取消/停止等待 |
 | `resumeJobs()` | `api:resume` | invoke | 重启后恢复异步轮询 |
 | `onApiEvent(cb)` | `api:event` | on | 结果/状态事件流 |
+| `generateTitle(text)` | `title:generate` | invoke | 会话标签自动命名：把首条文字交给重命名模型，回 `{ok,name}` / `{ok:false,code,message}` |
 | `saveAttachment({name,mime,dataUrl})` | `attachments:save` | invoke | 保存用户输入图 → 返回 file 名 |
 | `readAttachment(file)` | `attachments:read` | invoke | 读回 dataUrl（编辑重发用） |
 | `downloadResult(file)` | `result:download` | invoke | 结果图 → 默认保存路径 |
@@ -200,6 +206,26 @@ for f in electron/src/*.js electron/src/api/*.js; do node --check "$f"; done
 
 **事件载荷统一结构**：`{conversationId, messageId, type, ok, images?, error?, taskId?, status?, usage?, durationMs?, ...}`。
 
+### 4.4 会话标签自动命名数据流
+
+标签名有两种来源，都由渲染进程发起、主进程执行 HTTP：
+
+```
+新会话 → CONV_NEW：name = String(++tabCounter)（空对话就一直是序号），nameAuto = true
+   └─ 首条「带文字」的输入发出时（lib/send.js#sendNew → lib/title.js#maybeAutoTitle）
+        ├─ 会话里已经有带文字的用户消息 → 不处理（只认首条文字）
+        ├─ nameAuto === false（用户手动改过名）→ 不处理
+        ├─ settings.renameModel.apiKey 已配置
+        │     └─ window.stab.generateTitle(text) → main：renameModel.generateTitle(settings, text, renameConfig)
+        │           POST {baseUrl|rename-model.json.baseUrl}/responses（Responses API，非 chat/completions）
+        │           回 {ok:true,name} → dispatch CONV_RENAME_AUTO {id,name,expectName}
+        └─ 未配置 / 失败 / 超时 → 本地截取首条文字（fallbackTitle，最长 18 字）
+   └─ reducer：CONV_RENAME_AUTO 只在 nameAuto !== false 且 name === expectName 时写入，写后 nameAuto = false
+        （手动 CONV_RENAME 也会把 nameAuto 置 false —— 用户的改名永远优先，迟到的模型结果不会覆盖）
+```
+
+**不变量**：命名请求与图片生成并行、不阻塞；`conversations.json` 只存 `name/nameAuto`，不含任何 Key；命名失败静默回退，不弹错误。
+
 ---
 
 ## 5. 持久化数据结构（Schema）
@@ -224,7 +250,12 @@ for f in electron/src/*.js electron/src/api/*.js; do node --check "$f"; done
   "sourceConfig": {             // 按「系列·来源」保存密钥与地址覆盖
     "qwen.official": { "apiKey": "", "baseUrl": "" }   // baseUrl 为空 = 用 json 里的默认地址
   },
-  "defaultModelId": "m_xxx"     // 全局默认模型；没有模型时为空字符串
+  "defaultModelId": "m_xxx",    // 全局默认模型；没有模型时为字符串
+  "renameModel": {              // 「重命名模型」：会话标签自动命名的凭据（其余参数见 5.5 rename-model.json）
+    "apiKey": "",               // DeepSeek 开放平台的 Key；为空 = 不做模型命名，直接截取首条文字
+    "baseUrl": "",              // 空 = 用 rename-model.json 里的默认地址（https://api.deepseek.com）
+    "modelId": ""               // 空 = 用 rename-model.json 里的默认模型（deepseek-flash）
+  }
 }
 ```
 
@@ -272,7 +303,34 @@ for f in electron/src/*.js electron/src/api/*.js; do node --check "$f"; done
 
 内置的三个系列：`qwen`（官方 DashScope 一个来源）、`doubao-seedream`（官方 Ark / New API）、`gpt-image`（Grsai / New API）。
 
-### 5.3 `conversations.json`
+### 5.3 `rename-model.json`（重命名模型配置：标题提示模板 / 温度 / Top-P / 默认地址）
+
+与 `model-series.json` 同一套做法：`electron/assets/rename-model.json` 随包发布（内置默认值），首次启动复制到
+`<dataRoot>/rename-model.json`（唯一可写，可手工编辑，重启生效）；UI 里的两个滑动条与模板框写的就是它。
+
+```jsonc
+{
+  "version": 1,
+  "baseUrl": "https://api.deepseek.com",   // 默认 API 地址（设置页「API 地址」留空时用它）
+  "modelId": "deepseek-flash",             // 默认模型 id（设置页「模型 id」留空时用它）
+  "temperature": 0.5,                      // ★ 滑动条可改（0~2）
+  "topP": 0.5,                             // ★ 滑动条可改（0~1；DeepSeek 非思考模式下该值不生效，恒为 1.0）
+  "promptTemplate": "你是一个标题生成助手……以下为实际输入 JSON：\n{$$}"   // ★ 模板框可改，$$ = 实际输入片段
+}
+```
+
+- 合并规则（`renameModel.mergeConfig(seed, local)`）：本地值非空 / 数值在区间内即生效，否则回退内置默认值；
+  模板为空时回退内置模板，`temperature` 会被夹到 `0~2`、`topP` 夹到 `0~1`。
+- **请求格式**（`renameModel.generateTitle`，见工作区 `deepseek系列.md`）：
+  `POST {baseUrl}/responses`，body = `{model, instructions: <渲染后的模板>, input: '{"text":"…"}',
+  temperature, top_p, reasoning:{effort:'none'}, text:{format:{type:'json_object'}}, stream:false}`
+  —— 是 **Responses**，不是 chat/completions（`input`/`instructions` 两个字段都是必给的其中一种，这里都给）。
+- **解析**：优先取 `output[]` 里 `type=message` 的 `content[].output_text`（跳过 reasoning item），
+  再按 `{"title":"…"}` 解析 JSON，失败就按纯文本用；最后 `sanitizeTitle` 去引号 / 括号 / 句末标点并截到 18 字。
+- 失败（无 Key / HTTP 错误 / 超时 20s / 没有可用标题）一律回 `{ok:false, code, message}`，**不抛异常**，
+  由渲染进程回退到「截取首条文字」。
+
+### 5.4 `conversations.json`
 
 ```jsonc
 {
@@ -281,7 +339,10 @@ for f in electron/src/*.js electron/src/api/*.js; do node --check "$f"; done
   "activeId": null,      // 当前激活会话
   "conversations": [
     {
-      "id": "c_xxx", "name": "1", "createdAt": 0, "updatedAt": 0, "unread": false,
+      "id": "c_xxx", "name": "1", "nameAuto": true,
+      // name  = 空对话是序号（"1"）；出现首条文字后自动命名（见 §4.4）
+      // nameAuto = true 表示名字还可被自动命名替换；用户手动改名后为 false（自动命名不再覆盖）
+      "createdAt": 0, "updatedAt": 0, "unread": false,
       "messages": [
         { // 用户消息
           "id": "m_u", "role": "user",
@@ -310,7 +371,7 @@ for f in electron/src/*.js electron/src/api/*.js; do node --check "$f"; done
 
 > 助手消息的 `meta.modelId` 是「重启后恢复异步轮询」与「编辑重发」的定位依据：主进程用它反查系列/来源/密钥（密钥不进会话文件）。
 
-### 5.4 图片存储位置
+### 5.5 图片存储位置
 
 - 用户输入图 → `<data>/uploads/<file>`，渲染进程经 `appfile://uploads/<file>` 显示。
 - 结果图 → `<data>/cache/<file>`，经 `appfile://cache/<file>` 显示。
@@ -330,10 +391,12 @@ for f in electron/src/*.js electron/src/api/*.js; do node --check "$f"; done
 7. **appfile 协议**：URL 结构 `appfile://<cache|uploads>/<文件名>`；主进程 handler 用 `path.basename` 防目录穿越。
 8. **Vite `base:'./'`**：打包后经 `file://` 加载，资源必须相对路径，否则白屏。
 9. **数据目录解析**：`app.isPackaged` 决定「可执行文件同级」还是「项目内 dev-data」；`paths.js` 是唯一入口。
-10. **防抖落盘**：渲染进程是数据编辑主体，`store.jsx` 中 `state.settings/modelSeries/conversations` 变化后 400ms 防抖 `state:save`；`beforeunload` 立即 flush。
+10. **防抖落盘**：渲染进程是数据编辑主体，`store.jsx` 中 `state.settings/modelSeries/renameConfig/conversations` 变化后 400ms 防抖 `state:save`；`beforeunload` 立即 flush。
 11. **模型必须经由系列解析**：发请求时 `protocol/baseUrl/apiKey/mode` **只能**由 `modelSeries.resolveModel()` 得出（渲染进程的解析只服务界面）；`modelId` 是唯一的跨进程定位键。
 12. **同步/异步按系列**：只有 `series.requestMode.supported === true`（当前仅 qwen）才允许 `mode='async'`；其它系列即使本地 json 被改成 `async` 也会被强制回 `sync`。
 13. **钥匙不进会话**：`conversations.json` 只记 `meta.modelId/seriesId/sourceId`，绝不写入 API Key。
+14. **标签命名只认首条文字**：自动命名只在「会话里还没有带文字的用户消息」时触发一次；`nameAuto === false`（用户手动改过名）时永不覆盖，见 §4.4。
+15. **重命名模型走 Responses API**：`POST {baseUrl}/responses`（`input` + `instructions` + `reasoning.effort='none'` + `text.format=json_object`），**不是** chat/completions；默认地址 / 默认模型 / 提示模板 / 温度 / Top-P 一律来自 `rename-model.json`（主进程解析，渲染进程只传首条文字）。
 
 ---
 
@@ -430,7 +493,7 @@ module.exports = {
 无需 GUI，用本地 HTTP 服务模拟各家接口即可验证 runner 的同步/异步/错误/取消全链路 + 各协议解析：
 
 ```bash
-npm run test:api      # 即 node scripts/test-api.js（当前 68 项断言，含模型系列配置与设置迁移）
+npm run test:api      # 即 node scripts/test-api.js（当前 106 项断言，含模型系列 / 设置迁移 / 重命名模型）
 ```
 
 该脚本自包含：内置一张 16x16 PNG（校验尺寸嗅探 / b64 结果落盘）、临时目录自动清理。可直接参考或扩展。
@@ -441,10 +504,12 @@ mock 端点覆盖：
 - `POST {base}/api/v3/images/generations`（Seedream 官方：`data[].url` + `usage.generated_images`）
 - `POST {base}/v1/images/generations`（New API：返回 `data[].b64_json`，验证 base64 结果落盘）
 - `POST {base}/v1/api/generate`（Grsai：SSE 流 / 只返回任务 id）+ `POST {base}/v1/draw/result`（轮询兜底）
+- `POST {base}/responses`（重命名模型：`output[].content[].output_text` 给 `{"title":"…"}`，另有 401 / 只有思维链 item 两种异常）
 - `GET /img.png`（供结果图下载）
 
-此外还直接单测 `modelSeries.load/save/resolveModel`（内置 json 落地、hidden 与同步异步开关持久化、协议不可被本地 json 篡改）
-与 `store.loadSettings` 的旧结构迁移。
+此外还直接单测 `modelSeries.load/save/resolveModel`（内置 json 落地、hidden 与同步异步开关持久化、协议不可被本地 json 篡改）、
+`store.loadSettings` 的旧结构迁移，以及 §17/§18 的 `renameModel.load/save/mergeConfig/renderTemplate/pickTitle/sanitizeTitle/generateTitle`
+（含 `temperature/top_p` 透传、`$$` 模板渲染、Responses 响应解析、错误码与回退路径）。
 
 ### 9.2 冒烟测试（无 GUI 环境）
 
@@ -466,19 +531,26 @@ Get-Process electron | Stop-Process -Force      # 子进程可能残留
 Get-Content dev-data\log\app-<日期>.log -Tail 20 # 应能看到「渲染进程启动完成」
 ```
 
-启动时可在 `dev-data/` 里确认：`model-series.json` 是否已生成、`settings.json` 是否已迁移成 `modelGroups/sourceConfig`。
+启动时可在 `dev-data/` 里确认：`model-series.json` / `rename-model.json` 是否已生成、`settings.json` 是否已迁移成 `modelGroups/sourceConfig`。
 
-### 9.3 界面预览（无 GUI 环境，可选）
+> 若本机已有实例在运行（`requestSingleInstanceLock`），第二个实例会直接退出并聚焦已有窗口。
+> 要隔离验证启动路径：把 `electron/` + `dist/` + `package.json` 复制到临时目录，用
+> `node_modules\electron\dist\electron.exe <临时目录> --user-data-dir=<临时目录>\userdata` 启动，
+> 数据目录会落在 `<临时目录>\dev-data`，不会碰真实数据。
 
-`dev-data/qa/`（gitignore，不进仓库）里有两个 esbuild + 无头 Chrome 的预览脚本，用**真实组件 + 真实 app.css** 出图，便于在没有窗口的环境里核对界面：
+### 9.3 界面预览与渲染进程断言（无 GUI 环境，可选）
+
+`dev-data/qa/`（gitignore，不进仓库）里有几个 esbuild + 无头 Chrome 的脚本，用**真实组件 / 真实代码 + 真实 app.css** 出图或断言：
 
 ```bash
-node dev-data/qa/settings-preview.mjs   # 设置弹窗：空态 / 多系列 / 高级设置，亮暗两套
+node dev-data/qa/settings-preview.mjs   # 设置弹窗：空态 / 多系列 / 高级设置 / 重命名模型，亮暗两套
 node dev-data/qa/composer-preview.mjs   # 输入区 + 各协议参数面板
+node dev-data/qa/title-test.mjs         # 标签自动命名：触发时机 / 回退 / reducer 守卫（22 项断言）
 ```
 
 要点：用 esbuild 的 `onResolve` 把 `lib/store.jsx` 换成桩（返回构造好的 state），
-用 `define` 注入 `model-series.json` / `listProtocols()` 的真实内容，再用 `--headless=new --screenshot=…` 出 PNG。
+用 `define` 注入 `model-series.json` / `rename-model.json` / `listProtocols()` 的真实内容，
+再用 `--headless=new --screenshot=…` 出 PNG；`title-test.mjs` 则直接跑真实 `lib/title.js` 与 `store.jsx` 的 reducer（`window.stab` 用桩）。
 
 ---
 
@@ -491,6 +563,9 @@ node dev-data/qa/composer-preview.mjs   # 输入区 + 各协议参数面板
 | 加一个 API 参数到输入区 | 对应适配器的 `paramSchema` + `buildBody`；参数面板与 `buildParams` 都是 schema 驱动，无需改 UI |
 | 改 size 列表 | `electron/assets/model-series.json` 的 `sources[].sizeOptions`（或适配器的 `sizeOptions` 兜底） |
 | 改「模型设置」页结构 | `src/components/SettingsModal.jsx`（系列卡片 / 模型行 / 来源级 API Key 与地址） |
+| 改标题生成提示模板 / 温度 / Top-P / 默认地址 | `electron/assets/rename-model.json`（随包默认）或数据目录的 `rename-model.json`（可手工编辑，重启生效；设置页滑动条也写它） |
+| 改标签命名时机与回退 | `src/lib/title.js#maybeAutoTitle/fallbackTitle` + `src/lib/send.js`（触发点）+ `src/lib/store.jsx` 的 `CONV_RENAME_AUTO` 守卫 |
+| 改重命名模型的协议/解析 | `electron/src/renameModel.js#generateTitle/sanitizeTitle/extractText/pickTitle`（Responses API，非 chat/completions） |
 | 改模型解析规则 | `electron/src/modelSeries.js#resolveModel` **与** `src/lib/models.js#resolveModel`（两处同口径） |
 | 改会话/消息数据结构 | `lib/store.jsx` 的 reducer + `lib/send.js` 构造器 + 主进程 `normalizeConversationsOnStartup` |
 | 改持久化字段默认值 | `electron/src/store.js` 的 `DEFAULT_SETTINGS` / `DEFAULT_CONVERSATIONS` |
@@ -502,7 +577,8 @@ node dev-data/qa/composer-preview.mjs   # 输入区 + 各协议参数面板
 
 ## 11. 安全与凭据注意事项
 
-- API Key 只存于本机 `settings.json`，日志**不打印** Key，也不打印完整 base64（只记字节数）。
+- API Key 只存于本机 `settings.json`（图片模型在 `sourceConfig['<系列>.<来源>']`，重命名模型在 `renameModel.apiKey`），
+  日志**不打印** Key，也不打印完整 base64（只记字节数）；重命名请求的日志只记模型 / 字数 / 耗时 / 生成的标题。
 - `runner` 日志会记录模型名、协议、模式、图片数量、size、耗时、错误码/信息，便于排查但脱敏。
 - 提交代码时不要把 `dev-data/`、`stabstab-data/`、`release/`、`node_modules/` 纳入版本控制（已在 `.gitignore`）。
 - **不要**把任何 Personal Access Token / API Key 提交进仓库或写入脚本。

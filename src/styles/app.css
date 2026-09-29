@@ -482,6 +482,24 @@ button { cursor: pointer; }
   background: var(--bg-input); border: 1px dashed var(--border); border-radius: 10px;
   padding: 12px 14px; color: var(--text-dim); font-size: 12.5px; line-height: 1.7;
 }
+/* ---- 重命名模型：说明框 ---- */
+.settings-tip {
+  background: var(--bg-input); border: 1px solid var(--border); border-left: 3px solid var(--accent);
+  border-radius: 8px; padding: 10px 12px; color: var(--text-dim); font-size: 12.5px; line-height: 1.8;
+}
+/* ---- 重命名模型：滑动条 + 模板框 ---- */
+.slider-row { display: flex; align-items: center; gap: 12px; }
+.slider-row input[type='range'] { flex: 1; min-width: 0; accent-color: var(--accent); height: 22px; }
+.slider-value {
+  flex: 0 0 46px; text-align: center; font-size: 13px; font-variant-numeric: tabular-nums;
+  background: var(--bg-input); border: 1px solid var(--border); border-radius: 6px; padding: 3px 0;
+}
+.template-area {
+  background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 10px; outline: none; color: var(--text); resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.7;
+}
+.template-area:focus { border-color: var(--accent); }
 .series-card {
   border: 1px solid var(--border); border-radius: 12px; padding: 14px;
   display: flex; flex-direction: column; gap: 12px; background: var(--bg-panel);

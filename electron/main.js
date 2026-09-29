@@ -15,6 +15,7 @@ const { getPaths } = require('./src/paths');
 const log = require('./src/logger');
 const store = require('./src/store');
 const modelSeriesLib = require('./src/modelSeries');
+const renameModel = require('./src/renameModel');
 const registry = require('./src/api/registry');
 const runner = require('./src/api/runner');
 const { sniffDimensions, uniqueName } = require('./src/imageutil');
@@ -54,6 +55,7 @@ let win = null;
 let PATHS = null;
 let settings = null;
 let modelSeries = null;     // 内置模型系列配置（含来源 / 默认地址 / 同步异步开关）
+let renameConfig = null;    // 重命名模型配置（提示模板 / 温度 / Top-P / 默认地址，见 electron/assets/rename-model.json）
 let conversations = null;   // 主进程内存副本（权威数据由渲染进程通过 state:save 同步）
 let pendingResumes = [];   // 启动时需要恢复轮询的异步任务
 
@@ -213,6 +215,7 @@ function registerIpc() {
       platform: process.platform,
       settings,
       modelSeries,
+      renameConfig,                             // 重命名模型：提示模板 / 温度 / Top-P / 默认地址 / 默认模型
       conversations,
       paths: {
         root: PATHS.root,
@@ -221,6 +224,7 @@ function registerIpc() {
         log: PATHS.log,
         downloads: PATHS.downloads,
         modelSeriesFile: PATHS.modelSeries,
+        renameModelFile: PATHS.renameModel,
         usedFallback: PATHS.usedFallback
       },
       resumeCount: pendingResumes.length
@@ -238,6 +242,10 @@ function registerIpc() {
       if (payload && payload.modelSeries) {
         // 只允许改「隐藏哪些系列」「同步/异步开关」以及自定义系列，内置结构由 merge 保证不被破坏
         modelSeries = modelSeriesLib.save(PATHS.modelSeries, payload.modelSeries);
+      }
+      if (payload && payload.renameConfig) {
+        // 重命名模型：提示模板 / 温度 / Top-P（存在数据目录的 rename-model.json，可手工编辑）
+        renameConfig = renameModel.save(PATHS.renameModel, payload.renameConfig);
       }
       if (payload && payload.conversations) {
         conversations = payload.conversations;
@@ -298,6 +306,11 @@ function registerIpc() {
   });
 
   ipcMain.handle('api:cancel', (_e, jobId) => runner.cancel(jobId, sendEvent));
+
+  // ---- 会话标签自动命名（重命名模型）----
+  // 渲染进程只把「首条用户文字」传进来；密钥 / 地址 / 模型 id / 提示模板 / 温度 / Top-P 由主进程决定。
+  // 永不抛异常：失败时回 {ok:false, code, message}，渲染进程回退到「截取首条文字」。
+  ipcMain.handle('title:generate', (_e, text) => renameModel.generateTitle(settings, text, renameConfig));
 
   ipcMain.handle('api:resume', () => {
     const list = pendingResumes;
@@ -474,6 +487,7 @@ if (!gotLock) {
     });
 
     modelSeries = modelSeriesLib.load(PATHS.modelSeries);
+    renameConfig = renameModel.load(PATHS.renameModel);
     const loaded = store.loadSettings(PATHS.settings, modelSeries);
     settings = loaded.settings;
     if (loaded.migrated) {

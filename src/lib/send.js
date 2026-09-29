@@ -9,6 +9,7 @@
 import { uid, formatBytes } from './util.js';
 import { compressIfNeeded, dataUrlBytes } from './images.js';
 import { resolveModel } from './models.js';
+import { maybeAutoTitle } from './title.js';
 
 /** 依参数面板的 schema 生成初始参数值（size 由尺寸下拉单独维护） */
 export function defaultParams(schema) {
@@ -126,6 +127,10 @@ export async function sendNew({ dispatch, state, conv, text, attachments, params
 
   dispatch({ type: 'MSG_ADD', convId: conv.id, messages: [userMsg, asst] });
   if (mode === 'sync') dispatch({ type: 'BUSY_SET', convId: conv.id, jobId: asst.id, mode });
+
+  // 会话标签自动命名：首条文字 → 重命名模型（未配置/失败则截取首条文字）。
+  // 与图片生成并行，不阻塞请求；结果经 CONV_RENAME_AUTO 异步更新侧栏标签。
+  maybeAutoTitle({ dispatch, state, conv, text, log }).catch(() => {});
 
   await window.stab.generate({
     conversationId: conv.id,

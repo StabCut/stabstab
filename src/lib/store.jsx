@@ -13,6 +13,7 @@ const initialState = {
   paths: null,
   protocols: [],
   modelSeries: { version: 1, series: [] },   // 内置模型系列配置（含 API 来源 / 默认地址）
+  renameConfig: null,                        // 重命名模型配置：提示模板 / 温度 / Top-P / 默认地址（主进程下发，可回写）
   conversations: { tabCounter: 0, activeId: null, conversations: [] },
   busy: {},          // conversationId -> {jobId, mode}
   lightbox: null,    // {images:[{src, title}], index}
@@ -27,7 +28,8 @@ function updateConv(state, convId, fn) {
   return { ...state, conversations: { ...state.conversations, conversations } };
 }
 
-function reducer(state, action) {
+/** 状态机（导出便于 QA 脚本直接验证 reducer 行为：见 dev-data/qa/title-test.mjs） */
+export function reducer(state, action) {
   switch (action.type) {
     case 'BOOT': {
       const { data } = action;
@@ -39,6 +41,7 @@ function reducer(state, action) {
         settings: data.settings,
         paths: data.paths,
         modelSeries: data.modelSeries || state.modelSeries,
+        renameConfig: data.renameConfig || state.renameConfig,
         conversations: data.conversations || state.conversations
       };
     }
@@ -48,7 +51,8 @@ function reducer(state, action) {
       return {
         ...state,
         settings: { ...state.settings, ...action.settings },
-        modelSeries: action.modelSeries ? { ...state.modelSeries, ...action.modelSeries } : state.modelSeries
+        modelSeries: action.modelSeries ? { ...state.modelSeries, ...action.modelSeries } : state.modelSeries,
+        renameConfig: action.renameConfig ? { ...state.renameConfig, ...action.renameConfig } : state.renameConfig
       };
 
     // ---- 会话 ----
@@ -56,7 +60,8 @@ function reducer(state, action) {
       const n = state.conversations.tabCounter + 1;
       const conv = {
         id: uid('c'),
-        name: String(n),
+        name: String(n),          // 空对话 = 序号；出现首条文字后由自动命名替换（见 lib/title.js）
+        nameAuto: true,           // true = 名字仍可由自动命名流程替换
         createdAt: Date.now(),
         updatedAt: Date.now(),
         unread: false,
@@ -72,7 +77,15 @@ function reducer(state, action) {
       };
     }
     case 'CONV_RENAME':
-      return updateConv(state, action.id, (c) => ({ ...c, name: action.name, updatedAt: Date.now() }));
+      // 手动重命名：把 nameAuto 关掉，之后自动命名不再覆盖用户的选择
+      return updateConv(state, action.id, (c) => ({ ...c, name: action.name, nameAuto: false, updatedAt: Date.now() }));
+    case 'CONV_RENAME_AUTO':
+      // 自动命名（重命名模型 / 首条文字）：只改「还没有被命名过」的会话
+      return updateConv(state, action.id, (c) => {
+        if (c.nameAuto === false) return c;                                    // 用户手动改过名
+        if (action.expectName !== undefined && c.name !== action.expectName) return c;  // 名字已被别人改过
+        return { ...c, name: action.name, nameAuto: false, updatedAt: Date.now() };
+      });
     case 'CONV_DELETE': {
       const rest = state.conversations.conversations.filter((c) => c.id !== action.id);
       let activeId = state.conversations.activeId;
@@ -179,7 +192,8 @@ export function AppProvider({ children }) {
       window.stab.saveState({
         settings: s.settings,
         conversations: s.conversations,
-        modelSeries: s.modelSeries
+        modelSeries: s.modelSeries,
+        renameConfig: s.renameConfig
       }).catch(() => {});
     }
   }, []);
@@ -190,7 +204,7 @@ export function AppProvider({ children }) {
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(flushSave, 400);
     return () => clearTimeout(saveTimer.current);
-  }, [state.settings, state.conversations, state.modelSeries, state.ready, flushSave]);
+  }, [state.settings, state.conversations, state.modelSeries, state.renameConfig, state.ready, flushSave]);
 
   // 关闭/失焦时立即落盘
   useEffect(() => {

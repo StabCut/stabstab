@@ -7,6 +7,9 @@
  *   modelGroups    [{ seriesId, models:[{id,name,sourceId}] }]   已添加的模型系列（隐藏的系列不在此列表）
  *   sourceConfig   { '<seriesId>.<sourceId>': {apiKey, baseUrl} } 按「系列·来源」保存密钥与地址覆盖（baseUrl 为空 = 用内置默认）
  *   defaultModelId 全局默认模型（模型行左侧单选框选中项）
+ *   renameModel    { apiKey, baseUrl, modelId } 「重命名模型」：用 DeepSeek Responses API
+ *                  把首条用户文字压成会话标签名；baseUrl/modelId 留空 = 用代码里的默认值
+ *                  （默认地址 https://api.deepseek.com 写死在 electron/src/renameModel.js）
  * 旧版（v1）的 api.apiKey/api.baseUrl/models/requestMode 会在启动时自动迁移，见 migrateLegacySettings。
  */
 const fs = require('fs');
@@ -23,7 +26,12 @@ const DEFAULT_SETTINGS = {
   compressMaxMB: 10,                   // 超过该大小的图片自动压缩
   modelGroups: [],                     // 见文件头注释
   sourceConfig: {},
-  defaultModelId: ''
+  defaultModelId: '',
+  renameModel: {                       // 「重命名模型」（会话标签自动命名）
+    apiKey: '',
+    baseUrl: '',                       // 空 = 用写死的默认地址 https://api.deepseek.com
+    modelId: ''                        // 空 = 用写死的默认模型 deepseek-flash
+  }
 };
 
 const DEFAULT_CONVERSATIONS = {
@@ -125,6 +133,13 @@ function normalizeModelGroups(settings, seriesConfig) {
     cfg[k] = { apiKey: String(v.apiKey || ''), baseUrl: String(v.baseUrl || '').trim() };
   }
   out.sourceConfig = cfg;
+  // 重命名模型：只保留三个字符串字段（缺省 = 用代码里的默认地址 / 默认模型）
+  const rm = (out.renameModel && typeof out.renameModel === 'object') ? out.renameModel : {};
+  out.renameModel = {
+    apiKey: String(rm.apiKey || ''),
+    baseUrl: String(rm.baseUrl || '').trim(),
+    modelId: String(rm.modelId || '').trim()
+  };
   return out;
 }
 

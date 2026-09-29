@@ -15,6 +15,7 @@ const log = require(path.join(ROOT, 'electron/src/logger'));
 const runner = require(path.join(ROOT, 'electron/src/api/runner'));
 const registry = require(path.join(ROOT, 'electron/src/api/registry'));
 const modelSeriesLib = require(path.join(ROOT, 'electron/src/modelSeries'));
+const renameModel = require(path.join(ROOT, 'electron/src/renameModel'));
 const store = require(path.join(ROOT, 'electron/src/store'));
 
 // 一张 16x16 的 PNG（用于校验尺寸嗅探 / b64 结果落盘）
@@ -111,6 +112,25 @@ const server = http.createServer((req, res) => {
     if (req.method === 'POST' && url === '/v1/draw/result') {
       grsaiPollCount++;
       return send(200, { code: 0, data: { id: parsed.id, status: 'succeeded', progress: 100, results: [{ url: IMG_URL() }] } });
+    }
+
+    // ---------- 重命名模型（DeepSeek Responses API：/responses，不是 chat/completions） ----------
+    if (req.method === 'POST' && url === '/responses') {
+      if (parsed.model === 'err-rename') return send(401, { error: { message: 'Authentication Fails', type: 'authentication_error' } });
+      if (parsed.model === 'empty-rename') {
+        // 只有思维链 item、没有 message：标题取不到 → 调用方回退到首条文字
+        return send(200, { id: 'resp_0', object: 'response', output: [{ type: 'reasoning', content: [{ type: 'reasoning_text', text: '……' }] }] });
+      }
+      // 正常返回 {"title":"…"}；raw-rename 返回「“标题”。」这种非 JSON，验证按纯文本兜底 + 清洗
+      const text = parsed.model === 'raw-rename' ? '“赛博朋克城市夜景”。' : '{"title":"智能客服提效"}';
+      return send(200, {
+        id: 'resp_1', object: 'response', status: 'completed',
+        output: [
+          { type: 'reasoning', content: [{ type: 'reasoning_text', text: '先读 text 字段再概括' }] },
+          { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] }
+        ],
+        usage: { input_tokens: 20, output_tokens: 8 }
+      });
     }
 
     if (req.method === 'GET' && url === '/img.png') {
@@ -401,6 +421,91 @@ async function main() {
 
     check(modelSeriesLib.resolveModel(settings, cfg, 'nope') !== null, '未知 id 回退到默认模型');
     check(modelSeriesLib.resolveModel({ modelGroups: [] }, cfg, 'x') === null, '没有任何模型时返回 null');
+  }
+
+  console.log('\n[17] 重命名模型（DeepSeek Responses API：首条文字 → 会话标签）');
+  {
+    const base = `http://127.0.0.1:${PORT}`;
+    const cfgFile = path.join(TMP, 'rename-model.json');
+    const cfg = renameModel.load(cfgFile);
+    check(fs.existsSync(cfgFile), '配置会落地到数据目录（rename-model.json）');
+    check(cfg.temperature === 0.5 && cfg.topP === 0.5, '默认温度 0.5 / Top-P 0.5（存在配置 json 里）');
+    check(/5 或 6 个汉字/.test(cfg.promptTemplate) && /\{\$\$\}/.test(cfg.promptTemplate), '内置提示模板含「5 或 6 个汉字」规则与 $$ 占位符');
+    check(cfg.baseUrl === 'https://api.deepseek.com' && cfg.modelId === 'deepseek-flash', '默认 API 地址 / 默认模型同样来自配置 json');
+
+    // 未配置 Key：不发起请求，直接回 NO_API_KEY（渲染进程会用首条文字）
+    const noKey = await renameModel.generateTitle({ renameModel: { apiKey: '' } }, '一张猫的图', cfg);
+    check(noKey.ok === false && noKey.code === 'NO_API_KEY', '未配置 API Key 时返回 NO_API_KEY');
+
+    const empty = await renameModel.generateTitle({ renameModel: { apiKey: 'sk-ds' } }, '   ', cfg);
+    check(empty.ok === false && empty.code === 'EMPTY_INPUT', '空文字不发起请求');
+
+    const local = { ...cfg, baseUrl: base };
+    const r = await renameModel.generateTitle({ renameModel: { apiKey: 'sk-ds' } }, '帮我把这张照片改成赛博朋克城市夜景', local);
+    check(r.ok === true && r.name === '智能客服提效', '从 output[].content[].output_text 里解析 {"title":…}（跳过 reasoning item）');
+
+    const req = lastTo('/responses');
+    check(!!req && req.body.model === 'deepseek-flash', '模型 id 留空 → 用配置里的默认 deepseek-flash');
+    check(!!req && req.body.stream === false, 'stream=false（一次性返回）');
+    check(!!req && req.body.reasoning && req.body.reasoning.effort === 'none', 'reasoning.effort = none（非思考模式）');
+    check(!!req && req.body.temperature === 0.5 && req.body.top_p === 0.5, 'temperature / top_p 来自配置 json（0.5 / 0.5）');
+    check(!!req && req.body.text && req.body.text.format && req.body.text.format.type === 'json_object', '要求 json_object 输出');
+    check(!!req && req.body.input === '{"text":"帮我把这张照片改成赛博朋克城市夜景"}', 'input 为 {"text":"…"} 形式');
+    check(!!req && req.body.instructions.includes('"text":"帮我把这张照片改成赛博朋克城市夜景"'), '模板里的 $$ 被替换为实际 text 片段');
+    check(!!req && /你是一个标题生成助手/.test(req.body.instructions), '模型收到的是内置提示模板');
+    check(!!req && req.body.messages === undefined, '不是 chat/completions 格式（没有 messages 字段）');
+    check(!!req && req.headers.authorization === 'Bearer sk-ds', 'Authorization: Bearer 头正确');
+
+    // 设置里的地址 / 模型 id 覆盖配置里的默认值；地址已含 /responses 时不重复拼接
+    const r2 = await renameModel.generateTitle(
+      { renameModel: { apiKey: 'sk-ds', baseUrl: `${base}/responses`, modelId: 'raw-rename' } },
+      '给猫换宇航服', cfg
+    );
+    check(r2.ok === true && r2.name === '赛博朋克城市夜景', '非 JSON 输出按纯文本兜底并清洗引号 / 句号');
+    const req2 = lastTo('/responses');
+    check(!!req2 && req2.body.model === 'raw-rename', '设置里的模型 id 覆盖配置默认值');
+
+    const err = await renameModel.generateTitle({ renameModel: { apiKey: 'sk-bad', modelId: 'err-rename' } }, '任意文字', local);
+    check(err.ok === false && err.code === 'authentication_error', 'HTTP 错误码透传（401）');
+    check(/Authentication Fails/.test(err.message), 'HTTP 错误信息透传');
+
+    const emptyTitle = await renameModel.generateTitle({ renameModel: { apiKey: 'sk-ds', modelId: 'empty-rename' } }, '任意文字', local);
+    check(emptyTitle.ok === false && emptyTitle.code === 'EMPTY_TITLE', '没有 message item 时返回 EMPTY_TITLE');
+
+    // 模板渲染 / 标题清洗 / JSON 解析
+    check(renameModel.renderTemplate('A\n{$$}', '你好') === 'A\n{"text":"你好"}', '$$ 渲染成 JSON 片段（模板写作 {$$}）');
+    check(renameModel.renderTemplate('没有占位符', '你好').includes('{"text":"你好"}'), '模板缺占位符时自动补上输入 JSON');
+    check(renameModel.pickTitle('{"title":"智能客服提效"}') === '智能客服提效', '解析 {"title":…}');
+    check(renameModel.pickTitle('{"title":"甲","extra":1}') === '甲', '忽略多余字段');
+    check(renameModel.pickTitle('就是一句普通的话') === '就是一句普通的话', '非 JSON 时按纯文本用');
+    check(renameModel.sanitizeTitle('“赛博朋克城市夜景”。') === '赛博朋克城市夜景', '去掉引号与结尾句号');
+    check(renameModel.sanitizeTitle('标题：给猫换宇航服') === '给猫换宇航服', '去掉「标题：」前缀');
+    check(Array.from(renameModel.sanitizeTitle('一'.repeat(40))).length === renameModel.MAX_TITLE_CHARS, '超长标题截到上限');
+    check(renameModel.sanitizeTitle('有\n换行\t的标题') === '有 换行 的标题', '换行/制表符压缩为空格');
+
+    // 配置文件：可手工编辑，非法值回退内置默认
+    renameModel.save(cfgFile, { ...cfg, temperature: 9, topP: 2, promptTemplate: '   ' });
+    const saved = renameModel.load(cfgFile);
+    check(saved.temperature === 2 && saved.topP === 1, '超范围数值被夹到区间内（温度 0~2 / Top-P 0~1）');
+    check(saved.promptTemplate === cfg.promptTemplate, '模板被改空时回退内置默认模板');
+    const manual = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
+    check(manual.promptTemplate.length > 100 && manual.temperature === 2, '手工编辑后的整份配置写回 json');
+    const back = renameModel.save(cfgFile, { ...manual, temperature: 0.5, topP: 0.5 });
+    check(back.temperature === 0.5 && back.topP === 0.5 && back.promptTemplate === manual.promptTemplate, '滑动条只改数值时不动模板');
+  }
+
+  console.log('\n[18] 设置里的重命名模型字段（settings.json 规整）');
+  {
+    const cfg = modelSeriesLib.load(path.join(TMP, 'model-series.json'));
+    const f = path.join(TMP, 'settings-rename.json');
+    fs.writeFileSync(f, JSON.stringify({ theme: 'dark' }), 'utf8');   // 老数据：没有 renameModel
+    const r = store.loadSettings(f, cfg);
+    check(r.settings.renameModel && r.settings.renameModel.apiKey === '' && r.settings.renameModel.baseUrl === '', '缺失时补空字段（= 使用配置 json 里的默认值）');
+
+    fs.writeFileSync(f, JSON.stringify({ renameModel: { apiKey: 'sk-x', baseUrl: ' https://my-relay.example.com ', modelId: 123 } }), 'utf8');
+    const r2 = store.loadSettings(f, cfg);
+    check(r2.settings.renameModel.baseUrl === 'https://my-relay.example.com', 'API 地址去首尾空白');
+    check(r2.settings.renameModel.modelId === '123', '模型 id 统一成字符串');
   }
 
   console.log(`\n========== 结果: ${pass} 通过, ${fail} 失败 ==========`);

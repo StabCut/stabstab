@@ -55,6 +55,7 @@ function getPaths(app) {
     conversations: path.join(root, 'conversations.json'),
     settings: path.join(root, 'settings.json'),
     modelSeries: path.join(root, 'model-series.json'),   // 内置模型系列配置（数据目录副本，可写）
+    renameModel: path.join(root, 'rename-model.json'),   // 重命名模型配置：提示模板 / 温度 / Top-P（可写）
     cache: path.join(root, 'cache'),
     uploads: path.join(root, 'uploads'),
     log: path.join(root, 'log'),
