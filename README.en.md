@@ -10,8 +10,16 @@ An **Electron + React + Vite** desktop AI image generation & editing workbench, 
 
 - **Text-to-image**: generate images from a text prompt
 - **Image-to-image**: 1–3 input images + an editing instruction, or pure image input
-- First integration: **Qwen-Image-3.0-Pro** (DashScope multimodal generation protocol, sync + async Task API)
-- A **protocol adapter** architecture reserves extension points for other models / alternative API request & parsing rules
+- **Model-series based setup** (you type the model id; each series can use several API sources):
+
+  | Model series | Available API sources |
+  |--------------|----------------------|
+  | **Qwen Image series** (qwen-image-3.0-pro …) | Official (DashScope / Alibaba Cloud Bailian) · sync + async Task API |
+  | **Doubao Seedream series** (doubao-seedream-*) | Official (Volcano Ark) · New API |
+  | **GPT Image series** (gpt-image-2 / 2.5 …) | Grsai · NewApi |
+
+- Except for the async option on Qwen, every source is **synchronous**: one blocking request that waits for the image
+- A **protocol adapter** architecture lets you keep adding series / alternative API request & parsing rules
 
 > For AI / developers, the in-depth development & debugging guide lives in **[AIDEV.md](./AIDEV.md)** (Chinese).
 
@@ -22,18 +30,21 @@ An **Electron + React + Vite** desktop AI image generation & editing workbench, 
 ```
 stabstab/
 ├── electron/               # Electron main process (main.js + preload.js)
+│   ├── assets/             # Window icon + built-in model-series.json
 │   └── src/
-│       ├── api/            # Protocol adapters (dashscope.js) + registry + runner
+│       ├── api/            # Protocol adapters (dashscope / seedream / newapi-images / grsai) + registry + runner
 │       ├── paths.js        # Data-root resolution (next to executable, fallback to user dir)
 │       ├── logger.js       # File logging (<data>/log/app-YYYYMMDD.log)
-│       ├── store.js        # Settings / conversations JSON persistence (atomic write)
+│       ├── store.js        # Settings / conversations JSON persistence (atomic write + legacy migration)
+│       ├── modelSeries.js  # Model-series config IO & resolution (authoritative for requests)
 │       └── imageutil.js    # Image dimension sniffing / cache download
 ├── src/                    # React renderer (Vite)
 │   ├── components/         # Sidebar, chat, messages, composer, settings, lightbox, toasts
-│   ├── lib/                # State store, image compression, send logic
+│   ├── lib/                # State store, model resolution, image compression, send logic
 │   └── styles/app.css      # Light / dark theme styles
 ├── build/                  # Logo (icon.svg / icon.png / icon.ico)
 ├── scripts/
+│   ├── test-api.js         # Backend end-to-end tests (mock HTTP servers per protocol)
 │   ├── gen-logo.js         # Generate the logo (Penrose triangle / Monument Valley style)
 │   ├── package.sh          # Ubuntu one-click packaging
 │   └── package.cmd         # Windows one-click packaging
@@ -138,7 +149,8 @@ App data is stored in `stabstab-data/`, next to the executable:
 ```
 stabstab-data/
 ├── conversations.json   # Conversations & history (text + image references)
-├── settings.json        # Settings (API Key, models, theme, timeout, ...)
+├── settings.json        # Settings (model series & models, API keys, theme, timeout, ...)
+├── model-series.json    # Built-in model-series definitions (series / API sources / default URLs / sync-async switch)
 ├── cache/               # Generated result images (downloaded immediately from API URLs)
 ├── uploads/             # User input images (paste / drop / picker)
 ├── downloads/           # Default save path (download result images)
@@ -146,6 +158,7 @@ stabstab-data/
 ```
 
 - The main page offers a one-click “open cache directory” button; **deleting `cache/` frees space and does not affect the next run** (result images in history show a "image cleared" placeholder).
+- `model-series.json` can be hand-edited (e.g. point a source at your own relay); it takes effect after restart, and deleting it re-creates it from the built-in defaults.
 - If the executable directory is not writable (e.g. deb into `/opt`, Windows into `Program Files`), the app automatically falls back to the system user-data directory (`~/.config/StabStab/` or `%APPDATA%/StabStab/`).
 
 ---
@@ -158,35 +171,45 @@ stabstab-data/
 - **Image input**: paste (common formats), drag into the composer, or click "+" for multi-select; up to 3 images; pure image / pure text / text+image all supported.
 - **Image preview**: click any input/result image to zoom, scroll to zoom, drag to pan, ESC to close, arrow keys to switch.
 - **Pre-send compression**: enable in Settings → Basic; single images exceeding the threshold (10 MB by default) are compressed; multiple images are checked individually.
-- **size parameter**: `Auto / 2688*1536 / 2368*1728 / 2048*2048 / 1728*2368 / 1536*2688`.
-- **Advanced parameters**: n (1–6 images), negative prompt, watermark, prompt rewriting, random seed.
+- **size parameter**: candidates depend on the model — Qwen: `Auto / 2688*1536 / 2368*1728 / 2048*2048 / 1728*2368 / 1536*2688`; Seedream official: `1K / 2K / 4K / 2048x2048` …; Grsai: ratios such as `16:9 / 9:16 / 1:1` or pixel values; New API: `1024x1024` …
+- **Advanced parameters**: driven by the protocol (Qwen: n, negative prompt, watermark, prompt rewriting, seed; Seedream official: watermark, output format; New API: n, quality, style; Grsai: no extra parameters).
 - **Sync mode (default)**: the current conversation must wait for the API response before sending again (send button disabled, re-enabled on timeout); multiple tabs wait independently; a yellow dot marks results arriving on other tabs and disappears once opened.
-- **Async mode**: `X-DashScope-Async` submit → task polling (exponential backoff 3s → ×1.5 → 15s cap), status card + cancel button (only PENDING can be cancelled), auto-resume after app restart.
+- **Async mode**: **Qwen series only** (`X-DashScope-Async` submit → task polling with exponential backoff 3s → ×1.5 → 15s cap), status card + cancel button (only PENDING can be cancelled), auto-resume after app restart; all other series are always synchronous.
 - **Timeout**: single request timeout defaults to 300 s, configurable in Settings.
 - **Logging**: key events are written to `stabstab-data/log/` for troubleshooting.
 
 ---
 
-## Model Settings & Protocol Extension
+## Model Settings, Series & Protocol Extension
 
-Settings → Model:
+Settings → Model is organised by **model series** and starts empty:
 
-- API Key, Base URL (default `https://dashscope.aliyuncs.com/api/v1`)
-- Model list: built-in `qwen-image-3.0-pro` (DashScope protocol); add / remove / set default
+1. Pick a **built-in series** from the "Add model series" dropdown (series and their API sources are built in; the definitions live in `model-series.json` inside the data directory) and click Add;
+2. Inside the series card, click "Add model", type the **model id** (the grey placeholder shows examples such as `gpt-image-2` or `doubao-seedream-5-0-pro-260628`) and choose its **API source**;
+3. Fill in the **API Key** and **API URL** per source (the URL is pre-filled from the built-in default, editable, with a "restore default" button);
+4. The radio button on the left of each model row marks the **global default model** (the one pre-selected in the composer).
 
-**To add another API request & parsing rule set** (other models):
+Other notes:
 
-1. Create an adapter file in `electron/src/api/` (mirroring `dashscope.js`: `buildSubmitRequest / parseSubmit / buildTaskQuery / parseTask / buildTaskCancel`, etc.);
+- Each model can have its own API key / URL (stored per *series·source*), so they never interfere;
+- Two levels of deletion: delete a model, or remove a model series (a built-in series is only hidden from the list — keys are kept and it can be re-added at any time);
+- The **sync / async** switch in Settings → Advanced is only shown for series that support it (currently Qwen only) and is stored in `model-series.json`;
+- The model list starts **completely empty** (both on a fresh install and when upgrading from an older version): add a series from the dropdown, then add models inside it.
+  Your old API key / custom base URL is carried over on upgrade (usable as soon as you add that series), but **no series or model is added automatically**.
+
+**To add another API request & parsing rule set**:
+
+1. Create an adapter file in `electron/src/api/` (mirroring `dashscope.js`: `buildSubmitRequest / parseSubmit / buildTaskQuery / parseTask / buildTaskCancel`, plus `sizeOptions / paramSchema` metadata);
 2. Register it in `electron/src/api/registry.js` under `adapters`;
-3. The protocol dropdown in Settings → Model automatically picks it up.
+3. Add a series (or a `sources[]` entry) in `electron/assets/model-series.json` whose `protocol` is the adapter id — the series/source dropdowns pick it up automatically.
 
-The `reserved` list in `registry.js` shows "reserved but not implemented" protocols (placeholder, disabled). See [AIDEV.md §7](./AIDEV.md).
+The `reserved` list in `registry.js` shows "reserved but not implemented" protocols (placeholder, disabled). See [AIDEV.md §0 and §7](./AIDEV.md).
 
 ---
 
-## API Rules Summary (DashScope Qwen Image)
+## API Rules Summary
 
-Based on the workspace docs "图像编辑 - 千问AI平台.html" and "异步任务管理 - 千问AI平台.html":
+**Qwen Image series · Official (DashScope)** — based on the workspace docs "图像编辑 - 千问AI平台.html" and "异步任务管理 - 千问AI平台.html":
 
 - Sync endpoint: `POST {base}/services/aigc/multimodal-generation/generation`
 - Async: same endpoint + header `X-DashScope-Async: enable` → returns `output.task_id`; poll `GET {base}/tasks/{task_id}`; cancel `POST {base}/tasks/{task_id}/cancel`
@@ -194,6 +217,26 @@ Based on the workspace docs "图像编辑 - 千问AI平台.html" and "异步任�
 - Base64 format: `data:<mime>;base64,<data>`
 - Parameters: `n` (1–6), `negative_prompt`, `watermark`, `prompt_extend`, `seed`, `size` (width*height)
 - Response: `output.choices[].message.content[].image` (legacy Wan models use `output.results[].url`)
+
+**Doubao Seedream series · Official (Volcano Ark)** — see "seedream系列api.md" (its `/responses` example is a text-chat sample; image generation uses `/images/generations`):
+
+- `POST https://ark.cn-beijing.volces.com/api/v3/images/generations`, header `Authorization: Bearer <ARK_API_KEY>`
+- Body: `{model, prompt, size, image, response_format:"url", watermark, output_format}`
+- `size` accepts `1K/2K/4K` presets or explicit `2048x2048` pixels (do not mix); pass input images via `image` (URL or `data:` base64, array for multiple)
+- Response: `data[].url` plus `usage.generated_images`; this source is **synchronous only**
+
+**Doubao Seedream series · New API / GPT Image series · NewApi** — see the New Api section of "gpt-image系列.md":
+
+- `POST {base}/images/generations` (e.g. `https://toprouter.sealoshzh.site/v1`), header `Authorization: Bearer <TOKEN>`
+- Parameters: `prompt` (required), `size` (default `1024x1024`), `quality` (default `standard`), `style` (default `vivid`), `n` (1–10), `response_format` (default `url`)
+- Response: `data[].url` or `data[].b64_json` (both are saved into the local cache)
+
+**GPT Image series · Grsai** — see the Grsai API section of "gpt-image系列.md":
+
+- `POST https://grsaiapi.com/v1/api/generate` (China node: `https://grsai.dakka.com.cn/v1/api/generate`), header `Authorization: Bearer sk-xxx`
+- Body: `{model, prompt, images?, aspectRatio?}`; `images` accepts base64 data URLs and http URLs, `aspectRatio` accepts ratios like `16:9` or pixel values like `1024x1024`
+- Supported model ids: `gpt-image-2`, `gpt-image-2-vip`, `gpt-image-2.5`, `gpt-image-2.5-flare`, `gpt-image-2.5-sunburst` (you type them yourself)
+- Response: `results[].url` inside the SSE stream, or JSON `{code:0,data:{results:[{url}]}}`; if the server only returns a task id, the app automatically polls the result endpoint
 
 ---
 

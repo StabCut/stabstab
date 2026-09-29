@@ -2,65 +2,92 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp, useToast } from '../lib/store.jsx';
 import { fileToDataUrl, readImageMeta, isImageFile } from '../lib/images.js';
 import { formatBytes } from '../lib/util.js';
-import { sendNew, buildParams } from '../lib/send.js';
+import { sendNew, buildParams, defaultParams } from '../lib/send.js';
+import { allModels, resolveModel, sizeLabel } from '../lib/models.js';
 import Icon from './Icon.jsx';
 
 const MAX_IMAGES = 3; // API 规则：最多 3 张输入图片
 
-function ParamsPanel({ params, setParams, sizeOptions }) {
+/** 参数面板：字段完全由当前模型所属协议的 paramSchema 决定 */
+export function ParamsPanel({ params, setParams, schema }) {
   const set = (k, v) => setParams((p) => ({ ...p, [k]: v }));
-  return (
-    <div className="params-panel">
-      <div className="params-row">
-        <label>生成张数 n</label>
-        <select value={params.n} onChange={(e) => set('n', Number(e.target.value))}>
-          {[1, 2, 3, 4, 5, 6].map((n) => <option key={n} value={n}>{n} 张</option>)}
-        </select>
+  const entries = Object.entries(schema || {});
+  if (!entries.length) {
+    return <div className="params-panel"><p className="field-hint">该模型没有额外可调参数，尺寸请用上方下拉框选择。</p></div>;
+  }
+
+  const rows = [];
+  let boolBuf = [];
+  const flushBools = () => {
+    if (!boolBuf.length) return;
+    rows.push(
+      <div className="params-row toggles" key={`toggles-${boolBuf[0][0]}`}>
+        {boolBuf.map(([k, def]) => (
+          <label className="checkbox-label" key={k}>
+            <input type="checkbox" checked={!!params[k]} onChange={(e) => set(k, e.target.checked)} />
+            {def.label || k}
+          </label>
+        ))}
       </div>
-      <div className="params-row">
-        <label>反向提示词</label>
-        <input
-          type="text"
-          placeholder="希望排除的内容，如：模糊、多余的手指"
-          value={params.negative_prompt}
-          onChange={(e) => set('negative_prompt', e.target.value)}
-        />
-      </div>
-      <div className="params-row toggles">
-        <label className="checkbox-label">
-          <input type="checkbox" checked={!!params.watermark} onChange={(e) => set('watermark', e.target.checked)} />
-          添加水印
-        </label>
-        <label className="checkbox-label">
-          <input type="checkbox" checked={params.prompt_extend !== false} onChange={(e) => set('prompt_extend', e.target.checked)} />
-          提示词改写
-        </label>
-      </div>
-      <div className="params-row">
-        <label>随机种子 seed</label>
-        <input
-          type="number"
-          placeholder="留空为随机"
-          min={0}
-          max={2147483647}
-          value={params.seed}
-          onChange={(e) => set('seed', e.target.value)}
-        />
-      </div>
-    </div>
-  );
+    );
+    boolBuf = [];
+  };
+
+  for (const [k, def] of entries) {
+    const type = (def && def.type) || 'string';
+    if (type === 'bool') { boolBuf.push([k, def]); continue; }
+    flushBools();
+    if (type === 'int' || type === 'number') {
+      rows.push(
+        <div className="params-row" key={k}>
+          <label>{def.label || k}</label>
+          <input
+            type="number"
+            min={def.min}
+            max={def.max}
+            placeholder={def.placeholder || ''}
+            value={params[k] === undefined || params[k] === null ? '' : params[k]}
+            onChange={(e) => set(k, e.target.value)}
+          />
+        </div>
+      );
+    } else if (type === 'enum') {
+      rows.push(
+        <div className="params-row" key={k}>
+          <label>{def.label || k}</label>
+          <select value={params[k] === undefined || params[k] === null ? '' : params[k]} onChange={(e) => set(k, e.target.value)}>
+            {(def.options || []).map((o) => <option key={o} value={o}>{o === '' ? '默认（不发送）' : o}</option>)}
+          </select>
+        </div>
+      );
+    } else {
+      rows.push(
+        <div className="params-row" key={k}>
+          <label>{def.label || k}</label>
+          <input
+            type="text"
+            placeholder={def.placeholder || ''}
+            value={params[k] === undefined || params[k] === null ? '' : params[k]}
+            onChange={(e) => set(k, e.target.value)}
+          />
+        </div>
+      );
+    }
+  }
+  flushBools();
+
+  return <div className="params-panel">{rows}</div>;
 }
 
 export default function Composer({ conv, busy }) {
   const { state, dispatch } = useApp();
   const toast = useToast();
   const settings = state.settings;
-  const mode = settings.requestMode || 'sync';
 
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState([]);
   const [modelId, setModelId] = useState(settings.defaultModelId);
-  const [params, setParams] = useState({ size: 'auto', n: 1, negative_prompt: '', watermark: false, prompt_extend: true, seed: '' });
+  const [params, setParams] = useState({ size: 'auto' });
   const [paramsOpen, setParamsOpen] = useState(false);
   const [sending, setSending] = useState(false);
   const [dragActive, setDragActive] = useState(false);
@@ -69,13 +96,42 @@ export default function Composer({ conv, busy }) {
   const paramsWrapRef = useRef(null);
   const dragCounter = useRef(0);
 
+  const models = useMemo(
+    () => allModels(settings, state.modelSeries),
+    [settings.modelGroups, state.modelSeries]
+  );
+
+  const current = useMemo(
+    () => resolveModel(settings, state.modelSeries, state.protocols, modelId),
+    [settings, state.modelSeries, state.protocols, modelId]
+  );
+
+  const mode = current ? current.mode : 'sync';
+  const schema = (current && current.paramSchema) || {};
+  const sizeOptions = (current && current.sizeOptions) || ['auto'];
+  const protocol = current ? current.protocol : null;
+
   // 模型列表变化时纠正选择
   useEffect(() => {
-    const models = settings.models || [];
+    if (!models.length) return;
     if (!models.find((m) => m.id === modelId)) {
-      setModelId(settings.defaultModelId || (models[0] && models[0].id));
+      const def = models.find((m) => m.id === settings.defaultModelId);
+      setModelId(def ? def.id : models[0].id);
     }
-  }, [settings.models, settings.defaultModelId, modelId]);
+  }, [models, settings.defaultModelId, modelId]);
+
+  // 换模型/换协议时重置参数面板（保留尺寸选择）
+  useEffect(() => {
+    setParams((p) => ({ size: p.size || 'auto', ...defaultParams(schema) }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [protocol]);
+
+  // 尺寸不在当前模型的候选列表里时纠正
+  useEffect(() => {
+    if (!sizeOptions.includes(params.size)) {
+      setParams((p) => ({ ...p, size: sizeOptions[0] || 'auto' }));
+    }
+  }, [sizeOptions, params.size]);
 
   // 点击外部关闭参数面板
   useEffect(() => {
@@ -95,16 +151,6 @@ export default function Composer({ conv, busy }) {
     setSending(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [convId]);
-
-  const currentModel = useMemo(
-    () => (settings.models || []).find((m) => m.id === modelId) || null,
-    [settings.models, modelId]
-  );
-  const protocolInfo = useMemo(() => {
-    if (!currentModel) return null;
-    return state.protocols.find((p) => p.id === currentModel.protocol) || null;
-  }, [state.protocols, currentModel]);
-  const sizeOptions = (protocolInfo && protocolInfo.sizeOptions) || ['auto'];
 
   const log = (level, message, extra) => window.stab.log(level, message, extra);
 
@@ -188,7 +234,7 @@ export default function Composer({ conv, busy }) {
     if (e.dataTransfer && e.dataTransfer.files) addFiles(e.dataTransfer.files);
   };
 
-  const canSend = !!conv && !sending && !busy && (text.trim().length > 0 || attachments.length > 0);
+  const canSend = !!conv && !sending && !busy && !!current && (text.trim().length > 0 || attachments.length > 0);
 
   const doSend = async () => {
     if (!conv) { toast('请先新建一个对话', 'warn'); return; }
@@ -200,7 +246,7 @@ export default function Composer({ conv, busy }) {
         dispatch, state, conv,
         text: text.trim(),
         attachments,
-        params: buildParams(params),
+        params: buildParams(params, schema),
         modelId,
         log
       });
@@ -236,7 +282,11 @@ export default function Composer({ conv, busy }) {
     );
   }
 
-  const sizeLabel = (s) => (s === 'auto' ? '尺寸：自动（模型推荐）' : `尺寸：${s.replace('*', '×')}`);
+  const placeholder = !models.length
+    ? '尚未添加模型：请在 设置 → 模型设置 中添加模型系列与模型'
+    : (current && !current.hasKey
+      ? `尚未配置 API Key：请在 设置 → 模型设置 → ${current.seriesLabel} 中填写`
+      : '描述你想生成的图片，或输入图片编辑指令…（Enter 发送，Shift+Enter 换行，可粘贴/拖入图片）');
 
   return (
     <div
@@ -268,7 +318,7 @@ export default function Composer({ conv, busy }) {
         <textarea
           ref={taRef}
           className="composer-textarea"
-          placeholder={settings.api && settings.api.apiKey ? '描述你想生成的图片，或输入图片编辑指令…（Enter 发送，Shift+Enter 换行，可粘贴/拖入图片）' : '尚未配置 API Key：请在 设置 → 模型设置 中填写'}
+          placeholder={placeholder}
           value={text}
           rows={2}
           onChange={(e) => setText(e.target.value)}
@@ -282,10 +332,13 @@ export default function Composer({ conv, busy }) {
           className="model-select"
           value={modelId || ''}
           onChange={(e) => setModelId(e.target.value)}
-          title="选择模型"
+          title="选择模型（按模型系列分组）"
         >
-          {(settings.models || []).map((m) => (
-            <option key={m.id} value={m.id}>{m.name}</option>
+          {!models.length && <option value="">（未添加模型）</option>}
+          {groupBySeries(models).map(([seriesLabel, list]) => (
+            <optgroup key={seriesLabel} label={seriesLabel}>
+              {list.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+            </optgroup>
           ))}
         </select>
 
@@ -302,16 +355,18 @@ export default function Composer({ conv, busy }) {
           <button
             className={`ghost-btn ${paramsOpen ? 'active' : ''}`}
             onClick={() => setParamsOpen((v) => !v)}
-            title="高级参数：n / 反向提示词 / 水印 / 提示词改写 / 种子"
+            title="高级参数（随模型系列不同而不同）"
           >
             <Icon name="sliders" size={15} /> 参数
           </button>
-          {paramsOpen && <ParamsPanel params={params} setParams={setParams} sizeOptions={sizeOptions} />}
+          {paramsOpen && <ParamsPanel params={params} setParams={setParams} schema={schema} />}
         </div>
 
         <div className="toolbar-spacer" />
 
-        <span className="mode-hint">{mode === 'sync' ? '同步：需等待返回' : '异步：后台轮询任务'}</span>
+        <span className="mode-hint" title={current ? `${current.seriesLabel} · ${current.sourceLabel}` : ''}>
+          {mode === 'sync' ? '同步：需等待返回' : '异步：后台轮询任务'}
+        </span>
 
         {busy && mode === 'sync' ? (
           <>
@@ -328,4 +383,15 @@ export default function Composer({ conv, busy }) {
       </div>
     </div>
   );
+}
+
+/** 下拉框按系列分组（同一系列内保持添加顺序） */
+function groupBySeries(models) {
+  const map = new Map();
+  for (const m of models) {
+    const key = m.seriesLabel || '未分组';
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(m);
+  }
+  return Array.from(map.entries());
 }

@@ -1,28 +1,44 @@
 /*
  * 发送与重发的公共逻辑。
  * 同一个对话不携带上下文：每次请求只包含当前这一条输入（上下文长度为 0）。
+ *
+ * 模型相关：渲染进程只把「模型 id」交给主进程，协议 / 来源 / 密钥 / 同步异步
+ *          一律由主进程按当前设置解析（见 electron/src/modelSeries.js#resolveModel）。
+ *          这里解析出来的信息只用于界面展示与消息记录（meta）。
  */
 import { uid, formatBytes } from './util.js';
 import { compressIfNeeded, dataUrlBytes } from './images.js';
+import { resolveModel } from './models.js';
 
-export function resolveModel(settings, modelId) {
-  const models = settings.models || [];
-  let m = models.find((x) => x.id === modelId);
-  if (!m) m = models.find((x) => x.id === settings.defaultModelId);
-  if (!m) m = models[0];
-  return m || null;
+/** 依参数面板的 schema 生成初始参数值（size 由尺寸下拉单独维护） */
+export function defaultParams(schema) {
+  const out = {};
+  for (const [k, def] of Object.entries(schema || {})) {
+    if (def.default !== undefined) out[k] = def.default;
+    else out[k] = def.type === 'bool' ? false : '';
+  }
+  return out;
 }
 
-/** 由参数面板状态构造 API parameters */
-export function buildParams(p) {
-  const out = {};
-  if (p.size && p.size !== 'auto') out.size = p.size;
-  if (p.n) out.n = Number(p.n);
-  if (typeof p.negative_prompt === 'string' && p.negative_prompt.trim()) out.negative_prompt = p.negative_prompt.trim();
-  out.watermark = !!p.watermark;
-  out.prompt_extend = p.prompt_extend !== false;
-  if (p.seed !== '' && p.seed !== null && p.seed !== undefined && Number.isFinite(Number(p.seed))) {
-    out.seed = Number(p.seed);
+/**
+ * 由参数面板状态构造 API parameters。
+ * 只保留当前协议 schema 里声明过的字段，避免把 A 协议的参数发给 B 协议。
+ */
+export function buildParams(p, schema) {
+  const src = p || {};
+  const out = { size: src.size || 'auto' };
+  for (const [k, def] of Object.entries(schema || {})) {
+    const type = (def && def.type) || 'string';
+    let v = src[k];
+    if (v === undefined || v === null || v === '') v = def.default;
+    if (type === 'bool') { out[k] = !!v; continue; }
+    if (v === undefined || v === null || v === '') continue;   // 留空 = 不发送该字段
+    if (type === 'int' || type === 'number') {
+      const n = Number(v);
+      if (Number.isFinite(n)) out[k] = Math.round(n);
+    } else {
+      out[k] = v;
+    }
   }
   return out;
 }
@@ -45,19 +61,46 @@ async function compressAll(items, settings, log) {
   return out;
 }
 
-function makeAssistantPlaceholder({ parentId, protocol, model, mode }) {
+function makeAssistantPlaceholder({ parentId, resolved }) {
   return {
     id: uid('m'),
     role: 'assistant',
     parentId,
     status: 'pending',           // pending -> running -> success/error/cancelled
-    taskStatus: mode === 'async' ? 'PENDING' : null,
+    taskStatus: resolved.mode === 'async' ? 'PENDING' : null,
     images: [],
     texts: [],
     error: null,
     createdAt: Date.now(),
-    meta: { protocol, model, mode }
+    meta: {
+      protocol: resolved.protocol,
+      model: resolved.name,
+      modelId: resolved.id,
+      seriesId: resolved.seriesId,
+      sourceId: resolved.sourceId,
+      mode: resolved.mode
+    }
   };
+}
+
+/** 消息里记录的模型引用（用于重发时定位模型 + 界面显示） */
+function modelRef(resolved) {
+  return {
+    id: resolved.id,
+    name: resolved.name,
+    seriesId: resolved.seriesId,
+    sourceId: resolved.sourceId,
+    protocol: resolved.protocol
+  };
+}
+
+function pickModel(settings, modelSeries, protocols, modelId) {
+  const resolved = resolveModel(settings, modelSeries, protocols, modelId);
+  if (!resolved) throw new Error('没有可用的模型，请先在「设置 → 模型设置」中添加模型系列与模型。');
+  if (!resolved.hasKey) {
+    throw new Error(`「${resolved.seriesLabel} · ${resolved.sourceLabel}」尚未配置 API Key，请先在设置中填写。`);
+  }
+  return resolved;
 }
 
 /**
@@ -66,10 +109,8 @@ function makeAssistantPlaceholder({ parentId, protocol, model, mode }) {
  */
 export async function sendNew({ dispatch, state, conv, text, attachments, params, modelId, log }) {
   const settings = state.settings;
-  const model = resolveModel(settings, modelId);
-  if (!model) throw new Error('没有可用的模型，请先在设置中添加。');
-
-  const mode = settings.requestMode || 'sync';
+  const resolved = pickModel(settings, state.modelSeries, state.protocols, modelId);
+  const mode = resolved.mode;
   const compressed = await compressAll(attachments, settings, log);
 
   const userMsg = {
@@ -78,10 +119,10 @@ export async function sendNew({ dispatch, state, conv, text, attachments, params
     text: text || '',
     images: compressed.map((a) => ({ file: a.file, name: a.name, mime: a.mime, width: a.width, height: a.height })),
     params,
-    model: { id: model.id, name: model.name, protocol: model.protocol },
+    model: modelRef(resolved),
     createdAt: Date.now()
   };
-  const asst = makeAssistantPlaceholder({ parentId: userMsg.id, protocol: model.protocol, model: model.name, mode });
+  const asst = makeAssistantPlaceholder({ parentId: userMsg.id, resolved });
 
   dispatch({ type: 'MSG_ADD', convId: conv.id, messages: [userMsg, asst] });
   if (mode === 'sync') dispatch({ type: 'BUSY_SET', convId: conv.id, jobId: asst.id, mode });
@@ -89,9 +130,9 @@ export async function sendNew({ dispatch, state, conv, text, attachments, params
   await window.stab.generate({
     conversationId: conv.id,
     messageId: asst.id,
-    protocol: model.protocol,
-    model: model.name,
-    mode,
+    modelId: resolved.id,
+    protocol: resolved.protocol,   // 仅用于日志/事件对齐
+    model: resolved.name,
     prompt: text || '',
     images: compressed.map((a) => a.dataUrl),
     params
@@ -105,9 +146,8 @@ export async function sendNew({ dispatch, state, conv, text, attachments, params
  */
 export async function resendEdited({ dispatch, state, conv, userMsg, newText, keptImages, params, modelId, log }) {
   const settings = state.settings;
-  const modelRef = userMsg.model || {};
-  const model = resolveModel(settings, modelId) || { name: modelRef.name, protocol: modelRef.protocol };
-  const mode = settings.requestMode || 'sync';
+  const resolved = pickModel(settings, state.modelSeries, state.protocols, modelId || (userMsg.model && userMsg.model.id));
+  const mode = resolved.mode;
 
   // 读取原图并压缩
   const attachments = [];
@@ -123,22 +163,22 @@ export async function resendEdited({ dispatch, state, conv, userMsg, newText, ke
     text: newText || '',
     images: compressed.map((a) => ({ file: a.file, name: a.name, mime: a.mime, width: a.width, height: a.height })),
     params,
-    model: { id: model.id, name: model.name, protocol: model.protocol },
+    model: modelRef(resolved),
     editedAt: Date.now()
   };
   // 更新用户消息 + 删除配对助手回复
   dispatch({ type: 'MSG_EDIT_PREPARE', convId: conv.id, userMsgId: userMsg.id, patch });
 
-  const asst = makeAssistantPlaceholder({ parentId: userMsg.id, protocol: model.protocol, model: model.name, mode });
+  const asst = makeAssistantPlaceholder({ parentId: userMsg.id, resolved });
   dispatch({ type: 'MSG_ADD', convId: conv.id, messages: [asst] });
   if (mode === 'sync') dispatch({ type: 'BUSY_SET', convId: conv.id, jobId: asst.id, mode });
 
   await window.stab.generate({
     conversationId: conv.id,
     messageId: asst.id,
-    protocol: model.protocol,
-    model: model.name,
-    mode,
+    modelId: resolved.id,
+    protocol: resolved.protocol,
+    model: resolved.name,
     prompt: newText || '',
     images: compressed.map((a) => a.dataUrl),
     params

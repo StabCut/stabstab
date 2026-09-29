@@ -14,6 +14,7 @@ const { pathToFileURL } = require('url');
 const { getPaths } = require('./src/paths');
 const log = require('./src/logger');
 const store = require('./src/store');
+const modelSeriesLib = require('./src/modelSeries');
 const registry = require('./src/api/registry');
 const runner = require('./src/api/runner');
 const { sniffDimensions, uniqueName } = require('./src/imageutil');
@@ -52,6 +53,7 @@ if (process.platform === 'linux') {
 let win = null;
 let PATHS = null;
 let settings = null;
+let modelSeries = null;     // 内置模型系列配置（含来源 / 默认地址 / 同步异步开关）
 let conversations = null;   // 主进程内存副本（权威数据由渲染进程通过 state:save 同步）
 let pendingResumes = [];   // 启动时需要恢复轮询的异步任务
 
@@ -120,16 +122,18 @@ function normalizeConversationsOnStartup() {
       if (msg.role !== 'assistant') continue;
       if (['pending', 'running', 'polling'].includes(msg.status)) {
         const meta = msg.meta || {};
-        if (meta.taskId && meta.mode === 'async' && settings.api.apiKey) {
+        // 按消息里记录的模型 id 反查「系列 / 来源 / 密钥」，避免把密钥写进会话文件
+        const resolved = meta.modelId ? modelSeriesLib.resolveModel(settings, modelSeries, meta.modelId) : null;
+        if (meta.taskId && meta.mode === 'async' && resolved && resolved.apiKey && resolved.supportsAsync) {
           msg.status = 'running';
           pendingResumes.push({
             jobId: msg.id,
             conversationId: conv.id,
             messageId: msg.id,
-            protocol: meta.protocol,
-            model: meta.model,
-            apiKey: settings.api.apiKey,
-            baseUrl: settings.api.baseUrl,
+            protocol: resolved.protocol,
+            model: resolved.modelName,
+            apiKey: resolved.apiKey,
+            baseUrl: resolved.baseUrl,
             taskId: meta.taskId,
             timeoutSec: settings.requestTimeoutSec,
             cacheDir: PATHS.cache
@@ -208,6 +212,7 @@ function registerIpc() {
       appVersion: app.getVersion(),
       platform: process.platform,
       settings,
+      modelSeries,
       conversations,
       paths: {
         root: PATHS.root,
@@ -215,6 +220,7 @@ function registerIpc() {
         uploads: PATHS.uploads,
         log: PATHS.log,
         downloads: PATHS.downloads,
+        modelSeriesFile: PATHS.modelSeries,
         usedFallback: PATHS.usedFallback
       },
       resumeCount: pendingResumes.length
@@ -225,9 +231,13 @@ function registerIpc() {
   ipcMain.handle('state:save', (_e, payload) => {
     try {
       if (payload && payload.settings) {
-        settings = { ...settings, ...payload.settings };
+        settings = store.normalizeModelGroups({ ...settings, ...payload.settings }, modelSeries);
         store.saveSettings(PATHS.settings, settings);
         nativeTheme.themeSource = settings.theme === 'system' ? 'system' : (settings.theme === 'dark' ? 'dark' : 'light');
+      }
+      if (payload && payload.modelSeries) {
+        // 只允许改「隐藏哪些系列」「同步/异步开关」以及自定义系列，内置结构由 merge 保证不被破坏
+        modelSeries = modelSeriesLib.save(PATHS.modelSeries, payload.modelSeries);
       }
       if (payload && payload.conversations) {
         conversations = payload.conversations;
@@ -243,12 +253,44 @@ function registerIpc() {
   ipcMain.handle('protocols:list', () => ({ ok: true, protocols: registry.listProtocols() }));
 
   // ---- 生成请求 ----
+  // 渲染进程只传「模型 id」；协议 / 来源 / 密钥 / 同步异步在这里统一解析（主进程才是权威口径）
   ipcMain.handle('api:generate', (_e, opts) => {
+    const base = { conversationId: opts.conversationId, messageId: opts.messageId };
+    const resolved = modelSeriesLib.resolveModel(settings, modelSeries, opts.modelId);
+    if (!resolved) {
+      sendEvent({
+        ...base, type: 'error', ok: false,
+        error: { code: 'NO_MODEL', message: '未找到该模型：它可能已被删除。请在「设置 → 模型设置」中重新添加或改选模型。' }
+      });
+      return { jobId: opts.messageId };
+    }
+    if (!resolved.protocol) {
+      sendEvent({
+        ...base, type: 'error', ok: false,
+        error: { code: 'NO_PROTOCOL', message: `模型「${resolved.modelName}」所属来源没有可用的协议适配器。` }
+      });
+      return { jobId: opts.messageId };
+    }
+    if (!String(resolved.apiKey || '').trim()) {
+      const sLabel = (resolved.series && resolved.series.label) || resolved.seriesId;
+      const srcLabel = (resolved.source && resolved.source.label) || resolved.sourceId;
+      sendEvent({
+        ...base, type: 'error', ok: false,
+        error: { code: 'NO_API_KEY', message: `尚未配置 API Key：请在「设置 → 模型设置 → ${sLabel} → ${srcLabel}」中填写。` }
+      });
+      return { jobId: opts.messageId };
+    }
+
     const full = {
       ...opts,
       jobId: opts.messageId,
-      apiKey: settings.api.apiKey,
-      baseUrl: settings.api.baseUrl,
+      protocol: resolved.protocol,
+      model: resolved.modelName,
+      seriesId: resolved.seriesId,
+      sourceId: resolved.sourceId,
+      apiKey: resolved.apiKey,
+      baseUrl: resolved.baseUrl,
+      mode: resolved.mode,
       timeoutSec: settings.requestTimeoutSec,
       cacheDir: PATHS.cache
     };
@@ -387,6 +429,19 @@ function registerIpc() {
     return { ok: !err, message: err || '' };
   });
 
+  // 打开外部链接（如各来源的 API Key 申请页）：只允许 http(s)
+  ipcMain.handle('shell:open-external', async (_e, url) => {
+    const u = String(url || '').trim();
+    if (!/^https?:\/\//i.test(u)) return { ok: false, message: '仅支持 http/https 链接' };
+    try {
+      await shell.openExternal(u);
+      return { ok: true };
+    } catch (e) {
+      log.warn('打开外部链接失败', { url: u, error: e.message });
+      return { ok: false, message: e.message };
+    }
+  });
+
   ipcMain.handle('shell:show-in-folder', (_e, p) => {
     shell.showItemInFolder(p);
     return { ok: true };
@@ -418,7 +473,12 @@ if (!gotLock) {
       electron: process.versions.electron, dataRoot: PATHS.root, usedFallback: PATHS.usedFallback, dev: isDev
     });
 
-    settings = store.loadSettings(PATHS.settings);
+    modelSeries = modelSeriesLib.load(PATHS.modelSeries);
+    const loaded = store.loadSettings(PATHS.settings, modelSeries);
+    settings = loaded.settings;
+    if (loaded.migrated) {
+      try { store.saveSettings(PATHS.settings, settings); } catch (e) { log.warn('迁移后的设置落盘失败', { error: e.message }); }
+    }
     conversations = store.loadConversations(PATHS.conversations);
     nativeTheme.themeSource = settings.theme === 'system' ? 'system' : (settings.theme === 'dark' ? 'dark' : 'light');
     normalizeConversationsOnStartup();

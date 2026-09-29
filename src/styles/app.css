@@ -137,6 +137,7 @@ button { cursor: pointer; }
 .ghost-btn:hover { background: var(--bg-hover); }
 .ghost-btn.active { border-color: var(--accent); color: var(--accent); }
 .ghost-btn.small { padding: 3px 10px; font-size: 12px; }
+.ghost-btn:disabled { opacity: 0.45; cursor: not-allowed; background: transparent; }
 .stop-btn { color: var(--coral); border-color: var(--coral); }
 .stop-btn:hover { background: rgba(244, 132, 95, 0.12); }
 
@@ -455,8 +456,58 @@ button { cursor: pointer; }
 .model-row { display: flex; align-items: center; gap: 8px; }
 .model-row select { flex: 1; }
 .model-name-input { flex: 1; }
+.model-row .source-select { flex: 0 0 190px; }
 .radio-label { display: flex; align-items: center; }
 .model-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* 系列卡片里的输入控件不再位于 .field 内，主题色要单独给（否则深色模式下是白底黑字） */
+.model-row .model-name-input,
+.model-row .source-select {
+  background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px;
+  padding: 7px 10px; outline: none; color: var(--text);
+}
+.model-row .model-name-input:focus,
+.model-row .source-select:focus { border-color: var(--accent); }
+.model-row input::placeholder,
+.field-inline input::placeholder { color: var(--text-dim); }
+
+/* ---- 模型设置：模型系列卡片 ---- */
+.settings-modal { width: 880px; }
+.settings-content code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px; background: var(--bg-input); border: 1px solid var(--border);
+  border-radius: 4px; padding: 1px 5px; margin: 0 2px;
+}
+.empty-hint {
+  background: var(--bg-input); border: 1px dashed var(--border); border-radius: 10px;
+  padding: 12px 14px; color: var(--text-dim); font-size: 12.5px; line-height: 1.7;
+}
+.series-card {
+  border: 1px solid var(--border); border-radius: 12px; padding: 14px;
+  display: flex; flex-direction: column; gap: 12px; background: var(--bg-panel);
+}
+.series-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.series-title { font-weight: 700; font-size: 14.5px; }
+.series-sub { font-size: 12px; color: var(--text-dim); margin-top: 3px; line-height: 1.6; }
+.source-cfgs { display: flex; flex-direction: column; gap: 10px; }
+.source-cfg {
+  background: var(--bg-input); border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 8px;
+}
+.source-cfg-head { display: flex; align-items: center; gap: 10px; }
+.source-cfg-title { font-size: 12.5px; font-weight: 600; color: var(--text-dim); }
+.field-inline { display: flex; align-items: center; gap: 8px; }
+.field-inline > label { flex: 0 0 62px; font-size: 12.5px; color: var(--text-dim); }
+.field-inline input {
+  flex: 1; min-width: 0; background: var(--bg-panel); border: 1px solid var(--border);
+  border-radius: 8px; padding: 6px 10px; outline: none;
+}
+.field-inline input:focus { border-color: var(--accent); }
+.link-btn {
+  background: transparent; border: none; padding: 0; color: var(--accent);
+  font-size: 12px; text-decoration: underline; text-underline-offset: 2px;
+}
+.link-btn:hover { color: var(--accent-hover); }
 
 .compress-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--text); }
 .compress-row input[type='number'] { width: 80px; background: var(--bg-input); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; }

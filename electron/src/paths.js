@@ -54,6 +54,7 @@ function getPaths(app) {
     usedFallback,
     conversations: path.join(root, 'conversations.json'),
     settings: path.join(root, 'settings.json'),
+    modelSeries: path.join(root, 'model-series.json'),   // 内置模型系列配置（数据目录副本，可写）
     cache: path.join(root, 'cache'),
     uploads: path.join(root, 'uploads'),
     log: path.join(root, 'log'),

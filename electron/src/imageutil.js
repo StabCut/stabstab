@@ -83,11 +83,42 @@ function uniqueName(prefix, ext) {
   return `${prefix}_${t}_${crypto.randomBytes(4).toString('hex')}${ext}`;
 }
 
+/** 解析 data:image/...;base64,... → {mime, buf}；不是 data URL 返回 null */
+function parseDataUrl(dataUrl) {
+  const m = /^data:([^;,]+)?(;base64)?,([\s\S]*)$/.exec(String(dataUrl || ''));
+  if (!m) return null;
+  const mime = m[1] || 'image/png';
+  const isB64 = !!m[2];
+  const buf = isB64 ? Buffer.from(m[3].replace(/\s+/g, ''), 'base64') : Buffer.from(decodeURIComponent(m[3]), 'utf8');
+  return { mime, buf };
+}
+
+/** 把一段图片字节写入目录，返回 {file, path, width, height, bytes} */
+function saveImageBuffer(buf, dir, prefix = 'result', ext = '.png') {
+  fs.mkdirSync(dir, { recursive: true });
+  const file = uniqueName(prefix, ext);
+  const full = path.join(dir, file);
+  fs.writeFileSync(full, buf);
+  const dim = sniffDimensions(buf);
+  log.info('图片已写入缓存', { file, bytes: buf.length, ...dim });
+  return { file, path: full, width: dim.width, height: dim.height, bytes: buf.length };
+}
+
 /**
  * 下载远程图片到目录，返回 {file, path, width, height, bytes}。
- * 带独立超时（默认 120s），失败抛错。
+ * 兼容两种输入：
+ *   - http(s) URL（带独立超时，默认 120s，失败抛错）
+ *   - data:image/...;base64,... （部分协议直接返回 b64_json 结果）
  */
 async function downloadImage(url, dir, prefix = 'result', timeoutMs = 120000) {
+  if (String(url || '').startsWith('data:')) {
+    const parsed = parseDataUrl(url);
+    if (!parsed) throw new Error('无效的 data URL 结果');
+    if (!parsed.buf.length) throw new Error('结果内容为空');
+    const ext = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp', 'image/gif': '.gif' }[parsed.mime] || '.png';
+    return saveImageBuffer(parsed.buf, dir, prefix, ext);
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -107,4 +138,4 @@ async function downloadImage(url, dir, prefix = 'result', timeoutMs = 120000) {
   }
 }
 
-module.exports = { sniffDimensions, extFromUrl, uniqueName, downloadImage };
+module.exports = { sniffDimensions, extFromUrl, uniqueName, downloadImage, parseDataUrl, saveImageBuffer };

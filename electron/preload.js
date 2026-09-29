@@ -37,6 +37,7 @@ contextBridge.exposeInMainWorld('stab', {
   pickFolder: (defaultPath) => ipcRenderer.invoke('dialog:pick-folder', defaultPath),
   openCacheDir: () => ipcRenderer.invoke('cache:open'),
   openPath: (p) => ipcRenderer.invoke('shell:open-path', p),
+  openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),
   showInFolder: (p) => ipcRenderer.invoke('shell:show-in-folder', p),
 
   // ---- 日志 ----

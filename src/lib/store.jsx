@@ -12,6 +12,7 @@ const initialState = {
   settings: null,
   paths: null,
   protocols: [],
+  modelSeries: { version: 1, series: [] },   // 内置模型系列配置（含 API 来源 / 默认地址）
   conversations: { tabCounter: 0, activeId: null, conversations: [] },
   busy: {},          // conversationId -> {jobId, mode}
   lightbox: null,    // {images:[{src, title}], index}
@@ -37,13 +38,18 @@ function reducer(state, action) {
         appVersion: data.appVersion,
         settings: data.settings,
         paths: data.paths,
+        modelSeries: data.modelSeries || state.modelSeries,
         conversations: data.conversations || state.conversations
       };
     }
     case 'SET_PROTOCOLS':
       return { ...state, protocols: action.protocols };
     case 'SETTINGS_UPDATE':
-      return { ...state, settings: { ...state.settings, ...action.settings } };
+      return {
+        ...state,
+        settings: { ...state.settings, ...action.settings },
+        modelSeries: action.modelSeries ? { ...state.modelSeries, ...action.modelSeries } : state.modelSeries
+      };
 
     // ---- 会话 ----
     case 'CONV_NEW': {
@@ -170,7 +176,11 @@ export function AppProvider({ children }) {
     const s = stateRef.current;
     if (!s.ready || !s.settings) return;
     if (window.stab && window.stab.saveState) {
-      window.stab.saveState({ settings: s.settings, conversations: s.conversations }).catch(() => {});
+      window.stab.saveState({
+        settings: s.settings,
+        conversations: s.conversations,
+        modelSeries: s.modelSeries
+      }).catch(() => {});
     }
   }, []);
 
@@ -180,7 +190,7 @@ export function AppProvider({ children }) {
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(flushSave, 400);
     return () => clearTimeout(saveTimer.current);
-  }, [state.settings, state.conversations, state.ready, flushSave]);
+  }, [state.settings, state.conversations, state.modelSeries, state.ready, flushSave]);
 
   // 关闭/失焦时立即落盘
   useEffect(() => {

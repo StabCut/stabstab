@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { useApp, useToast } from '../lib/store.jsx';
 import { uploadUrl, formatClock } from '../lib/util.js';
-import { buildParams, resendEdited } from '../lib/send.js';
+import { buildParams, resendEdited, defaultParams } from '../lib/send.js';
+import { resolveModel, sizeLabel } from '../lib/models.js';
 import Icon from './Icon.jsx';
 
 export default function UserMessage({ conv, msg }) {
@@ -11,11 +12,16 @@ export default function UserMessage({ conv, msg }) {
   const [draftText, setDraftText] = useState(msg.text);
   const [kept, setKept] = useState(msg.images || []);
   // 编辑时使用「当前参数面板」的值：这里提供与发送时一致的默认
-  const [editParams, setEditParams] = useState({ size: 'auto', n: 1, negative_prompt: '', watermark: false, prompt_extend: true, seed: '' });
+  const [editParams, setEditParams] = useState({ size: 'auto' });
   const [resending, setResending] = useState(false);
 
+  // 该消息当时使用的模型（可能已被用户删除 → current 为 null，此时禁用「编辑重发」）
+  const current = resolveModel(state.settings, state.modelSeries, state.protocols, msg.model && msg.model.id);
+  const schema = (current && current.paramSchema) || {};
+  const sizeOptions = (current && current.sizeOptions) || ['auto'];
+
   const busy = state.busy[conv.id];
-  const mode = state.settings.requestMode || 'sync';
+  const mode = current ? current.mode : 'sync';
 
   const openLightbox = (index) => {
     const images = (msg.images || [])
@@ -30,7 +36,7 @@ export default function UserMessage({ conv, msg }) {
   const startEdit = () => {
     setDraftText(msg.text);
     setKept(msg.images || []);
-    if (msg.params) setEditParams({ size: 'auto', n: 1, negative_prompt: '', watermark: false, prompt_extend: true, seed: '', ...msg.params });
+    setEditParams({ size: 'auto', ...defaultParams(schema), ...(msg.params || {}) });
     setEditing(true);
   };
 
@@ -43,7 +49,7 @@ export default function UserMessage({ conv, msg }) {
         dispatch, state, conv, userMsg: msg,
         newText: draftText.trim(),
         keptImages: kept,
-        params: buildParams(editParams),
+        params: buildParams(editParams, schema),
         modelId: msg.model && msg.model.id,
         log: (l, m, e) => window.stab.log(l, m, e)
       });
@@ -106,8 +112,8 @@ export default function UserMessage({ conv, msg }) {
               onChange={(e) => setEditParams((p) => ({ ...p, size: e.target.value }))}
               title="尺寸（重发时生效）"
             >
-              {['auto', '2688*1536', '2368*1728', '2048*2048', '1728*2368', '1536*2688'].map((s) => (
-                <option key={s} value={s}>{s === 'auto' ? '尺寸：自动' : `尺寸：${s.replace('*', '×')}`}</option>
+              {sizeOptions.map((s) => (
+                <option key={s} value={s}>{sizeLabel(s)}</option>
               ))}
             </select>
             <span className="edit-hint">Ctrl+Enter 确定</span>

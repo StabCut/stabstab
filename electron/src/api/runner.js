@@ -78,6 +78,7 @@ function start(opts, sendEvent) {
   const startedAt = Date.now();
   log.info('开始生成请求', {
     jobId, model: opts.model, protocol: opts.protocol, mode: opts.mode,
+    series: opts.seriesId, source: opts.sourceId,
     images: (opts.images || []).length, hasPrompt: !!(opts.prompt && opts.prompt.trim()),
     timeoutSec: opts.timeoutSec, size: opts.params && opts.params.size,
     n: opts.params && opts.params.n
@@ -232,10 +233,16 @@ async function cancel(jobId, sendEvent) {
   if (job.taskId) {
     try {
       const adapter = getAdapter(job.protocol);
-      const c = adapter.buildTaskCancel({ apiKey: job.apiKey, baseUrl: job.baseUrl, taskId: job.taskId });
-      const res = await fetchWithTimeout(c.url, { method: c.method, headers: c.headers }, 15000);
-      const json = await readJsonSafe(res);
-      log.info('已请求取消任务', { taskId: job.taskId, http: res.status, resp: json && (json.message || json.code || '') });
+      const c = adapter && adapter.buildTaskCancel
+        ? adapter.buildTaskCancel({ apiKey: job.apiKey, baseUrl: job.baseUrl, taskId: job.taskId })
+        : null;
+      if (c) {
+        const res = await fetchWithTimeout(c.url, { method: c.method, headers: c.headers, body: c.body }, 15000);
+        const json = await readJsonSafe(res);
+        log.info('已请求取消任务', { taskId: job.taskId, http: res.status, resp: json && (json.message || json.code || '') });
+      } else {
+        log.info('该协议无服务端取消接口，仅停止本地轮询', { taskId: job.taskId, protocol: job.protocol });
+      }
     } catch (e) {
       log.warn('取消任务请求失败（仍停止本地等待）', { taskId: job.taskId, error: e && e.message });
     }

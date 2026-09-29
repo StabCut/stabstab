@@ -1,5 +1,6 @@
 import React from 'react';
 import { useApp, useActiveConversation, useToast } from '../lib/store.jsx';
+import { resolveModel } from '../lib/models.js';
 import UserMessage from './UserMessage.jsx';
 import AssistantMessage from './AssistantMessage.jsx';
 import Composer from './Composer.jsx';
@@ -22,7 +23,11 @@ export default function ChatView() {
   const toast = useToast();
 
   const busy = conv ? state.busy[conv.id] : null;
-  const mode = state.settings ? state.settings.requestMode : 'sync';
+  // 请求模式现在按「模型系列」独立配置：这里显示当前会话最近一条请求所用模型的模式
+  const lastWithModel = conv ? [...(conv.messages || [])].reverse().find((m) => m.meta && m.meta.mode) : null;
+  const activeModelId = (lastWithModel && lastWithModel.meta && lastWithModel.meta.modelId) || state.settings.defaultModelId;
+  const current = resolveModel(state.settings, state.modelSeries, state.protocols, activeModelId);
+  const mode = current ? current.mode : 'sync';
 
   const openCache = async () => {
     const r = await window.stab.openCacheDir();
@@ -37,9 +42,11 @@ export default function ChatView() {
           {busy && <span className="busy-badge">等待返回中…</span>}
         </div>
         <div className="chat-header-right">
-          <span className={`mode-badge ${mode}`} title="可在 设置 → 高级设置 中切换">
-            {mode === 'sync' ? '同步模式' : '异步模式'}
-          </span>
+          {current && (
+            <span className={`mode-badge ${mode}`} title={`${current.seriesLabel} · ${current.sourceLabel}｜可在 设置 → 高级设置 中切换（仅支持的系列）`}>
+              {mode === 'sync' ? '同步模式' : '异步模式'}
+            </span>
+          )}
           <button className="icon-btn" title="一键打开缓存目录（可安全清空）" onClick={openCache}><Icon name="folder" size={19} /></button>
         </div>
       </header>
