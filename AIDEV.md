@@ -283,8 +283,11 @@ module.exports = {
 
 ### 8.2 已知坑（务必了解）
 
-1. **Linux GPU 进程沙箱崩溃**（`GPU process isn't usable. Goodbye.`，error_code=1002）：
-   已在 `main.js` 顶部对 Linux 追加 `--disable-gpu-sandbox`，必要时（无用户命名空间且 chrome-sandbox 非 SUID）再追加 `--no-sandbox`。**不要删除这段降级逻辑**。
+1. **Chromium 进程沙箱在受限环境崩溃**（`main.js` 顶部，**不要删除这段降级逻辑**）：
+   - **Linux**（`GPU process isn't usable. Goodbye.`，error_code=1002）：追加 `--disable-gpu-sandbox`；必要时（无用户命名空间且 chrome-sandbox 非 SUID）再追加 `--no-sandbox`。
+   - **Windows**（企业 EDR / 安全软件挂钩进程创建，实测深信服 aES）：沙箱无法建立受限令牌 / AppContainer，日志表现为
+     `渲染进程异常退出 {"reason":"launch-failed","exitCode":57}`（窗口空白）或 GPU 进程 `error_code=57` → 主进程 FATAL 直接退出。
+     已对 Windows 默认追加 `--no-sandbox`（主/渲染/GPU 沙箱同时失效，属已知取舍）；设置 `STABSTAB_KEEP_SANDBOX=1` 可恢复沙箱。
 2. **DashScope 无 CORS**：必须在主进程 fetch（渲染进程直连会失败）。
 3. **asar 内读文件**：用 `path.join(__dirname, ...)` + Electron 的 fs 补丁即可读；写文件必须写到 asar 之外（数据目录）。
 4. **图片尺寸嗅探**：结果图用 `usage.output_width/height` 优先，缺失时 `imageutil.sniffDimensions` 解析 PNG/JPEG/GIF/WEBP 头。

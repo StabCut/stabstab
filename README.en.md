@@ -207,6 +207,12 @@ The main process already handles Linux compatibility (disables GPU process sandb
 ./StabStab.sh --no-sandbox        # disable sandbox (rare restricted environments)
 ```
 
+**Window never appears / app exits right after launch on Windows?**
+Enterprise EDR / security agents (confirmed: Sangfor aES) hook process creation, so Chromium cannot create its
+sandboxed restricted token / AppContainer. The log shows `renderer process gone {"reason":"launch-failed","exitCode":57}`
+(blank window) or a GPU process `error_code=57` followed by `GPU process isn't usable. Goodbye.` and an immediate exit.
+The main process now appends `--no-sandbox` on Windows by default; set `STABSTAB_KEEP_SANDBOX=1` to restore the sandbox.
+
 **Where are the logs?**
 `stabstab-data/log/app-YYYYMMDD.log` (next to the executable for the portable build).
 

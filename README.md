@@ -205,6 +205,16 @@ stabstab-data/
 ./StabStab.sh --no-sandbox        # 禁用沙箱（极少数受限环境）
 ```
 
+**Windows 上窗口不出现 / 启动后直接退出？**
+企业 EDR / 安全软件（实测：深信服 aES）会拦截 Chromium 的沙箱子进程创建，日志表现为
+`渲染进程异常退出 {"reason":"launch-failed","exitCode":57}`（窗口一片空白），或 GPU 进程报 `error_code=57`
+后主进程直接 `GPU process isn't usable. Goodbye.` 退出。
+主进程已对 Windows 默认追加 `--no-sandbox` 以保证开箱即用；如需恢复沙箱，设置环境变量后启动：
+
+```powershell
+$env:STABSTAB_KEEP_SANDBOX='1'; npm run dev
+```
+
 **日志在哪？**
 `stabstab-data/log/app-YYYYMMDD.log`（便携版位于可执行文件同级目录）。
 

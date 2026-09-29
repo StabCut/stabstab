@@ -21,10 +21,17 @@ const { sniffDimensions, uniqueName } = require('./src/imageutil');
 const isDev = !app.isPackaged;
 const APP_NAME = 'StabStab';
 
-// ---------- Linux 兼容性：GPU 进程沙箱与部分驱动/受限环境冲突 ----------
-// 症状：GPU process launch failed (error_code=1002) → "GPU process isn't usable. Goodbye."
-// 这里仅禁用 GPU 进程沙箱（主/渲染/网络进程仍保留沙箱），保证开箱即用。
+// ---------- 兼容性：Chromium 进程沙箱与受限环境冲突 ----------
+// 症状 A：GPU process launch failed (error_code=1002/57) → "GPU process isn't usable. Goodbye."（主进程直接退出）
+// 症状 B：渲染进程 launch-failed（exitCode 57 = ERROR_INVALID_PARAMETER）→ 窗口空白/永不出现
+// 成因：企业 EDR / 安全软件（已确认：深信服 aES）挂钩进程创建，Chromium 无法建立受限令牌 / AppContainer。
+// Windows 上无法可靠探测，默认整体关闭沙箱以保证开箱即用（主/渲染/GPU 沙箱同时失效，属已知取舍）；
+// 需要恢复沙箱时设置环境变量 STABSTAB_KEEP_SANDBOX=1。
+if (process.platform === 'win32' && process.env.STABSTAB_KEEP_SANDBOX !== '1') {
+  app.commandLine.appendSwitch('no-sandbox');
+}
 if (process.platform === 'linux') {
+  // Linux：仅禁用 GPU 进程沙箱（主/渲染/网络进程仍保留沙箱），保证开箱即用。
   app.commandLine.appendSwitch('disable-gpu-sandbox');
 }
 // 若既无用户命名空间、chrome-sandbox 又非 SUID，则整体禁用沙箱（兜底，确保可启动）。
@@ -165,6 +172,15 @@ function createWindow() {
 
   win.once('ready-to-show', () => win.show());
   win.on('closed', () => { win = null; });
+
+  // 诊断：渲染进程异常退出 / 页面加载失败（沙箱被拦截时可据此定位）
+  win.webContents.on('render-process-gone', (_e, details) => {
+    log.error('渲染进程异常退出', details || {});
+  });
+  win.webContents.on('unresponsive', () => log.error('渲染进程无响应', {}));
+  win.webContents.on('did-fail-load', (_e, errorCode, errorDescription, validatedURL) => {
+    log.error('页面加载失败', { errorCode, errorDescription, validatedURL });
+  });
 
   // 开发模式：F12 / Ctrl+Shift+I 打开 DevTools
   win.webContents.on('before-input-event', (event, input) => {
