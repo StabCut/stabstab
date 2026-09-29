@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useApp } from '../lib/store.jsx';
 import { clamp } from '../lib/util.js';
+import Icon from './Icon.jsx';
 
 const MIN_SCALE = 0.1;
 const MAX_SCALE = 12;
@@ -70,11 +71,11 @@ export default function Lightbox() {
       <div className="lightbox-top">
         <span className="lightbox-title">{current.title || ''}（{index + 1}/{images.length}）</span>
         <div className="lightbox-tools">
-          <button className="icon-btn" title="缩小" onClick={() => setScale((s) => clamp(s / 1.25, MIN_SCALE, MAX_SCALE))}>−</button>
+          <button className="icon-btn" title="缩小" onClick={() => setScale((s) => clamp(s / 1.25, MIN_SCALE, MAX_SCALE))}><Icon name="minus" size={16} /></button>
           <span className="zoom-label">{Math.round(scale * 100)}%</span>
-          <button className="icon-btn" title="放大" onClick={() => setScale((s) => clamp(s * 1.25, MIN_SCALE, MAX_SCALE))}>＋</button>
-          <button className="icon-btn" title="重置视图" onClick={reset}>⟲</button>
-          <button className="icon-btn" title="关闭（ESC）" onClick={close}>✕</button>
+          <button className="icon-btn" title="放大" onClick={() => setScale((s) => clamp(s * 1.25, MIN_SCALE, MAX_SCALE))}><Icon name="plus" size={16} /></button>
+          <button className="icon-btn" title="重置视图" onClick={reset}><Icon name="reset" size={16} /></button>
+          <button className="icon-btn" title="关闭（ESC）" onClick={close}><Icon name="close" size={16} /></button>
         </div>
       </div>
 

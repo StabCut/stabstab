@@ -3,6 +3,7 @@ import { useApp, useActiveConversation, useToast } from '../lib/store.jsx';
 import UserMessage from './UserMessage.jsx';
 import AssistantMessage from './AssistantMessage.jsx';
 import Composer from './Composer.jsx';
+import Icon from './Icon.jsx';
 
 function EmptyState() {
   return (
@@ -39,7 +40,7 @@ export default function ChatView() {
           <span className={`mode-badge ${mode}`} title="可在 设置 → 高级设置 中切换">
             {mode === 'sync' ? '同步模式' : '异步模式'}
           </span>
-          <button className="icon-btn" title="一键打开缓存目录（可安全清空）" onClick={openCache}>📁</button>
+          <button className="icon-btn" title="一键打开缓存目录（可安全清空）" onClick={openCache}><Icon name="folder" size={19} /></button>
         </div>
       </header>
 

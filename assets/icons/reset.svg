@@ -1,0 +1,8 @@
+<!-- StabStab 界面图标：重置视图 -->
+<!-- 这是源文件：修改后应用即刻生效（由 src/components/Icon.jsx 通过 ?raw 导入） -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+     fill="none" stroke="currentColor" stroke-width="1.75"
+     stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4.6 12a7.4 7.4 0 1 0 2.3-5.4" />
+    <path d="M4.4 4.6v4.2h4.2" />
+</svg>

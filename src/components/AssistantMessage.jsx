@@ -1,6 +1,7 @@
 import React from 'react';
 import { useApp, useToast } from '../lib/store.jsx';
 import { cacheUrl, formatClock, formatBytes } from '../lib/util.js';
+import Icon from './Icon.jsx';
 
 const STATUS_LABEL = {
   PENDING: '排队中（PENDING）',
@@ -96,8 +97,8 @@ export default function AssistantMessage({ conv, msg }) {
                     {im.width && im.height ? `${im.width}×${im.height}` : '分辨率未知'}
                   </div>
                   <div className="result-hover-actions">
-                    <button className="icon-btn" title="复制图片到剪贴板" onClick={() => copyImage(im)}>📋</button>
-                    <button className="icon-btn" title="下载保存到默认路径" onClick={() => downloadImage(im)}>⬇️</button>
+                    <button className="icon-btn" title="复制图片到剪贴板" onClick={() => copyImage(im)}><Icon name="copy" size={15} /></button>
+                    <button className="icon-btn" title="下载保存到默认路径" onClick={() => downloadImage(im)}><Icon name="download" size={15} /></button>
                   </div>
                 </div>
               ) : (
@@ -123,7 +124,7 @@ export default function AssistantMessage({ conv, msg }) {
   } else if (msg.status === 'error') {
     body = (
       <div className="result-card error">
-        <div className="error-title">⚠️ 生成失败</div>
+        <div className="error-title"><Icon name="warning" size={16} /> 生成失败</div>
         {msg.error && msg.error.code && <div className="error-code">错误码：{msg.error.code}</div>}
         <div className="error-message">{(msg.error && msg.error.message) || '未知错误'}</div>
         {msg.error && msg.error.requestId && <div className="error-req">Request ID：{msg.error.requestId}</div>}
@@ -149,9 +150,9 @@ export default function AssistantMessage({ conv, msg }) {
       </div>
       <div className="msg-actions">
         {(msg.texts || []).length > 0 && (
-          <button className="icon-btn" title="复制文字" onClick={() => copyText((msg.texts || []).join('\n'))}>📋</button>
+          <button className="icon-btn" title="复制文字" onClick={() => copyText((msg.texts || []).join('\n'))}><Icon name="copy" size={15} /></button>
         )}
-        <button className="icon-btn" title="删除该条结果" onClick={remove}>🗑</button>
+        <button className="icon-btn" title="删除该条结果" onClick={remove}><Icon name="trash" size={15} /></button>
       </div>
     </div>
   );

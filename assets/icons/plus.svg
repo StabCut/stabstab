@@ -1,0 +1,8 @@
+<!-- StabStab 界面图标：新建对话 / 添加 -->
+<!-- 这是源文件：修改后应用即刻生效（由 src/components/Icon.jsx 通过 ?raw 导入） -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+     fill="none" stroke="currentColor" stroke-width="1.75"
+     stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 5.5v13" />
+    <path d="M5.5 12h13" />
+</svg>

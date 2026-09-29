@@ -3,6 +3,7 @@ import { useApp, useToast } from '../lib/store.jsx';
 import { fileToDataUrl, readImageMeta, isImageFile } from '../lib/images.js';
 import { formatBytes } from '../lib/util.js';
 import { sendNew, buildParams } from '../lib/send.js';
+import Icon from './Icon.jsx';
 
 const MAX_IMAGES = 3; // API 规则：最多 3 张输入图片
 
@@ -230,7 +231,7 @@ export default function Composer({ conv, busy }) {
   if (!conv) {
     return (
       <div className="composer disabled-composer">
-        <div className="composer-hint">点击左上角「＋ 新建对话」开始</div>
+        <div className="composer-hint">点击左上角「新建对话」开始</div>
       </div>
     );
   }
@@ -256,14 +257,14 @@ export default function Composer({ conv, busy }) {
                 className="attach-remove"
                 title="移除图片"
                 onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
-              >✕</button>
+              ><Icon name="close" size={13} strokeWidth={2.2} /></button>
             </div>
           ))}
         </div>
       )}
 
       <div className="composer-input-row">
-        <button className="icon-btn attach-btn" title="添加图片（可多选）" onClick={pickFiles}>＋</button>
+        <button className="icon-btn attach-btn" title="添加图片（可多选）" onClick={pickFiles}><Icon name="plus" size={18} /></button>
         <textarea
           ref={taRef}
           className="composer-textarea"
@@ -303,7 +304,7 @@ export default function Composer({ conv, busy }) {
             onClick={() => setParamsOpen((v) => !v)}
             title="高级参数：n / 反向提示词 / 水印 / 提示词改写 / 种子"
           >
-            参数 ⚙
+            <Icon name="sliders" size={15} /> 参数
           </button>
           {paramsOpen && <ParamsPanel params={params} setParams={setParams} sizeOptions={sizeOptions} />}
         </div>

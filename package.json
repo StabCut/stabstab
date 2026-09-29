@@ -20,6 +20,7 @@
     "build:linux": "npm run build && electron-builder --linux",
     "build:win": "npm run build && electron-builder --win",
     "test:api": "node scripts/test-api.js",
+    "check:icons": "node scripts/check-icons.js",
     "logo": "node scripts/gen-logo.js",
     "rebuild": "electron-builder install-app-deps"
   },

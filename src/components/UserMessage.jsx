@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useApp, useToast } from '../lib/store.jsx';
 import { uploadUrl, formatClock } from '../lib/util.js';
 import { buildParams, resendEdited } from '../lib/send.js';
+import Icon from './Icon.jsx';
 
 export default function UserMessage({ conv, msg }) {
   const { state, dispatch } = useApp();
@@ -83,7 +84,7 @@ export default function UserMessage({ conv, msg }) {
               {kept.map((im, i) => (
                 <div className="attach-item" key={im.file || i}>
                   <img src={uploadUrl(im.file)} alt={im.name} />
-                  <button className="attach-remove" onClick={() => setKept((prev) => prev.filter((_, j) => j !== i))}>✕</button>
+                  <button className="attach-remove" onClick={() => setKept((prev) => prev.filter((_, j) => j !== i))}><Icon name="close" size={13} strokeWidth={2.2} /></button>
                 </div>
               ))}
             </div>
@@ -136,7 +137,7 @@ export default function UserMessage({ conv, msg }) {
                     title={`输入图 ${i + 1}：${im.width || '?'}×${im.height || '?'} · 点击预览`}
                     onClick={() => openLightbox(i)}
                   />
-                  <button className="thumb-copy" title="复制图片" onClick={() => copyImage(im)}>📋</button>
+                  <button className="thumb-copy" title="复制图片" onClick={() => copyImage(im)}><Icon name="copy" size={13} /></button>
                 </div>
               ) : (
                 <div key={i} className="msg-thumb missing">图片缺失</div>
@@ -148,9 +149,9 @@ export default function UserMessage({ conv, msg }) {
         <div className="msg-meta">{formatClock(msg.createdAt)}</div>
       </div>
       <div className="msg-actions">
-        {msg.text && <button className="icon-btn" title="复制文字" onClick={copyText}>📋</button>}
-        <button className="icon-btn" title="编辑并重新发送" onClick={startEdit}>✏️</button>
-        <button className="icon-btn" title="删除该条消息" onClick={remove}>🗑</button>
+        {msg.text && <button className="icon-btn" title="复制文字" onClick={copyText}><Icon name="copy" size={16} /></button>}
+        <button className="icon-btn" title="编辑并重新发送" onClick={startEdit}><Icon name="pencil" size={16} /></button>
+        <button className="icon-btn" title="删除该条消息" onClick={remove}><Icon name="trash" size={16} /></button>
       </div>
     </div>
   );

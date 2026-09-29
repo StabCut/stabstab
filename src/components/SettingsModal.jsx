@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useApp, useToast } from '../lib/store.jsx';
 import { uid } from '../lib/util.js';
+import Icon from './Icon.jsx';
 
 const TABS = [
   { id: 'model', label: '模型设置' },
@@ -86,7 +87,7 @@ export default function SettingsModal() {
       <div className="modal settings-modal">
         <div className="modal-header">
           <div className="modal-title">设置</div>
-          <button className="icon-btn" onClick={close} title="关闭">✕</button>
+          <button className="icon-btn" onClick={close} title="关闭"><Icon name="close" size={16} /></button>
         </div>
 
         <div className="settings-body">
@@ -159,13 +160,13 @@ export default function SettingsModal() {
                               <option key={p.id} value={p.id} disabled>{p.label}</option>
                             ))}
                           </select>
-                          <button className="icon-btn" title="删除模型" onClick={() => removeModel(m.id)}>🗑</button>
+                          <button className="icon-btn" title="删除模型" onClick={() => removeModel(m.id)}><Icon name="trash" size={16} /></button>
                         </div>
                       );
                     })}
                   </div>
                   <div className="model-actions">
-                    <button className="ghost-btn" onClick={addModel}>＋ 添加模型</button>
+                    <button className="ghost-btn" onClick={addModel}><Icon name="plus" size={15} /> 添加模型</button>
                     <span className="field-hint">
                       默认协议为 DashScope（qwen-image-3.0-pro）；其它请求/解析规则可通过新增协议适配器扩展。
                     </span>

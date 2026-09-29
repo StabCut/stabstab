@@ -71,15 +71,54 @@ button { cursor: pointer; }
 .app-shell { display: flex; height: 100vh; width: 100vw; }
 
 /* ================= 通用控件 ================= */
+/* 界面图标：图形来自 assets/icons/*.svg（由 Icon.jsx 导入）。
+   尺寸由组件传入的 width/height 属性控制。
+   注意：这里不要写 width/height —— CSS 规则会覆盖 SVG 的宽高属性，导致 size 失效。
+
+   Icon.jsx 会自动判断图标类型并加上对应 class，**替换 SVG 时不用管这些**：
+     .icon--stroke  描边式（源文件带 stroke / stroke-width）
+     .icon--fill    填充式（iconfont 导出的实心图标属于这类）
+     .icon--brand   SVG 自带具体颜色（单色自定义色或多色），原色保留
+   颜色同时由 Icon.jsx 注入到图形元素上，这里只作兜底。 */
+.icon {
+  flex: none;
+  display: block;
+  vertical-align: middle;
+}
+
+/* 描边式：细线造型 */
+.icon--stroke {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* 填充式：实心造型（不能设 fill:none，否则形状会整个消失） */
+.icon--fill {
+  fill: currentColor;
+  stroke: none;
+}
+
+/* 自带颜色：必须排在最后 —— 与上面两条特异性相同，靠书写顺序生效，
+   让 SVG 自己的 fill/stroke 属性说话，不被主题色覆盖。 */
+.icon--brand {
+  fill: initial;
+  stroke: initial;
+}
+
 .icon-btn {
   background: transparent; border: none; color: var(--text-dim);
   border-radius: 6px; padding: 4px 6px; font-size: 14px; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
 }
 .icon-btn:hover { background: var(--bg-hover); color: var(--text); }
 
 .primary-btn {
   background: var(--accent); color: #fff; border: none;
   padding: 9px 14px; border-radius: var(--radius); font-weight: 600;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
 }
 .primary-btn:hover { background: var(--accent-hover); }
 
@@ -93,6 +132,7 @@ button { cursor: pointer; }
 .ghost-btn {
   background: transparent; border: 1px solid var(--border); color: var(--text);
   padding: 6px 12px; border-radius: 8px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
 }
 .ghost-btn:hover { background: var(--bg-hover); }
 .ghost-btn.active { border-color: var(--accent); color: var(--accent); }
@@ -141,8 +181,9 @@ button { cursor: pointer; }
   border-radius: 8px; box-shadow: var(--shadow); min-width: 120px; overflow: hidden;
 }
 .pop-item {
-  display: block; width: 100%; text-align: left; background: transparent; border: none;
-  padding: 8px 12px; color: var(--text);
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; text-align: left; background: transparent; border: none;
+  padding: 8px 12px; color: var(--text); font-size: 13.5px;
 }
 .pop-item:hover { background: var(--bg-hover); }
 .pop-item.danger { color: var(--danger); }
@@ -151,7 +192,7 @@ button { cursor: pointer; }
   display: flex; align-items: center; gap: 6px;
   border-top: 1px solid var(--border); padding-top: 10px;
 }
-.footer-btn { font-size: 16px; padding: 6px 8px; }
+.footer-btn { padding: 5px 6px; }
 .footer-spacer { flex: 1; }
 
 /* ================= 主聊天区 ================= */
@@ -192,7 +233,10 @@ button { cursor: pointer; }
 
 /* ================= 消息 ================= */
 .msg { display: flex; gap: 8px; align-items: flex-start; position: relative; }
-.msg.user { justify-content: flex-end; }
+/* 用户消息：气泡与操作按钮改为上下排列，整体贴右 ——
+   按钮就落在气泡最下面、与气泡右边缘对齐（见下方 .msg.user .msg-actions）。
+   助手消息仍是「气泡 + 右侧竖排按钮」，不受影响。 */
+.msg.user { flex-direction: column; align-items: flex-end; gap: 6px; }
 .msg.assistant { justify-content: flex-start; }
 
 .msg-avatar {
@@ -232,6 +276,11 @@ button { cursor: pointer; }
   display: flex; flex-direction: column; gap: 2px; opacity: 0;
   transition: opacity 0.12s; align-self: center;
 }
+/* 用户消息的按钮：气泡下方横向一排、右对齐。
+   只改排列方向与对齐，仍是悬停淡入（opacity 占位，出现时不会挤动气泡）。 */
+.msg.user .msg-actions {
+  flex-direction: row; align-items: center; gap: 4px; align-self: flex-end;
+}
 .msg:hover .msg-actions { opacity: 1; }
 
 /* ---- 结果 ---- */
@@ -265,7 +314,10 @@ button { cursor: pointer; }
   background: rgba(229, 72, 77, 0.08); border: 1px solid rgba(229, 72, 77, 0.35);
   border-radius: 8px; padding: 10px 14px; color: var(--text);
 }
-.error-title { color: var(--danger); font-weight: 600; }
+.error-title {
+  color: var(--danger); font-weight: 600;
+  display: flex; align-items: center; gap: 6px;
+}
 .error-code { font-size: 12px; color: var(--text-dim); }
 .error-message { white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
 .error-req { font-size: 11.5px; color: var(--text-dim); }
@@ -312,7 +364,7 @@ button { cursor: pointer; }
 .attach-remove:hover { background: var(--danger); }
 
 .composer-input-row { display: flex; gap: 8px; align-items: flex-end; }
-.attach-btn { font-size: 18px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; }
+.attach-btn { padding: 5px 9px; border: 1px solid var(--border); border-radius: 8px; }
 .composer-textarea {
   flex: 1; background: transparent; border: none; outline: none; resize: none;
   color: var(--text); line-height: 1.55; padding: 6px 2px; min-height: 40px; max-height: 180px;

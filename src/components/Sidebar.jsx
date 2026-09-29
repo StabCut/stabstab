@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useApp, useToast } from '../lib/store.jsx';
+import Icon from './Icon.jsx';
 
 function ConversationItem({ conv, isActive }) {
   const { dispatch } = useApp();
@@ -60,14 +61,14 @@ function ConversationItem({ conv, isActive }) {
           className="icon-btn conv-more"
           title="更多操作"
           onClick={(e) => { e.stopPropagation(); setMenuOpen((v) => !v); }}
-        >⋯</button>
+        ><Icon name="more" size={16} /></button>
         {menuOpen && (
           <div className="pop-menu" onClick={(e) => e.stopPropagation()}>
             <button
               className="pop-item"
               onClick={() => { setDraft(conv.name); setRenaming(true); setMenuOpen(false); }}
             >
-              ✏️ 重命名
+              <Icon name="pencil" size={15} /> 重命名
             </button>
             <button
               className="pop-item danger"
@@ -76,7 +77,7 @@ function ConversationItem({ conv, isActive }) {
                 setMenuOpen(false);
               }}
             >
-              🗑 删除
+              <Icon name="trash" size={15} /> 删除
             </button>
           </div>
         )}
@@ -107,7 +108,7 @@ export default function Sidebar() {
         className="primary-btn new-conv-btn"
         onClick={() => dispatch({ type: 'CONV_NEW' })}
       >
-        ＋ 新建对话
+        <Icon name="plus" size={16} /> 新建对话
       </button>
 
       <div className="conv-list">
@@ -121,7 +122,7 @@ export default function Sidebar() {
 
       <div className="sidebar-footer">
         <button className="icon-btn footer-btn" title="打开缓存目录（可安全清空）" onClick={openCache}>
-          📁
+          <Icon name="folder" size={20} />
         </button>
         <button
           className="icon-btn footer-btn"
@@ -132,7 +133,7 @@ export default function Sidebar() {
             toast('已删除全部对话', 'info');
           }}
         >
-          🗑
+          <Icon name="trash" size={20} />
         </button>
         <div className="footer-spacer" />
         <button
@@ -140,7 +141,7 @@ export default function Sidebar() {
           title="设置"
           onClick={() => dispatch({ type: 'SETTINGS_OPEN', open: true })}
         >
-          ⚙️
+          <Icon name="gear" size={20} />
         </button>
       </div>
     </aside>

@@ -1,0 +1,8 @@
+<!-- StabStab 界面图标：编辑 / 重命名 -->
+<!-- 这是源文件：修改后应用即刻生效（由 src/components/Icon.jsx 通过 ?raw 导入） -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+     fill="none" stroke="currentColor" stroke-width="1.75"
+     stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4.5 19.5l4.2-1 9.1-9.1a1.6 1.6 0 0 0 0-2.3l-1.4-1.4a1.6 1.6 0 0 0-2.3 0l-9.1 9.1-1 4.2z" />
+    <path d="M13.6 6.9l3.5 3.5" />
+</svg>
