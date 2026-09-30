@@ -105,8 +105,17 @@ function pickModel(settings, modelSeries, protocols, modelId) {
 }
 
 /**
+ * 用户的输入图 → 写进结果图 picN 的文件名列表（与图片顺序一一对应）。
+ * 读不到真实文件名（系统剪贴板粘贴等）的位置留空串，但**位置必须存在** ——
+ * 于是「这次请求带了几张输入图」也被记录下来；纯文生图返回空数组（记录里不出现 pic 项）。
+ */
+function imageNamesOf(items) {
+  return (items || []).map((a) => (a && typeof a.srcName === 'string' ? a.srcName : ''));
+}
+
+/**
  * 新建一条「用户消息 + 助手占位」并发起请求。
- * @param attachments 数组 [{file?, name, mime, width, height, dataUrl}]
+ * @param attachments 数组 [{file?, name, srcName?, mime, width, height, dataUrl}]
  */
 export async function sendNew({ dispatch, state, conv, text, attachments, params, modelId, log }) {
   const settings = state.settings;
@@ -118,7 +127,7 @@ export async function sendNew({ dispatch, state, conv, text, attachments, params
     id: uid('m'),
     role: 'user',
     text: text || '',
-    images: compressed.map((a) => ({ file: a.file, name: a.name, mime: a.mime, width: a.width, height: a.height })),
+    images: compressed.map((a) => ({ file: a.file, name: a.name, srcName: a.srcName || '', mime: a.mime, width: a.width, height: a.height })),
     params,
     model: modelRef(resolved),
     createdAt: Date.now()
@@ -140,6 +149,7 @@ export async function sendNew({ dispatch, state, conv, text, attachments, params
     model: resolved.name,
     prompt: text || '',
     images: compressed.map((a) => a.dataUrl),
+    imageNames: imageNamesOf(compressed),   // → 结果图元数据的 pic1…picN
     params
   });
   return { userMsg, asst };
@@ -147,7 +157,7 @@ export async function sendNew({ dispatch, state, conv, text, attachments, params
 
 /**
  * 编辑后重发：更新用户消息、删除配对的旧助手回复，重新发起请求（原地覆盖）。
- * @param keptImages 数组 [{file, name, mime, width, height}]（无 dataUrl，需从磁盘读取）
+ * @param keptImages 数组 [{file, name, srcName?, mime, width, height}]（无 dataUrl，需从磁盘读取）
  */
 export async function resendEdited({ dispatch, state, conv, userMsg, newText, keptImages, params, modelId, log }) {
   const settings = state.settings;
@@ -166,7 +176,7 @@ export async function resendEdited({ dispatch, state, conv, userMsg, newText, ke
 
   const patch = {
     text: newText || '',
-    images: compressed.map((a) => ({ file: a.file, name: a.name, mime: a.mime, width: a.width, height: a.height })),
+    images: compressed.map((a) => ({ file: a.file, name: a.name, srcName: a.srcName || '', mime: a.mime, width: a.width, height: a.height })),
     params,
     model: modelRef(resolved),
     editedAt: Date.now()
@@ -186,6 +196,7 @@ export async function resendEdited({ dispatch, state, conv, userMsg, newText, ke
     model: resolved.name,
     prompt: newText || '',
     images: compressed.map((a) => a.dataUrl),
+    imageNames: imageNamesOf(compressed),   // 重发后的结果图同样带着输入图文件名
     params
   });
   return { asst };

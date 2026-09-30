@@ -5,7 +5,8 @@
 import React, { createContext, useContext, useEffect, useMemo, useReducer, useRef, useCallback } from 'react';
 import { uid } from './util.js';
 
-const initialState = {
+/** 初始状态（导出便于 QA 脚本直接构造 reducer 输入：见 dev-data/qa/promptdrop-test.mjs） */
+export const initialState = {
   ready: false,
   platform: '',
   appVersion: '',
@@ -18,6 +19,10 @@ const initialState = {
   busy: {},          // conversationId -> {jobId, mode}
   lightbox: null,    // {images:[{src, title}], index}
   settingsOpen: false,
+  // 待复用提示词（图片元数据解析结果 + 顶部的「插入／复制」按钮）——
+  // 存在全局 state 里，切换会话 / 删除 / 新建时能由 reducer 统一清理（见下面的 clearReuse）；
+  // 输入框文字变化由 Composer 显式派发 CONV_REUSE_CLEAR。
+  temporary: null,   // {text, source} | null
   toasts: []
 };
 
@@ -26,6 +31,14 @@ function updateConv(state, convId, fn) {
     c.id === convId ? fn(c) : c
   );
   return { ...state, conversations: { ...state.conversations, conversations } };
+}
+
+/**
+ * 会话结构发生「切换 / 新建 / 删除」时清空待复用提示词（连同顶部的插入·复制按钮）。
+ * 切换会话会重置输入框，旧的待复用提示词随之失效，必须一起清掉。
+ */
+function clearReuse(state) {
+  return state.temporary ? { ...state, temporary: null } : state;
 }
 
 /** 状态机（导出便于 QA 脚本直接验证 reducer 行为：见 dev-data/qa/title-test.mjs） */
@@ -68,7 +81,7 @@ export function reducer(state, action) {
         messages: []
       };
       return {
-        ...state,
+        ...clearReuse(state),
         conversations: {
           tabCounter: n,
           activeId: conv.id,
@@ -92,11 +105,12 @@ export function reducer(state, action) {
       if (activeId === action.id) activeId = rest.length ? rest[0].id : null;
       const busy = { ...state.busy };
       delete busy[action.id];
-      return { ...state, busy, conversations: { ...state.conversations, activeId, conversations: rest } };
+      // 删除任意会话（含非当前会话）都清空待复用提示词
+      return { ...clearReuse(state), busy, conversations: { ...state.conversations, activeId, conversations: rest } };
     }
     case 'CONV_DELETE_ALL':
       return {
-        ...state,
+        ...clearReuse(state),
         busy: {},
         conversations: { ...state.conversations, activeId: null, conversations: [] }
       };
@@ -105,7 +119,7 @@ export function reducer(state, action) {
         // 仍然清空黄点
         return updateConv(state, action.id, (c) => ({ ...c, unread: false }));
       }
-      return {
+      return clearReuse({
         ...state,
         conversations: {
           ...state.conversations,
@@ -114,7 +128,7 @@ export function reducer(state, action) {
             c.id === action.id ? { ...c, unread: false } : c
           )
         }
-      };
+      });
     }
     case 'CONV_MARK_UNREAD':
       return updateConv(state, action.id, (c) => ({ ...c, unread: true }));
@@ -158,6 +172,12 @@ export function reducer(state, action) {
       delete busy[action.convId];
       return { ...state, busy };
     }
+
+    // ---- 待复用提示词（底部拖入图片解析出的临时状态）----
+    case 'CONV_REUSE_SET':
+      return { ...state, temporary: action.text ? { text: action.text, source: action.source || 'bottom', at: Date.now() } : null };
+    case 'CONV_REUSE_CLEAR':
+      return clearReuse(state);
 
     // ---- 弹层 / 提示 ----
     case 'LIGHTBOX_OPEN':
@@ -231,12 +251,24 @@ export function useActiveConversation() {
   return state.conversations.conversations.find((c) => c.id === id) || null;
 }
 
-/** toast 便捷方法 */
+/**
+ * toast 便捷方法。
+ * @param message 提示文字
+ * @param kind    info | warn | error
+ * @param extra   { path, timeout }：path = 文件路径（提示条里单独一行、可点击打开）；
+ *                timeout = 自动消失时长（毫秒，默认 3200）
+ * 注意：自动消失的计时器在 Toasts 组件里（悬停可暂停），这里只管把提示推进 state。
+ */
 export function useToast() {
   const { dispatch } = useApp();
-  return useCallback((message, kind = 'info') => {
-    const toast = { id: uid('t'), message, kind };
+  return useCallback((message, kind = 'info', extra = null) => {
+    const toast = {
+      id: uid('t'),
+      message,
+      kind,
+      path: (extra && extra.path) || '',
+      timeout: (extra && extra.timeout) || 0    // 0 = 用组件里的默认时长
+    };
     dispatch({ type: 'TOAST_PUSH', toast });
-    setTimeout(() => dispatch({ type: 'TOAST_REMOVE', id: toast.id }), 3200);
   }, [dispatch]);
 }

@@ -70,6 +70,10 @@ stabstab/
 │       ├── modelSeries.js             # ★ 模型系列配置读写与解析（resolveModel = 发请求的权威口径）
 │       ├── renameModel.js             # ★ 重命名模型：rename-model.json 读写 + DeepSeek Responses API 调用
 │       ├── imageutil.js               # PNG/JPEG/GIF/WEBP 尺寸嗅探、缓存下载（含 data:base64 结果）
+│       ├── promptmeta.js              # ★ 图片提示词元数据：PNG iTXt / JPEG XMP(APP1) / WebP XMP 分块 读写（含输入图文件名 picN）
+│       ├── conversationMeta.js        # ★ 会话侧查询：结果图 ↔ 父用户消息的「提示词 + 输入图文件名」（保存兜底写 picN）
+│       ├── clipboardPayload.js        # ★ 复制到剪贴板的载荷：HTML 内嵌原图字节 + data-filename/prompt/pics
+│       └── exportImage.js             # ★ 结果图导出（result:download 的实现，带提示词 + picN 元数据）
 │       └── api/
 │           ├── registry.js            # 适配器注册表 + 预留协议列表 + listProtocols()
 │           ├── util.js                # 适配器公共工具（端点拼接 / 结果图片收集 / 错误归一化）
@@ -83,15 +87,17 @@ stabstab/
 │   ├── App.jsx                        # 根组件：bootstrap、API 事件路由、主题
 │   ├── components/
 │   │   ├── Sidebar.jsx                # 左侧：Logo、新建、会话列表、重命名/删除、底部操作
-│   │   ├── ChatView.jsx               # 主区：头部、消息列表、空态、输入框
+│   │   ├── ChatView.jsx               # 主区：头部（插入·复制临时按钮）、消息列表、空态、输入框
 │   │   ├── UserMessage.jsx            # 用户气泡：文本/图片、编辑重发、复制、删除
 │   │   ├── AssistantMessage.jsx       # 助手气泡：结果图/错误/异步状态卡片/取消
-│   │   ├── Composer.jsx               # 输入框：粘贴/拖入/多选、size/高级参数、发送/停止
+│   │   ├── Composer.jsx               # 输入框：粘贴/拖入/多选、size/高级参数、发送/停止、附加提示词解析
+│   │   ├── PromptDrop.jsx             # ★ 全窗口左右解析分区（曲线分隔）+ 「图片提示词」查看弹窗
 │   │   ├── SettingsModal.jsx          # 设置：模型 / 重命名模型 / 基础 / 高级 四页
 │   │   ├── Lightbox.jsx               # 全屏图片预览：滚轮缩放/拖动/ESC
 │   │   └── Toasts.jsx                 # 轻提示
 │   └── lib/
 │       ├── store.jsx                  # React Context + reducer 全局状态 + 防抖落盘
+│       ├── promptReuse.jsx            # ★ 解析分区显隐状态机 + 元数据解析 + 待复用提示词（临时状态）
 │       ├── models.js                  # ★ 模型系列/模型解析（界面侧，与主进程同口径）
 │       ├── title.js                   # ★ 会话标签自动命名（首条文字 → 重命名模型 → 回退截取）
 │       ├── send.js                    # 发送/重发公共逻辑（无上下文、消息配对、压缩、参数过滤）
@@ -161,16 +167,19 @@ for f in electron/src/*.js electron/src/api/*.js; do node --check "$f"; done
 | `bootstrap()` | `app:bootstrap` | invoke | 一次返回 settings/modelSeries/renameConfig/conversations/paths/platform/resumeCount |
 | `saveState({settings,conversations,modelSeries,renameConfig})` | `state:save` | invoke | 防抖整包落盘（四份数据一起写） |
 | `listProtocols()` | `protocols:list` | invoke | 协议元信息：sizeOptions / paramSchema / supportsAsync… |
-| `generate(opts)` | `api:generate` | invoke | 发起生成（立即返回 jobId） |
+| `generate(opts)` | `api:generate` | invoke | 发起生成（立即返回 jobId）；`opts.imageNames` = 输入图文件名（顺序同 images），见 §4.5 |
 | `cancelJob(jobId)` | `api:cancel` | invoke | 取消/停止等待 |
 | `resumeJobs()` | `api:resume` | invoke | 重启后恢复异步轮询 |
 | `onApiEvent(cb)` | `api:event` | on | 结果/状态事件流 |
 | `generateTitle(text)` | `title:generate` | invoke | 会话标签自动命名：把首条文字交给重命名模型，回 `{ok,name}` / `{ok:false,code,message}` |
-| `saveAttachment({name,mime,dataUrl})` | `attachments:save` | invoke | 保存用户输入图 → 返回 file 名 |
+| `saveAttachment({name,mime,dataUrl})` | `attachments:save` | invoke | 保存用户输入图 → 返回 file 名（真实文件名由渲染进程随 `generate` 的 `imageNames` 上行） |
 | `readAttachment(file)` | `attachments:read` | invoke | 读回 dataUrl（编辑重发用） |
 | `downloadResult(file)` | `result:download` | invoke | 结果图 → 默认保存路径 |
-| `copyImage(file)` | `result:copy-image` | invoke | 结果图 → 剪贴板 |
-| `copyUploadImage(file)` | `attachments:copy-image` | invoke | 输入图 → 剪贴板 |
+| `copyImage(file)` | `result:copy-image` | invoke | 结果图 → 剪贴板（html 格式带提示词 + picN，见 §4.5） |
+| `copyUploadImage(file)` | `attachments:copy-image` | invoke | 输入图 → 剪贴板（同上） |
+| `readImagePrompt(filePath)` | `prompt:read` | invoke | 读外部图片的提示词元数据（只读，不写回）→ `{ok,prompt,pics,format}` |
+| `readImagePromptFromData(dataUrl)` | `prompt:read-data` | invoke | 拿不到真实路径时的 dataUrl 兜底解析 |
+| `copyText(text)` | `prompt:copy` | invoke | 提示词 → 系统剪贴板（文本） |
 | `pickImages()` | `dialog:pick-images` | invoke | 多选图片 → [{name,mime,size,dataUrl}] |
 | `pickFolder(defaultPath)` | `dialog:pick-folder` | invoke | 目录选择器 |
 | `openCacheDir()` | `cache:open` | invoke | 文件管理器打开缓存目录 |
@@ -181,22 +190,22 @@ for f in electron/src/*.js electron/src/api/*.js; do node --check "$f"; done
 ### 4.3 生成请求数据流
 
 ```
-[渲染进程] Composer/UserMessage 收集 text + images(dataUrl) + params + modelId
+[渲染进程] Composer/UserMessage 收集 text + images(dataUrl) + srcName(输入图真实文件名) + params + modelId
    └─ lib/send.js: sendNew() / resendEdited()
         ├─ lib/models.js resolveModel(modelId) → 界面用信息（尺寸列表 / 参数 schema / 模式提示 / 是否有 Key）
         ├─ 压缩每张图（compressIfNeeded，按 settings.compress*）
         ├─ dispatch MSG_ADD [userMsg, assistant占位(pending, meta.modelId)]
         ├─ 同步模式 → BUSY_SET(convId, jobId=assistantMsg.id)
-        └─ window.stab.generate({conversationId, messageId, modelId, prompt, images, params})
-             │
+        └─ window.stab.generate({conversationId, messageId, modelId, prompt, images, imageNames, params})
+             │  imageNames：与 images 顺序一一对应的输入图文件名（读不到就是空串），见 §4.5
 [主进程] main.js api:generate：modelSeries.resolveModel(settings, modelSeries, modelId)
    ├─ 解析出 protocol / sourceId / apiKey / baseUrl / mode（同步异步）
    ├─ 缺模型 → NO_MODEL；缺协议 → NO_PROTOCOL；缺 Key → NO_API_KEY（都在事件里点明「系列 → 来源」）
-   └─ runner.start(opts, sendEvent)
+   └─ runner.start(opts, sendEvent)   ── opts.imageNames 随 job 独立传递（并发生成不串图名）
         ├─ adapter.buildSubmitRequest(ctx) → fetch（AbortController + 超时）
-        ├─ 同步：parseSubmit → deliverResult（下载/解码每张图到 cache/）→ emit result
+        ├─ 同步：parseSubmit → deliverResult（下载/解码每张图到 cache/，写入 {prompt, pics}）→ emit result
         └─ 异步：parseSubmit 得 taskId → emit status → pollTask(指数退避) → deliverResult
-             │
+             │  重启后 resume：prompt / pics 由主进程从会话记录里取回（见 §4.5）
 [渲染进程] App.jsx onApiEvent 路由：
    ├─ status → MSG_UPDATE {status:'running', taskStatus, taskId}
    ├─ result → MSG_UPDATE {status:'success', images, usage...} + BUSY_CLEAR + 非当前会话则 CONV_MARK_UNREAD(黄点)
@@ -205,6 +214,98 @@ for f in electron/src/*.js electron/src/api/*.js; do node --check "$f"; done
 ```
 
 **事件载荷统一结构**：`{conversationId, messageId, type, ok, images?, error?, taskId?, status?, usage?, durationMs?, ...}`。
+
+### 4.5 图片提示词元数据（生成 → 写入 → 保存 → 拖入 → 解析 闭环）
+
+生成提示词（以及**用户这次一起发送的输入图文件名**）会写进**图片文件本身**（不是水印、不是画字、不只是内部数据库），
+因此用户保存 / 导出后的图片重新拖回软件仍能读回完整提示词。
+
+```
+记录格式（结构化 JSON，字段顺序 = pic1…picN → prompt → v）
+   纯文生图      {"prompt":"…","v":1}
+   图生图 / 编辑 {"pic1":"用户图.png","pic2":"","prompt":"…","v":1}
+   · picN：本次请求用户一起发送的第 N 张输入图**文件名**（与发送顺序一一对应）。
+   · 读不到名字的位置（系统剪贴板粘贴、从别的程序直接复制）保留空串，但 pic 项必须在 ——
+     「这次带了几张输入图」于是也被记录下来；位置即图片，绝不压缩数组。
+   · 只保留文件名本身（去掉目录），不把用户的完整路径写进图片。
+   · 数量：用户发几张就记几项（输入框当前上限 3 张，见 `Composer.MAX_IMAGES`）；
+     `promptmeta.MAX_PICS = 12` 只是解析不可信元数据时的边界。
+   · v 仍为 1：picN 是**可选扩展**（老记录没有这些键，读取端按「没有 pic 项」处理）；
+     键顺序固定为 pic1…picN → prompt → v，便于其它工具按行解析。
+
+[生成] runner.start(opts)  ── opts.prompt + opts.imageNames 是本次请求的（每个 job 独立的对象）
+   └─ runner.requestMeta(opts) → {prompt, pics:[…]}（两者都空 → null，纯文生图不带 pic 项）
+   └─ deliverResult：downloadImage(url, cacheDir, 'result', 120000, {prompt, pics})
+        └─ imageutil.withPromptMeta(buf, prompt, pics) → promptmeta.writePromptToBuffer
+             · PNG  : iTXt keyword=prompt（原文/UTF-8） + iTXt keyword=stabstab（{"pic1":"…","prompt":"…","v":1}）
+             · JPEG : APP1/XMP 包（xmp:CreatorTool=StabStab，内含同一份 JSON 记录）
+             · WebP : RIFF "XMP " 分块（内容同上）
+             · GIF/BMP/TIFF：不支持 → 记录日志，原图照常落盘（不静默转换、不丢图）
+        └─ 只「插入元数据分块」，IDAT/扫描数据原样保留：分辨率与可见画面不变、不重新编码
+        └─ 重写（改提示词 / 补 picN）会**替换**本软件写过的分块，不会越写越多
+   └─ 用户点「下载保存 / 另存为」→ electron/src/exportImage.js#exportResultImage / #exportResultImageAs
+        · 图片自带的提示词 / picN 优先透传；旧缓存图（旧版本生成、只有提示词没有 picN）用会话记录里的
+          「输入图文件名」补写（main.js#metaFromConversations → requestMetaOfParent → parent.images[].srcName）
+        · 写入失败 / 格式不支持 → 图片照常保存（元数据失败绝不影响图片）
+        · 图片已带齐同一份元数据时原字节透传（不重复写）
+
+[解析] 拖入外部图片（全窗口左右解析分区 / 底部输入框）
+   └─ 渲染进程：window.stab.readImagePrompt(file.path)（拿不到路径时用 readImagePromptFromData）
+        └─ promptmeta.extractPromptFromFile → extractPromptFromBuffer
+             返回：{ok:true, prompt|null, pics:[…], format} | {ok:false, code, message}
+             code = FORMAT_UNSUPPORTED / FORMAT_UNKNOWN / CORRUPT / TOO_LARGE / READ_FAILED
+   └─ 主动解析（释放到左/右半区）：没有提示词 →「该图片未包含可识别的提示词元数据。」
+      （格式不支持 / 损坏 / 读取失败 → 各自的提示，不混为一谈）
+   └─ 底部接收：安静跳过，不打断原有附件流程
+```
+
+**输入图文件名的来源（渲染进程侧，`src/components/Composer.jsx`）**：
+
+| 图片来源 | 有没有真实文件名 | pic 项 |
+| --- | --- | --- |
+| 资源管理器 / 访达拖入（`onDrop` → `addFiles(files, true)`） | 有（`File.name` 就是磁盘文件名） | `"pic1":"用户图.png"` |
+| 输入框「+」多选（`pickFiles`，主进程对话框返回 `path.basename`） | 有 | `"pic1":"用户图.png"` |
+| 系统剪贴板粘贴（`onPaste` → `addFiles(files, false)`） | 没有（浏览器给的是 `image.png` 这类占位名） | `"pic1":""` |
+
+附件对象带 `srcName`（真实文件名，可能为空串），随用户消息落进 `conversations.json`；
+发送时 `lib/send.js` 按图片顺序映射成 `imageNames:[…]` 上行（重发同样带上），主进程 `runner.requestMeta` 再写进结果图。
+
+**元数据随图片走的三条出口**（生成时写进缓存图的字节，之后不再依赖会话文件）：
+
+| 出口 | 是否带元数据 | 说明 |
+| --- | --- | --- |
+| 保存到下载 / 另存为 | 是（且会补写） | `exportImage.applyPromptToBuffer`：自带值优先，旧图缺 picN 用会话记录补写后落盘 |
+| 复制到剪贴板 | HTML 格式带（位图格式不带） | 见下 |
+| 聊天区展示 | — | 展示用 `appfile://` 读的是原文件，元数据一直在文件里 |
+
+复制（`main.js#copyImageToClipboard` → `electron/src/clipboardPayload.js`）一次写三个剪贴板格式：
+
+```
+image（位图）  ← 任何程序都能粘；位图在系统剪贴板里没有元数据容器，**提示词 / picN 一定丢**
+html           ← 内嵌「原图字节」的 data URI（不是重新编码的位图，所以元数据完整），
+                 另加属性：data-filename / data-prompt / data-pics（JSON 数组，没有输入图时不出现）
+text           ← 文件名 + 提示词（纯文本框粘贴用；不含 pic 项，避免污染纯文本粘贴）
+```
+
+- 复制**老图**（只有提示词、没有 picN）时，会在内存里用会话记录补写 pic 项**再嵌进 HTML**
+  —— 只改剪贴板这一份，缓存 / 源文件不动（`exportImage.applyPromptToBuffer` 对 buffer 的复用）。
+- 字节超过 12MB 时不带 HTML（避免剪贴板里塞过大的 base64），位图照常复制。
+- 「粘贴到别的程序再另存为图片」能否留下元数据，取决于该宿主是否保存 HTML 里那份原始字节；
+  只认位图的程序（画图等）仍会丢 —— 这是系统剪贴板本身的限制。
+
+
+**两类临时 UI（全窗口解析分区 / 插入·复制按钮）与底部输入框的关系**（实现见 `src/lib/promptReuse.jsx` + `src/components/PromptDrop.jsx`）：
+
+- 拖动图片期间，`dragover`（window，capture）按**鼠标当前坐标**判断是否落在 `.composer` 的
+  `getBoundingClientRect()` 内 → 在应用非输入框区域**把整个窗口一分为二**显示左右解析区
+  （`topUiPhase()` 纯函数），进入输入框区域立即恢复原界面；`drop`/`dragend`/窗口失焦/`dragover` 静默 800ms 都会收起。
+- 左右解析区的视觉：一层**半透明蒙版**（`--drop-mask-bg` + `backdrop-filter`，原界面仍可见、只是压暗），
+  蒙版边缘一圈 **圆角矩形虚线**，中间是同色同风格的 **S 形虚线**（`ZoneCurve`：同一条贝塞尔曲线的上下两段，
+  SVG 拉伸铺满窗口高度，`vector-effect: non-scaling-stroke` 保证描边不随拉伸变粗）；左半区 = 解析并复制、右半区 = 解析并查看，
+  只有指针所在半区点亮（`hover-active` 时关闭过渡，保证跟手）。
+- 显示触发范围 ≠ 接收范围：只有释放到左/右半区之一才执行解析（左=复制，右=查看弹窗）。
+- 底部实际接收图片后才做附加解析，写进 store 的 `temporary`，顶部出现「插入／复制」；
+  临时状态与两个按钮同生命周期，由 reducer 的 `clearReuse` 在切换 / 新建 / 删除会话时统一清理。
 
 ### 4.4 会话标签自动命名数据流
 
@@ -347,7 +448,9 @@ for f in electron/src/*.js electron/src/api/*.js; do node --check "$f"; done
         { // 用户消息
           "id": "m_u", "role": "user",
           "text": "提示词",
-          "images": [ { "file": "up_xxx.png", "name": "a.png", "mime": "image/png", "width": 1024, "height": 1536 } ],
+          "images": [ { "file": "up_xxx.png", "name": "a.png", "srcName": "用户磁盘上的文件名.png", "mime": "image/png", "width": 1024, "height": 1536 } ],
+          // name    = 附件记录用的名字（粘贴的图是浏览器给的占位名）
+          // srcName = 用户文件的**真实文件名**（拖入 / 多选时有，剪贴板粘贴时是空串）→ 写进结果图 picN、保存时兜底
           "params": { "size": "2048*2048", "n": 1, "negative_prompt": "", "watermark": false, "prompt_extend": true, "seed": "" },
           "model": { "id": "m_xxx", "name": "qwen-image-3.0-pro", "seriesId": "qwen", "sourceId": "official", "protocol": "dashscope-multimodal" },
           "createdAt": 0
@@ -397,6 +500,15 @@ for f in electron/src/*.js electron/src/api/*.js; do node --check "$f"; done
 13. **钥匙不进会话**：`conversations.json` 只记 `meta.modelId/seriesId/sourceId`，绝不写入 API Key。
 14. **标签命名只认首条文字**：自动命名只在「会话里还没有带文字的用户消息」时触发一次；`nameAuto === false`（用户手动改过名）时永不覆盖，见 §4.4。
 15. **重命名模型走 Responses API**：`POST {baseUrl}/responses`（`input` + `instructions` + `reasoning.effort='none'` + `text.format=json_object`），**不是** chat/completions；默认地址 / 默认模型 / 提示模板 / 温度 / Top-P 一律来自 `rename-model.json`（主进程解析，渲染进程只传首条文字）。
+16. **提示词元数据只「插入分块」**：写元数据不得解码 / 重新编码像素，不得改变分辨率与可见画面，不得覆盖已有元数据；GIF/BMP/TIFF 明确返回 `FORMAT_UNSUPPORTED`（不静默转换）。重写本软件自己的记录（改提示词 / 补 picN）时**替换**旧分块，不允许同一份记录叠积，但判据必须保守（`isManagedPngText` 只认 `iTXt keyword=stabstab` 与「纯文本 iTXt prompt」，`tEXt` / `zTXt` 与别家 JSON 一律保留；`isOwnXmpSegment` / `isOwnXmpChunk` 要求 XMP 里出现 `stabstab:Prompt` 或 `StabStab`），绝不能把别的工具（如 ComfyUI）写的元数据删掉。
+17. **元数据失败不许丢图**：`imageutil.withPromptMeta` / `exportImage.applyPromptToBuffer` 失败时都必须返回原字节并继续写盘；生成结果图与用户导出的图片永远优先保证存在。
+18. **提示词与结果图一一对应**：`opts.prompt` 随每个 job 独立传递（`runner.deliverResult` → `downloadImage(..., {prompt, pics})`），并发生成时不得把别的 job 的提示词写进本批图片。
+19. **输入图文件名（picN）随请求走、按位置对齐**：`picN` = 用户本次发送的第 N 张输入图文件名，顺序与 `images` 严格一一对应；读不到名字（系统剪贴板粘贴 / 直接复制）**保留空串但必须保留 pic 项**（`pic1`…`picN` 都在），这样「带了几张输入图」也被记录；纯文生图不得出现任何 pic 项。名字只写文件名本身（`promptmeta.sanitizePicName` 去掉目录），不得把用户路径写进图片。保存 / 另存为时，图片自带值优先，旧图缺 picN 才用会话记录（`conversations.json` 里用户消息的 `images[].srcName`）补写。
+20. **解析区显隐 = 鼠标当前位置**：判定必须每次 `dragover` 重算（`topUiPhase`），不能只在图片进入窗口时设置一次；底部输入框区域判定优先于应用全局判定，且 `drop` 事件只能被处理一次（半区侧 `stopPropagation` + 全局侧 `defaultPrevented` 兜底）。
+21. **解析区覆盖整个窗口且不遮挡原界面**：`position: fixed; inset: 0` 盖住 `.app-shell` 全部内容（含侧栏/标题栏/消息区），
+    底色必须是**半透明**蒙版（禁止用不透明背景把界面盖白），边缘圆角矩形虚线与中间曲线分隔线**同色同风格**（都走
+    `--drop-line` / `--drop-line-strong`），曲线只作装饰（`pointer-events: none`），实际接收者是左右两个半区。
+22. **待复用提示词与「插入／复制」同生命周期**：存在 `state.temporary`，点击按钮 / 发送 / 切换 / 新建 / 删除任意会话（含非当前）/ 全部删除 / 主动改文字都必须一起清空；聚焦、移动光标、附件变化、拖放区显隐不得清理；异步解析必须用版本号 + 会话标识 + 文字快照三重校验，过期结果不得重新显示按钮。
 
 ---
 
@@ -493,7 +605,7 @@ module.exports = {
 无需 GUI，用本地 HTTP 服务模拟各家接口即可验证 runner 的同步/异步/错误/取消全链路 + 各协议解析：
 
 ```bash
-npm run test:api      # 即 node scripts/test-api.js（当前 106 项断言，含模型系列 / 设置迁移 / 重命名模型）
+npm run test:api      # 即 node scripts/test-api.js（当前 217 项断言，含模型系列 / 设置迁移 / 重命名模型 / 图片提示词元数据 + 输入图文件名 picN）
 ```
 
 该脚本自包含：内置一张 16x16 PNG（校验尺寸嗅探 / b64 结果落盘）、临时目录自动清理。可直接参考或扩展。
@@ -508,8 +620,16 @@ mock 端点覆盖：
 - `GET /img.png`（供结果图下载）
 
 此外还直接单测 `modelSeries.load/save/resolveModel`（内置 json 落地、hidden 与同步异步开关持久化、协议不可被本地 json 篡改）、
-`store.loadSettings` 的旧结构迁移，以及 §17/§18 的 `renameModel.load/save/mergeConfig/renderTemplate/pickTitle/sanitizeTitle/generateTitle`
-（含 `temperature/top_p` 透传、`$$` 模板渲染、Responses 响应解析、错误码与回退路径）。
+`store.loadSettings` 的旧结构迁移，§17/§18 的 `renameModel.load/save/mergeConfig/renderTemplate/pickTitle/sanitizeTitle/generateTitle`
+（含 `temperature/top_p` 透传、`$$` 模板渲染、Responses 响应解析、错误码与回退路径），
+以及 §19/§20 的**图片提示词元数据**：PNG iTXt / JPEG XMP / WebP XMP 三格式的中文·换行·引号·反斜杠·emoji 往返、
+**输入图文件名 `pic1`…`picN`**（按位置往返、读不到名字的位置是空串、重写记录时替换而非叠积分块、
+别家工具写的元数据如 ComfyUI 的 `tEXt keyword=prompt` 不被误删）、
+分辨率与 IDAT 不变、`CRC32` 正确、GIF 明确 `FORMAT_UNSUPPORTED`、截断文件返回 `CORRUPT`、4 万字不截断，
+并在真实 runner 上验证「并发生成不串词 → 落盘即带元数据（含 picN）→ 保存 / 另存为补写缺失的 picN → 可被读回」；
+§21 还直接断言 `conversationMeta.metaOfParent/metaFromConversations`（图生图 / 纯文生图 / 老会话缺 `srcName` / 会话数据缺失四种情况）
+与「老图 + 会话兜底 → 导出文件里出现 picN」的完整链路；§22 断言复制到剪贴板的载荷（`clipboardPayload`：data-pics 的 JSON 与转义、
+大小上限、以及「HTML 内嵌的字节本身带着提示词 + pic 项」，含复制老图时的内存补写）。
 
 ### 9.2 冒烟测试（无 GUI 环境）
 
@@ -546,11 +666,30 @@ Get-Content dev-data\log\app-<日期>.log -Tail 20 # 应能看到「渲染进程
 node dev-data/qa/settings-preview.mjs   # 设置弹窗：空态 / 多系列 / 高级设置 / 重命名模型，亮暗两套
 node dev-data/qa/composer-preview.mjs   # 输入区 + 各协议参数面板
 node dev-data/qa/title-test.mjs         # 标签自动命名：触发时机 / 回退 / reducer 守卫（22 项断言）
+node dev-data/qa/promptdrop-preview.mjs # 全窗口解析分区 / 插入·复制 / 图片提示词弹窗，亮暗两套（分 base/overlay/modal 三层出图）
+node dev-data/qa/promptdrop-test.mjs    # 提示词复用纯逻辑断言（append / topUiPhase / reducer 清理规则 / 错误文案，32 项）
+node dev-data/qa/dom-behavior-test.js   # 在真实应用窗口里跑 DOM 行为断言（48 项），electron 跑
+node dev-data/qa/picname-flow-test.js   # 输入图文件名链路（拖入/粘贴 → generate.imageNames，10 项），electron 跑
+node dev-data/qa/meta-decode-check.js   # 元数据写入后仍可被真实解码器解码（electron 跑，PNG/JPEG/WebP）
 ```
 
-要点：用 esbuild 的 `onResolve` 把 `lib/store.jsx` 换成桩（返回构造好的 state），
+`picname-flow-test.js` 用真实 `dist/index.html` + 真实 `lib/send.js`，只把 `api:generate` 换成捕获桩：
+模拟「拖入 `图片.png` + `参考图.jpg` → 输入「改为黑白」→ 发送」，断言前端发出的 `imageNames` 就是
+`["图片.png","参考图.jpg"]`（顺序一致）；再模拟系统剪贴板粘贴（浏览器给的占位名 `image.png`），
+断言 `imageNames` 是 `[""]`（pic 项位置保留、值为空串）。
+
+`dom-behavior-test.js` 用 electron 加载真实的 `dist/index.html`，再注入 `promptdrop-dom-test-inject.js`：
+它按真实 DOM 事件序列模拟「拖动图片 → 鼠标在顶栏/输入框之间移动 → 松手 → 改文字」，
+断言解析分区随指针实时切换（含覆盖整个窗口 / 左右均分 / 曲线虚线 / 半透明蒙版）、「插入／复制」的出现/清理/异步竞态、插入的追加语义与光标位置。
+两点坑：**无头窗口的 `requestAnimationFrame` 会被节流到 ~2 秒**（用它等 React 刷新会误判，脚本里改用固定短等待）；
+`window.stab.*` 是 contextBridge 冻结对象，**改不了** —— 解析结果由测试 preload（`qa-test-preload.js`）+ 主进程
+`qa:configure-prompt` / `qa:prompt-calls` 控制。
+
+要点：用 esbuild 的 `onResolve` 把 `lib/store.jsx` 换成桩（返回构造好的 state，但 `reducer` / `initialState` 仍是真实实现），
 用 `define` 注入 `model-series.json` / `rename-model.json` / `listProtocols()` 的真实内容，
-再用 `--headless=new --screenshot=…` 出 PNG；`title-test.mjs` 则直接跑真实 `lib/title.js` 与 `store.jsx` 的 reducer（`window.stab` 用桩）。
+再用 `--headless=new --screenshot=…` 出 PNG；`title-test.mjs` / `promptdrop-test.mjs` 则直接跑真实
+`lib/title.js`、`lib/promptReuse.jsx`、`store.jsx` 的 reducer 与 `Composer.appendPromptText`（`window.stab` 用桩）。
+注意：`promptdrop-preview.mjs` 里两个桩必须用**不同的 namespace**（esbuild 的 `onLoad` 结果按 `(namespace, path)` 缓存）。
 
 ---
 
@@ -568,6 +707,13 @@ node dev-data/qa/title-test.mjs         # 标签自动命名：触发时机 / �
 | 改重命名模型的协议/解析 | `electron/src/renameModel.js#generateTitle/sanitizeTitle/extractText/pickTitle`（Responses API，非 chat/completions） |
 | 改模型解析规则 | `electron/src/modelSeries.js#resolveModel` **与** `src/lib/models.js#resolveModel`（两处同口径） |
 | 改会话/消息数据结构 | `lib/store.jsx` 的 reducer + `lib/send.js` 构造器 + 主进程 `normalizeConversationsOnStartup` |
+| 改提示词元数据的存储约定 / 支持的格式 | `electron/src/promptmeta.js`（`PROMPT_KEY` / `PIC_KEY` / `buildRecord` / `parseRecord` / `pngInsert` / `jpegInsert` / `webpInsert` / `mergeMeta`）；**写入端与读取端同处一文件，改一处即可保持一致** |
+| 改输入图文件名（picN）的收集方式 | 渲染进程 `src/components/Composer.jsx#addFiles(named)` + `src/lib/images.js#sourceFileName`（拖入/多选有名字，粘贴留空）→ `src/lib/send.js#imageNamesOf` → 主进程 `runner.js#requestMeta`；兜底查询在 `electron/src/conversationMeta.js` |
+| 改结果图导出行为（保存路径 / 元数据透传 / 补写 picN） | `electron/src/exportImage.js`（`applyPromptToBuffer` → `promptmeta.mergeMeta`）+ `main.js` 的 `image:save` / `image:save-as` / `result:download`（同级目录兜底在 `conversationMeta.metaFromConversations`） |
+| 改顶部解析区显隐规则 | `src/lib/promptReuse.jsx#topUiPhase/useAppFileDrag`（纯函数可直接被 QA 断言） |
+| 改「插入／复制」的清理时机 | `src/lib/store.jsx` 的 `clearReuse` + `CONV_REUSE_SET/CLEAR` + `src/components/Composer.jsx#onTextInput/doSend` |
+| 改插入的拼接规则 | `src/components/Composer.jsx#appendPromptText`（append，不覆盖、不按光标插入） |
+| 改解析失败文案 | `src/lib/promptReuse.jsx` 的 `PROMPT_MESSAGES` / `promptErrorText`（区分不支持 / 未找到 / 损坏 / 读取失败） |
 | 改持久化字段默认值 | `electron/src/store.js` 的 `DEFAULT_SETTINGS` / `DEFAULT_CONVERSATIONS` |
 | 改主题配色 | `src/styles/app.css` 顶部 CSS 变量 |
 | 加 IPC | `preload.js` 暴露 + `main.js` `ipcMain.handle` + 渲染进程 `window.stab.*` |
@@ -582,3 +728,4 @@ node dev-data/qa/title-test.mjs         # 标签自动命名：触发时机 / �
 - `runner` 日志会记录模型名、协议、模式、图片数量、size、耗时、错误码/信息，便于排查但脱敏。
 - 提交代码时不要把 `dev-data/`、`stabstab-data/`、`release/`、`node_modules/` 纳入版本控制（已在 `.gitignore`）。
 - **不要**把任何 Personal Access Token / API Key 提交进仓库或写入脚本。
+

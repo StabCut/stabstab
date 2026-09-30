@@ -1,12 +1,22 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useApp, useToast } from '../lib/store.jsx';
-import { fileToDataUrl, readImageMeta, isImageFile } from '../lib/images.js';
+import { fileToDataUrl, readImageMeta, isImageFile, sourceFileName } from '../lib/images.js';
+import { readFirstPromptFromFiles, usePromptReuse } from '../lib/promptReuse.jsx';
 import { formatBytes } from '../lib/util.js';
 import { sendNew, buildParams, defaultParams } from '../lib/send.js';
 import { allModels, resolveModel, sizeLabel } from '../lib/models.js';
 import Icon from './Icon.jsx';
 
 const MAX_IMAGES = 3; // API 规则：最多 3 张输入图片
+
+/** 「插入」时的追加拼接：输入框非空时用换行分隔，避免粘连也不重复加空行 */
+export function appendPromptText(prev, prompt) {
+  const base = typeof prev === 'string' ? prev : '';
+  const add = typeof prompt === 'string' ? prompt : '';
+  if (!add) return base;
+  if (!base) return add;
+  return `${base.replace(/[\s\u3000]+$/, '')}\n\n${add}`;
+}
 
 /** 参数面板：字段完全由当前模型所属协议的 paramSchema 决定 */
 export function ParamsPanel({ params, setParams, schema }) {
@@ -82,6 +92,7 @@ export function ParamsPanel({ params, setParams, schema }) {
 export default function Composer({ conv, busy }) {
   const { state, dispatch } = useApp();
   const toast = useToast();
+  const { registerComposerEl, setReusePrompt, nextRequestId } = usePromptReuse();
   const settings = state.settings;
 
   const [text, setText] = useState('');
@@ -95,6 +106,15 @@ export default function Composer({ conv, busy }) {
   const taRef = useRef(null);
   const paramsWrapRef = useRef(null);
   const dragCounter = useRef(0);
+  // 由「插入」程序化写入的文本：不是用户主动编辑，不能因此清理临时状态
+  const silentTextRef = useRef(null);
+  // 输入框文字快照：异步解析回来时比对，用户已改过文字就不再显示插入／复制
+  const lastEditRef = useRef('');
+  // 本次「实际接收」的解析版本号：切换会话 / 发送 / 新建都会作废未完成的解析
+  const parseRef = useRef(0);
+  // 当前会话 id 的实时快照（异步解析回来时比对，避免给别的会话显示按钮）
+  const convIdRef = useRef(conv ? conv.id : null);
+  convIdRef.current = conv ? conv.id : null;
 
   const models = useMemo(
     () => allModels(settings, state.modelSeries),
@@ -149,13 +169,99 @@ export default function Composer({ conv, busy }) {
     setText('');
     setAttachments([]);
     setSending(false);
+    parseRef.current = 0;      // 作废未完成的解析：过期结果不得再显示插入／复制
+    lastEditRef.current = '';
+    silentTextRef.current = null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [convId]);
 
   const log = (level, message, extra) => window.stab.log(level, message, extra);
 
-  /** 添加本地 File 对象（粘贴 / 拖拽） */
-  const addFiles = async (fileList) => {
+  /**
+   * 用户主动修改输入框文字 → 清理待复用提示词与两个临时按钮。
+   * 只认「值真的变了」：聚焦、移动光标、选中文本、附件变化、组件重渲染都不会触发。
+   */
+  const onTextInput = (e) => {
+    const v = e.target.value;
+    if (silentTextRef.current !== null && v === silentTextRef.current) {
+      // 程序化写入（插入按钮）后的首次触发：不算用户编辑
+      silentTextRef.current = null;
+      lastEditRef.current = v;
+      return;
+    }
+    silentTextRef.current = null;
+    if (v !== lastEditRef.current) {
+      lastEditRef.current = v;
+      parseRef.current = 0;      // 用户已接管输入框，未完成的解析结果作废
+      dispatch({ type: 'CONV_REUSE_CLEAR' });
+    }
+  };
+
+  /** 「插入」：追加到文本末尾（append，不覆盖、不插入到光标处），并聚焦 + 光标到末尾 */
+  const insertPrompt = (value) => {
+    const next = appendPromptText(taRef.current ? taRef.current.value : text, value);
+    silentTextRef.current = next;
+    lastEditRef.current = next;
+    setText(next);
+  };
+
+  useEffect(() => {
+    const onInsert = (e) => {
+      const v = e && e.detail ? e.detail.text : '';
+      if (typeof v !== 'string' || !v) return;
+      insertPrompt(v);
+    };
+    window.addEventListener('stabstab:insert-prompt', onInsert);
+    return () => window.removeEventListener('stabstab:insert-prompt', onInsert);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 文本变化后把光标放到末尾并保持焦点（textarea 不自动长高，这里顺手把滚动压到底部）
+  useEffect(() => {
+    const ta = taRef.current;
+    if (!ta) return;
+    if (silentTextRef.current !== null && ta.value === silentTextRef.current) {
+      ta.focus();
+      try { ta.setSelectionRange(ta.value.length, ta.value.length); } catch (err) { /* ignore */ }
+      ta.scrollTop = ta.scrollHeight;
+    }
+  }, [text]);
+
+  /**
+   * 实际接收到图片后，读取图片文件里的「生成提示词」元数据（附加解析）。
+   * - 只有真的松手接收（addFiles / pickFiles）才走这里；仅悬停拖过不算接收，不清除上一批状态。
+   * - 未找到提示词时安静地继续原流程，不弹打扰性提示。
+   * - 异步安全：版本号 + 会话标识 + 输入框文字快照三重比对，过期结果不显示按钮。
+   */
+  const parseReusedPrompt = async (files) => {
+    parseRef.current = nextRequestId();
+    setReusePrompt('');                       // 新一批图片：先清掉上一批的待复用提示词
+    const myReq = parseRef.current;
+    const myConv = convId;
+    const textSnapshot = lastEditRef.current;
+    let r;
+    try {
+      r = await readFirstPromptFromFiles(files);
+    } catch (e) {
+      return;
+    }
+    if (!r || !r.ok || !r.prompt) return;
+    if (parseRef.current !== myReq) return;                                    // 已有更新的一批
+    if (convIdRef.current !== myConv) return;                                  // 会话已切换
+    if (lastEditRef.current !== textSnapshot) return;                          // 用户已改过文字
+    setReusePrompt(r.prompt, 'bottom');
+  };
+
+  /**
+   * 添加本地 File 对象（粘贴 / 拖拽）。
+   * @param {FileList|File[]} fileList
+   * @param {boolean} named 这些 File 是否带着**用户文件的真实名字**：
+   *   资源管理器 / 访达拖入 = true（File.name 就是磁盘上的文件名）；
+   *   系统剪贴板粘贴 = false（浏览器给的是 "image.png" 这类占位名，不是用户文件的名字）。
+   *   真实名字会随请求上行、写进结果图的 picN；拿不到名字时该位置是空串，但 pic 项仍在
+   *   ——「这次发送带了几张输入图」同样被记录下来（见 lib/send.js 的 imageNames）。
+   */
+  const addFiles = async (fileList, named = true) => {
     const files = Array.from(fileList || []).filter(isImageFile);
     if (!files.length) { toast('未识别到图片文件', 'warn'); return; }
     const room = MAX_IMAGES - attachments.length;
@@ -173,7 +279,8 @@ export default function Composer({ conv, busy }) {
         added.push({
           file: saved.file, name: f.name || 'image.png', mime: f.type || 'image/png',
           width: meta.width || saved.width, height: meta.height || saved.height,
-          bytes: saved.bytes, dataUrl
+          bytes: saved.bytes, dataUrl,
+          srcName: named ? sourceFileName(f) : ''
         });
       } catch (e) {
         toast(`添加图片失败: ${e.message}`, 'error');
@@ -181,9 +288,11 @@ export default function Composer({ conv, busy }) {
       }
     }
     if (added.length) setAttachments((prev) => [...prev, ...added]);
+    // 附加解析与原接收流程并行，不阻塞、失败也不影响图片已经被接收
+    parseReusedPrompt(use);
   };
 
-  /** “+” 按钮：资源管理器多选 */
+  /** “+” 按钮：资源管理器多选（主进程返回的就是磁盘上的真实文件名） */
   const pickFiles = async () => {
     const r = await window.stab.pickImages();
     if (!r.ok || !r.files || !r.files.length) return;
@@ -201,7 +310,8 @@ export default function Composer({ conv, busy }) {
         added.push({
           file: saved.file, name: f.name, mime: f.mime,
           width: meta.width || saved.width, height: meta.height || saved.height,
-          bytes: saved.bytes, dataUrl: f.dataUrl
+          bytes: saved.bytes, dataUrl: f.dataUrl,
+          srcName: sourceFileName(f)
         });
       } catch (e) {
         toast(`添加图片失败: ${e.message}`, 'error');
@@ -222,7 +332,7 @@ export default function Composer({ conv, busy }) {
     }
     if (files.length) {
       e.preventDefault();
-      addFiles(files);
+      addFiles(files, false);       // 剪贴板图片：拿不到真实文件名 → pic 项留空
     }
     // 纯文字粘贴走默认行为
   };
@@ -231,7 +341,7 @@ export default function Composer({ conv, busy }) {
     e.preventDefault();
     dragCounter.current = 0;
     setDragActive(false);
-    if (e.dataTransfer && e.dataTransfer.files) addFiles(e.dataTransfer.files);
+    if (e.dataTransfer && e.dataTransfer.files) addFiles(e.dataTransfer.files, true);   // 拖入：File.name 即真实文件名
   };
 
   const canSend = !!conv && !sending && !busy && !!current && (text.trim().length > 0 || attachments.length > 0);
@@ -252,6 +362,11 @@ export default function Composer({ conv, busy }) {
       });
       setText('');
       setAttachments([]);
+      // 已发送：清空待复用提示词与两个临时按钮，并作废未完成的解析
+      parseRef.current = 0;
+      lastEditRef.current = '';
+      silentTextRef.current = null;
+      dispatch({ type: 'CONV_REUSE_CLEAR' });
       if (taRef.current) taRef.current.focus();
     } catch (e) {
       toast('发送失败: ' + e.message, 'error');
@@ -290,6 +405,7 @@ export default function Composer({ conv, busy }) {
 
   return (
     <div
+      ref={registerComposerEl}
       className={`composer ${dragActive ? 'drag-over' : ''}`}
       onDragEnter={(e) => { e.preventDefault(); dragCounter.current++; setDragActive(true); }}
       onDragLeave={(e) => { e.preventDefault(); dragCounter.current--; if (dragCounter.current <= 0) setDragActive(false); }}
@@ -321,7 +437,8 @@ export default function Composer({ conv, busy }) {
           placeholder={placeholder}
           value={text}
           rows={2}
-          onChange={(e) => setText(e.target.value)}
+          spellCheck={false}
+          onChange={(e) => { setText(e.target.value); onTextInput(e); }}
           onKeyDown={onKeyDown}
           onPaste={onPaste}
         />

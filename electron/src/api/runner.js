@@ -44,7 +44,9 @@ async function readJsonSafe(res) {
 /**
  * 启动一次生成。立即返回 {jobId}，结果经 sendEvent 推送。
  * opts: {jobId, conversationId, messageId, protocol, model, apiKey, baseUrl,
- *        mode:'sync'|'async', timeoutSec, prompt, images:[dataUrl], params, cacheDir}
+ *        mode:'sync'|'async', timeoutSec, prompt, images:[dataUrl], imageNames:[string], params, cacheDir}
+ *   imageNames：用户这次一起发送的输入图文件名（与 images 顺序一一对应，读不到就是空串），
+ *               会被写进结果图的 pic1…picN（见 requestMeta）。
  */
 function start(opts, sendEvent) {
   const { jobId, conversationId, messageId } = opts;
@@ -144,6 +146,29 @@ function start(opts, sendEvent) {
   return { jobId };
 }
 
+/**
+ * 本次请求要写进结果图的元数据：提示词 + 用户随这次请求一起发送的输入图文件名。
+ *
+ * 规则（与 promptmeta 的存储约定一致）：
+ *   - 纯文生图（没带输入图）→ 只有 prompt，记录仍是 {"prompt":"…","v":1}
+ *   - 带了输入图 → 追加 pic1…picN（与图片发送顺序一一对应）；某个名字读不到
+ *     （系统剪贴板直接粘贴等）时该位置留空串，但 pic 项必须存在，于是「发送了几张输入图」
+ *     这件事本身也被记下来了。
+ *   - 名字来源两个：opts.imageNames（渲染进程按图片顺序传来的真实文件名）或
+ *     opts.pics（重启后恢复的异步任务，由主进程从会话记录里取回）。
+ *   - opts 是每个 job 独立的对象，并发生成不会串到其它 job。
+ */
+function requestMeta(opts) {
+  const names = Array.isArray(opts.pics) ? opts.pics
+    : (Array.isArray(opts.imageNames) ? opts.imageNames : []);
+  const imageCount = Array.isArray(opts.images) && opts.images.length ? opts.images.length : names.length;
+  const pics = [];
+  for (let i = 0; i < imageCount; i++) pics.push(names[i] == null ? '' : String(names[i]));
+  const prompt = typeof opts.prompt === 'string' ? opts.prompt : '';
+  if (!prompt.trim() && !pics.length) return null;
+  return { prompt, pics };
+}
+
 /** 下载结果图片并下发 result 事件 */
 async function deliverResult(parsed, opts, job, finish, sendEvent) {
   const urls = parsed.images || [];
@@ -158,10 +183,12 @@ async function deliverResult(parsed, opts, job, finish, sendEvent) {
   }
 
   const images = [];
+  // 本次请求的实际提示词 + 输入图文件名：与这一批结果图一一对应地写进图片元数据
+  const promptMeta = requestMeta(opts);
   for (const url of urls) {
     if (job.cancelled) return;
     try {
-      const item = await downloadImage(url, opts.cacheDir, 'result');
+      const item = await downloadImage(url, opts.cacheDir, 'result', 120000, promptMeta);
       if (!item.width && usage && usage.output_width) item.width = usage.output_width;
       if (!item.height && usage && usage.output_height) item.height = usage.output_height;
       images.push({ file: item.file, width: item.width, height: item.height, url, bytes: item.bytes });
@@ -258,7 +285,8 @@ async function cancel(jobId, sendEvent) {
 
 /**
  * 恢复一个异步任务的轮询（应用重启后，凭已保存的 taskId 继续）。
- * opts: {jobId, conversationId, messageId, protocol, apiKey, baseUrl, taskId, timeoutSec, cacheDir}
+ * opts: {jobId, conversationId, messageId, protocol, apiKey, baseUrl, taskId, timeoutSec, cacheDir,
+ *        prompt?, pics?}   ← prompt / pics 由主进程从会话记录里取回，落盘时要写进结果图元数据
  */
 function resume(opts, sendEvent) {
   const adapter = getAdapter(opts.protocol);

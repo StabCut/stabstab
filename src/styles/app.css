@@ -427,6 +427,137 @@ button { cursor: pointer; }
   padding: 12px 18px; border-top: 1px solid var(--border);
 }
 
+/* ================= 待复用提示词的「插入／复制」临时按钮 ================= */
+/* 位于工具栏右侧、同步模式左边；间距与「同步模式 ↔ 文件夹」保持一致（.chat-header-right 的 gap=10px）， */
+/* 组内用小间距，靠工具栏原有的 flex 布局，不使用绝对定位。 */
+.prompt-reuse-actions { display: inline-flex; align-items: center; gap: 6px; }
+
+/* ================= 提示词解析拖放区（覆盖整个软件窗口的左右两块） ================= */
+/* 拖动图片、鼠标位于「应用内且不在底部输入框接收区域」时出现：
+   - 原界面不被遮盖，只是压暗成半透明蒙版
+   - 蒙版是圆角矩形容器，边缘一圈虚线；两个半区是它的子元素，因此高亮也被裁进同一个圆角里
+   - 中间一条曲线虚线（与边缘虚线同色同风格），曲线坐标由 PromptDrop.jsx 按 px 计算，几何与高亮边界一致
+   - 只有鼠标实际所在的半区才点亮 */
+.prompt-drop-overlay {
+  position: fixed; inset: 0; z-index: 90;
+  opacity: 0; visibility: hidden; pointer-events: none;
+  transition: opacity 0.14s ease-out, visibility 0.14s;
+}
+.prompt-drop-overlay.visible { opacity: 1; visibility: visible; pointer-events: auto; }
+/* 高亮态必须精确跟手：拖动过程中指针切换半区时要立刻点亮/熄灭，不做过渡 */
+.prompt-drop-overlay.hover-active * { transition: none !important; }
+/* QA 静态截图用：静态预览渲染不出动画，直接给终态（见 dev-data/qa/promptdrop-entry.jsx） */
+.prompt-drop-overlay.qa-static, .prompt-drop-overlay.qa-static * { transition: none !important; }
+@media (prefers-reduced-motion: reduce) { .prompt-drop-overlay { transition: none; } }
+
+:root {
+  /* 半透明蒙版：原界面仍可见（浅色主题用冷灰紫、深色主题用近黑），虚线统一用高对比中性色 */
+  --drop-mask-bg: rgba(24, 25, 38, 0.42);
+  --drop-accent-glow: rgba(124, 112, 240, 0.34);
+  --drop-line: rgba(255, 255, 255, 0.60);
+  --drop-line-strong: rgba(255, 255, 255, 0.95);
+  --drop-icon-bg: rgba(255, 255, 255, 0.10);
+}
+:root[data-theme='light'] { --drop-mask-bg: rgba(28, 29, 46, 0.40); }
+:root[data-theme='dark'] { --drop-mask-bg: rgba(8, 9, 15, 0.52); }
+
+/* 圆角蒙版：既是压暗层，也是裁剪容器（半区高亮不会溢出圆角） */
+.prompt-drop-mask {
+  position: absolute; inset: 7px; border-radius: 20px; overflow: hidden;
+  border: 2px dashed var(--drop-line); background: var(--drop-mask-bg);
+  -webkit-backdrop-filter: blur(2.5px) saturate(0.9); backdrop-filter: blur(2.5px) saturate(0.9);
+}
+.prompt-drop-zones { position: absolute; inset: 0; display: flex; }
+
+.prompt-zone {
+  position: relative; flex: 1; min-width: 0;
+  display: flex; align-items: center; justify-content: center;
+  transition: background 0.16s ease-out;
+}
+/* 半区高亮：只铺一层柔和渐变，不描边、不外扩（边界由曲线裁剪决定） */
+.prompt-zone.hover { background: radial-gradient(118% 76% at 50% 50%, var(--drop-accent-glow), transparent 72%); }
+
+/* 曲线虚线分隔：SVG 与蒙版内容区 1:1 对齐（viewBox = 内容区 px），虚线间距因此均匀 */
+.prompt-curve {
+  z-index: 2;   /* 明确压在蒙版之上，避免被后续兄弟层覆盖 */
+  position: absolute; left: 9px; top: 9px;
+  pointer-events: none;
+}
+.prompt-curve-line {
+  fill: none; stroke: var(--drop-line); stroke-width: 2;
+  stroke-dasharray: 9 8; stroke-linecap: round;
+  transition: stroke 0.16s ease-out;
+}
+/* 悬停某一侧时，分隔线一起加亮 */
+.prompt-drop-overlay.hover-active .prompt-curve-line { stroke: var(--drop-line-strong); }
+
+.prompt-zone-body {
+  position: relative; z-index: 1; text-align: center; color: #fff;
+  display: flex; flex-direction: column; align-items: center; gap: 14px;
+  padding: 32px; max-width: 420px;
+}
+.prompt-zone-icon {
+  width: 72px; height: 72px; border-radius: 22px;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--drop-line); background: var(--drop-icon-bg);
+  color: #fff; transition: border-color 0.16s, background 0.16s, box-shadow 0.16s;
+}
+.prompt-zone-title {
+  font-size: 22px; font-weight: 700; letter-spacing: 0.6px;
+  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.45);
+}
+.prompt-zone-hint {
+  font-size: 13.5px; line-height: 1.5; color: rgba(255, 255, 255, 0.82);
+  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.4);
+}
+
+/* 悬停半区：图标点亮、文案提亮 */
+.prompt-zone.hover .prompt-zone-icon {
+  border-color: var(--drop-line-strong); background: rgba(124, 112, 240, 0.55);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.30);
+}
+.prompt-zone.hover .prompt-zone-title { text-shadow: 0 2px 16px rgba(0, 0, 0, 0.55); }
+
+/* 窄窗口：字号与图标收一点，避免挤在曲线边缘 */
+@media (max-width: 860px) {
+  .prompt-zone-title { font-size: 18px; }
+  .prompt-zone-icon { width: 58px; height: 58px; border-radius: 18px; }
+  .prompt-zone-body { padding: 20px; gap: 10px; }
+}
+
+/* ================= 图片提示词查看弹窗 ================= */
+.prompt-modal {
+  width: auto; min-width: 340px; max-width: 92vw;
+  height: auto; max-height: 80vh;
+  border-radius: 14px; box-shadow: var(--shadow); position: relative;
+}
+/* 初始高度按内容自适应；超过 80vh 后只有正文区域滚动 */
+.prompt-modal-scroll {
+  flex: 1; min-height: 0; overflow: auto; padding: 16px 18px;
+  border-radius: 14px 14px 0 0;
+}
+.prompt-modal-text {
+  margin: 0; white-space: pre-wrap; word-break: break-word;
+  font-family: var(--font); font-size: 13.5px; line-height: 1.65;
+  color: var(--text); user-select: text; cursor: text;
+}
+/* 底部固定操作栏：左侧复制、右侧关闭（关闭按钮带默认外边距，这里靠 space-between 顶到最右） */
+.prompt-modal-footer {
+  justify-content: space-between; flex-shrink: 0;
+  padding: 12px 18px; border-radius: 0 0 14px 14px; background: var(--bg-panel);
+}
+.prompt-modal-footer .send-btn { margin-left: auto; }
+/* 右下角缩放把手（仅右下角，保证最小 340×180、最大不超过应用可视区域） */
+.prompt-resize-handle {
+  position: absolute; right: 0; bottom: 0; width: 18px; height: 18px;
+  cursor: nwse-resize; border-bottom-right-radius: 14px;
+  background:
+    linear-gradient(135deg, transparent 0 42%, var(--border) 42% 50%, transparent 50% 62%,
+      var(--border) 62% 70%, transparent 70% 82%, var(--border) 82% 90%, transparent 90%);
+}
+body.modal-resizing { cursor: nwse-resize; }
+body.modal-resizing * { user-select: none !important; }
+
 .settings-body { display: flex; flex: 1; min-height: 0; }
 .settings-tabs {
   width: 150px; border-right: 1px solid var(--border); padding: 12px;
@@ -578,12 +709,12 @@ button { cursor: pointer; }
 /* ================= Toast ================= */
 .toasts {
   position: fixed; right: 18px; bottom: 18px; z-index: 300;
-  display: flex; flex-direction: column; gap: 8px; max-width: 420px;
+  display: flex; flex-direction: column; gap: 8px; max-width: 420px; pointer-events: none;
 }
 .toast {
   background: var(--bg-panel); color: var(--text); border: 1px solid var(--border);
   border-left: 4px solid var(--accent); border-radius: 8px; box-shadow: var(--shadow);
-  padding: 10px 14px; font-size: 13px; word-break: break-all;
+  padding: 10px 14px; font-size: 13px; word-break: break-all; pointer-events: auto;
   animation: toast-in 0.18s ease-out;
 }
 .toast.error { border-left-color: var(--danger); }
@@ -593,3 +724,33 @@ button { cursor: pointer; }
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+/* ================= 图片右键菜单（复制 / 保存到下载 / 另存为） ================= */
+/* ImageContextMenu.jsx 通过 createPortal 挂到 body 上的固定定位浮层：
+   层级高于全屏预览（.lightbox 的 200），因此在预览里右键也能看见菜单。 */
+.img-ctx-menu {
+  position: fixed; z-index: 300; min-width: 176px; padding: 5px;
+  background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 14px 34px rgba(8, 9, 14, 0.30);
+  font-size: 13px; color: var(--text); user-select: none;
+}
+.img-ctx-item {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  padding: 7px 10px; border: none; background: transparent; border-radius: 7px;
+  color: inherit; font-size: 13px; text-align: left; cursor: pointer;
+}
+.img-ctx-item .icon { color: var(--text-dim); }
+.img-ctx-item:hover:not(:disabled) { background: var(--bg-active); }
+.img-ctx-item:hover:not(:disabled) .icon { color: var(--accent); }
+.img-ctx-item:disabled { opacity: 0.55; cursor: default; }
+.img-ctx-label { flex: 1; }
+.img-ctx-busy { font-size: 11px; color: var(--text-dim); }
+/* 轻提示里的文件路径行：单独一块、默认虚线（一眼看出是链接），悬停变实线下划线，点击在文件管理器中打开 */
+.toast-path {
+  display: block; margin-top: 6px; padding: 0; max-width: 100%;
+  background: none; border: none; text-align: left;
+  color: var(--text-dim); font-size: 12px; line-height: 1.45;
+  word-break: break-all; text-decoration: underline dotted; text-underline-offset: 2px;
+}
+.toast-path:hover { color: var(--accent); text-decoration: underline solid; }
+.toast-path:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; border-radius: 3px; }

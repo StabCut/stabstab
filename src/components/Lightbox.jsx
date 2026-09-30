@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useApp } from '../lib/store.jsx';
 import { clamp } from '../lib/util.js';
 import Icon from './Icon.jsx';
+import ImageContextMenu, { useImageMenu } from './ImageContextMenu.jsx';
 
 const MIN_SCALE = 0.1;
 const MAX_SCALE = 12;
@@ -21,6 +22,8 @@ export default function Lightbox() {
 
   const reset = useCallback(() => { setScale(1); setTx(0); setTy(0); }, []);
   const close = useCallback(() => dispatch({ type: 'LIGHTBOX_CLOSE' }), [dispatch]);
+  // 图片右键菜单（复制 / 保存到下载 / 另存为）；菜单打开时 ESC 只收起菜单
+  const ctx = useImageMenu();
   const goto = useCallback((i) => {
     if (i < 0 || i >= images.length) return;
     dispatch({ type: 'LIGHTBOX_INDEX', index: i });
@@ -68,6 +71,7 @@ export default function Lightbox() {
 
   return (
     <div className="lightbox" ref={wrapRef} onClick={(e) => { if (e.target === e.currentTarget) close(); }}>
+      {ctx.menu && <ImageContextMenu menu={ctx.menu} onClose={ctx.closeMenu} />}
       <div className="lightbox-top">
         <span className="lightbox-title">{current.title || ''}（{index + 1}/{images.length}）</span>
         <div className="lightbox-tools">
@@ -96,6 +100,7 @@ export default function Lightbox() {
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onClick={(e) => e.stopPropagation()}
+        onContextMenu={(e) => ctx.openMenu(e, current)}
         onError={(e) => { e.currentTarget.classList.add('broken'); }}
       />
       <div className="lightbox-hint">滚轮缩放 · 拖动查看细节 · ESC 关闭</div>

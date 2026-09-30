@@ -3,7 +3,9 @@ import { useApp, useToast } from '../lib/store.jsx';
 import { uploadUrl, formatClock } from '../lib/util.js';
 import { buildParams, resendEdited, defaultParams } from '../lib/send.js';
 import { resolveModel, sizeLabel } from '../lib/models.js';
+import { missingImageMessage } from '../lib/imageActions.js';
 import Icon from './Icon.jsx';
+import ImageContextMenu, { useImageMenu } from './ImageContextMenu.jsx';
 
 export default function UserMessage({ conv, msg }) {
   const { state, dispatch } = useApp();
@@ -14,6 +16,8 @@ export default function UserMessage({ conv, msg }) {
   // 编辑时使用「当前参数面板」的值：这里提供与发送时一致的默认
   const [editParams, setEditParams] = useState({ size: 'auto' });
   const [resending, setResending] = useState(false);
+  // 图片右键菜单（复制 / 保存到下载 / 另存为）：菜单状态由组件持有，菜单项见 lib/imageActions.js
+  const imageMenu = useImageMenu();
 
   // 该消息当时使用的模型（可能已被用户删除 → current 为 null，此时禁用「编辑重发」）
   const current = resolveModel(state.settings, state.modelSeries, state.protocols, msg.model && msg.model.id);
@@ -26,7 +30,7 @@ export default function UserMessage({ conv, msg }) {
   const openLightbox = (index) => {
     const images = (msg.images || [])
       .filter((im) => im.file)
-      .map((im, i) => ({ src: uploadUrl(im.file), title: `输入图 ${i + 1} · ${im.width || '?'}×${im.height || '?'}` }));
+      .map((im, i) => ({ src: uploadUrl(im.file), kind: 'upload', file: im.file, name: im.name || '', title: `输入图 ${i + 1} · ${im.width || '?'}×${im.height || '?'}` }));
     if (!images.length) { toast('图片文件不存在（可能已被清理）', 'warn'); return; }
     // 找到被点击图在过滤后列表中的下标
     const validIdx = (msg.images || []).slice(0, index + 1).filter((im) => im.file).length - 1;
@@ -73,8 +77,9 @@ export default function UserMessage({ conv, msg }) {
 
   const copyImage = async (im) => {
     const r = await window.stab.copyUploadImage(im.file);
-    if (r.ok) toast('图片已复制到剪贴板', 'info');
-    else toast(r.message || '复制失败', 'error');
+    if (!r.ok) { toast(r.message || '复制失败', 'error'); return; }
+    toast(r.withPics ? '图片已复制到剪贴板（含提示词与输入图文件名）'
+      : (r.withPrompt ? '图片已复制到剪贴板（含提示词元数据）' : '图片已复制到剪贴板'), 'info');
   };
 
   const remove = () => {
@@ -131,6 +136,7 @@ export default function UserMessage({ conv, msg }) {
 
   return (
     <div className="msg user">
+      {imageMenu.menu && <ImageContextMenu menu={imageMenu.menu} onClose={imageMenu.closeMenu} />}
       <div className="msg-bubble user-bubble">
         {(msg.images && msg.images.length > 0) && (
           <div className="msg-images">
@@ -142,11 +148,17 @@ export default function UserMessage({ conv, msg }) {
                     src={uploadUrl(im.file)}
                     title={`输入图 ${i + 1}：${im.width || '?'}×${im.height || '?'} · 点击预览`}
                     onClick={() => openLightbox(i)}
+                    onContextMenu={(e) => imageMenu.openMenu(e, { kind: 'upload', file: im.file, name: im.name })}
                   />
                   <button className="thumb-copy" title="复制图片" onClick={() => copyImage(im)}><Icon name="copy" size={13} /></button>
                 </div>
               ) : (
-                <div key={i} className="msg-thumb missing">图片缺失</div>
+                <div
+                  key={i}
+                  className="msg-thumb missing"
+                  title="图片文件不存在（可能已被清理）"
+                  onContextMenu={(e) => { e.preventDefault(); toast(missingImageMessage('upload'), 'warn'); }}
+                >图片缺失</div>
               )
             )}
           </div>

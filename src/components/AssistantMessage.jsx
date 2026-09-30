@@ -2,6 +2,7 @@ import React from 'react';
 import { useApp, useToast } from '../lib/store.jsx';
 import { cacheUrl, formatClock, formatBytes } from '../lib/util.js';
 import Icon from './Icon.jsx';
+import ImageContextMenu, { useImageMenu } from './ImageContextMenu.jsx';
 
 const STATUS_LABEL = {
   PENDING: '排队中（PENDING）',
@@ -13,12 +14,17 @@ const STATUS_LABEL = {
 export default function AssistantMessage({ conv, msg }) {
   const { dispatch } = useApp();
   const toast = useToast();
+  // 图片右键菜单（复制 / 保存到下载 / 另存为）：菜单项见 lib/imageActions.js
+  const imageMenu = useImageMenu();
 
   const openLightbox = (index, images) => {
     dispatch({
       type: 'LIGHTBOX_OPEN',
       images: images.map((im, i) => ({
         src: cacheUrl(im.file),
+        kind: 'result',
+        file: im.file,
+        name: im.name || '',
         title: `结果 ${i + 1} · ${im.width || '?'}×${im.height || '?'}`
       })),
       index
@@ -27,8 +33,10 @@ export default function AssistantMessage({ conv, msg }) {
 
   const copyImage = async (im) => {
     const r = await window.stab.copyImage(im.file);
-    if (r.ok) toast('图片已复制到剪贴板', 'info');
-    else toast(r.message || '复制失败', 'error');
+    if (!r.ok) { toast(r.message || '复制失败', 'error'); return; }
+    // 元数据（提示词 / 输入图文件名）随 HTML 格式里的原图字节走，位图格式本身不携带
+    toast(r.withPics ? '图片已复制到剪贴板（含提示词与输入图文件名）'
+      : (r.withPrompt ? '图片已复制到剪贴板（含提示词元数据）' : '图片已复制到剪贴板'), 'info');
   };
 
   const copyText = async (text) => {
@@ -40,7 +48,7 @@ export default function AssistantMessage({ conv, msg }) {
 
   const downloadImage = async (im) => {
     const r = await window.stab.downloadResult(im.file);
-    if (r.ok) toast(`已保存：${r.path}`, 'info');
+    if (r.ok) toast('已保存', 'info', { path: r.path, timeout: 6000 });
     else toast(r.message || '保存失败', 'error');
   };
 
@@ -92,6 +100,7 @@ export default function AssistantMessage({ conv, msg }) {
                     className="result-img"
                     title="点击预览（滚轮缩放 / 拖动 / ESC 关闭）"
                     onClick={() => openLightbox(i, imgs.filter((x) => x.file))}
+                    onContextMenu={(e) => imageMenu.openMenu(e, { kind: 'result', file: im.file, name: im.name })}
                   />
                   <div className="result-badge">
                     {im.width && im.height ? `${im.width}×${im.height}` : '分辨率未知'}
@@ -141,6 +150,7 @@ export default function AssistantMessage({ conv, msg }) {
 
   return (
     <div className="msg assistant">
+      {imageMenu.menu && <ImageContextMenu menu={imageMenu.menu} onClose={imageMenu.closeMenu} />}
       <div className="msg-avatar" title="StabStab">
         <img src="./icon.svg" alt="" draggable={false} />
       </div>

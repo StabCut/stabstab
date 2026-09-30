@@ -35,6 +35,7 @@ import minusSrc from '../../assets/icons/minus.svg?raw';
 import resetSrc from '../../assets/icons/reset.svg?raw';
 import moreSrc from '../../assets/icons/more.svg?raw';
 import warningSrc from '../../assets/icons/warning.svg?raw';
+import eyeSrc from '../../assets/icons/eye.svg?raw';
 
 const RAW = {
   plus: plusSrc,
@@ -49,7 +50,8 @@ const RAW = {
   minus: minusSrc,
   reset: resetSrc,
   more: moreSrc,
-  warning: warningSrc
+  warning: warningSrc,
+  eye: eyeSrc
 };
 
 export const ICON_NAMES = Object.keys(RAW);

@@ -30,7 +30,19 @@ contextBridge.exposeInMainWorld('stab', {
   saveAttachment: (att) => ipcRenderer.invoke('attachments:save', att),   // {name, mime, dataUrl} -> {file}
   readAttachment: (file) => ipcRenderer.invoke('attachments:read', file), // file -> {dataUrl, mime}
 
-  // ---- 结果图片操作 ----
+  // ---- 图片提示词元数据（只读解析 + 剪贴板）----
+  // 顶部拖放解析区 / 底部拖入图片后的附加检查共用这两个入口
+  readImagePrompt: (filePath) => ipcRenderer.invoke('prompt:read', filePath),
+  readImagePromptFromData: (dataUrl) => ipcRenderer.invoke('prompt:read-data', dataUrl),
+  copyText: (text) => ipcRenderer.invoke('prompt:copy', text),
+
+  // ---- 聊天区图片操作（右键菜单：复制 / 保存到下载 / 另存为）----
+  // kind: 'upload'（用户输入图）| 'result'（API 返回图）；file = 数据目录里的文件名
+  copyImageFile: (kind, file) => ipcRenderer.invoke('image:copy', { kind, file }),
+  saveImageFile: (kind, file) => ipcRenderer.invoke('image:save', { kind, file }),   // 系统下载目录
+  saveImageFileAs: (kind, file, suggestedName) => ipcRenderer.invoke('image:save-as', { kind, file, suggestedName }),
+
+  // ---- 结果图片操作（聊天流里的按钮沿用，保留兼容）----
   downloadResult: (file) => ipcRenderer.invoke('result:download', file),  // 存入默认保存路径
   copyImage: (file) => ipcRenderer.invoke('result:copy-image', file),     // 复制到剪贴板
   copyUploadImage: (file) => ipcRenderer.invoke('attachments:copy-image', file), // 复制输入图到剪贴板
@@ -42,6 +54,7 @@ contextBridge.exposeInMainWorld('stab', {
   openPath: (p) => ipcRenderer.invoke('shell:open-path', p),
   openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),
   showInFolder: (p) => ipcRenderer.invoke('shell:show-in-folder', p),
+  revealFile: (p) => ipcRenderer.invoke('shell:reveal-file', p),   // 在文件管理器中打开文件所在位置
 
   // ---- 日志 ----
   log: (level, message, extra) => ipcRenderer.send('log:write', { level, message, extra })

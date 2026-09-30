@@ -17,12 +17,34 @@ const registry = require(path.join(ROOT, 'electron/src/api/registry'));
 const modelSeriesLib = require(path.join(ROOT, 'electron/src/modelSeries'));
 const renameModel = require(path.join(ROOT, 'electron/src/renameModel'));
 const store = require(path.join(ROOT, 'electron/src/store'));
+const promptMeta = require(path.join(ROOT, 'electron/src/promptmeta'));
+const exportLib = require(path.join(ROOT, 'electron/src/exportImage'));
+const imageutil = require(path.join(ROOT, 'electron/src/imageutil'));
 
 // 一张 16x16 的 PNG（用于校验尺寸嗅探 / b64 结果落盘）
 const PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAGUlEQVR4nGP80hLPQApgIkn1qIZRDUNKAwDTsgH3dLIX4AAAAABJRU5ErkJggg==',
   'base64'
 );
+// 一张 2x2 的 JPEG / WebP（提示词元数据的格式覆盖）
+const JPEG = Buffer.from(
+  '/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0a' +
+  'HBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAACAAIBAREA/8QAHwAAAQUBAQEB' +
+  'AQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1Fh' +
+  'ByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZ' +
+  'WmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXG' +
+  'x8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/9oACAEBAAA/APn+iiigD//Z',
+  'base64'
+);
+const WEBP = Buffer.from(
+  'UklGRisAAABXRUJQVlA4IBYAAAAwAQCdASoCAQIAAUAmJQBOgCHwAP7+4AAAAAAAAAAA',
+  'base64'
+);
+// 一张 1x1 的 GIF：容器可识别，但不支持提示词元数据
+const GIF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
+
+/** 含中文 / 换行 / 引号 / 反斜杠 / emoji 的提示词（往返完整性用） */
+const PROMPT_SPECIAL = '赛博朋克「城市夜景」\n霓虹灯 24mm f/1.4\t"引号" \\反斜杠\\ 与 $符号; 长度 ' + '的'.repeat(200) + ' 🎨✨';
 const CACHE = fs.mkdtempSync(path.join(os.tmpdir(), 'stabstab-cache-'));
 const LOGDIR = fs.mkdtempSync(path.join(os.tmpdir(), 'stabstab-log-'));
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'stabstab-cfg-'));
@@ -59,9 +81,12 @@ const server = http.createServer((req, res) => {
         const taskId = model === 'err-async' ? 'task_fail' : (model === 'hang-model' ? 'task_hang' : 'task_ok');
         return send(200, { request_id: 'req-a1', output: { task_id: taskId, task_status: 'PENDING' } });
       }
+      // 结果图格式覆盖：提示词元数据要按真实格式写入
+      const resultUrl = model === 'jpg-model' ? `${IMG_URL().replace(/\/img\.png$/, '/img.jpg')}`
+        : (model === 'webp-model' ? `${IMG_URL().replace(/\/img\.png$/, '/img.webp')}` : IMG_URL());
       return send(200, {
         request_id: 'req-s1',
-        output: { choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: [{ image: IMG_URL() }, { image: IMG_URL() }] } }] },
+        output: { choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: [{ image: resultUrl }, { image: resultUrl }] } }] },
         usage: { output_width: 16, output_height: 16, output_image_count: 2 }
       });
     }
@@ -136,6 +161,15 @@ const server = http.createServer((req, res) => {
     if (req.method === 'GET' && url === '/img.png') {
       res.writeHead(200, { 'Content-Type': 'image/png' }); return res.end(PNG);
     }
+
+    if (req.method === 'GET' && url === '/img.jpg') {
+      res.writeHead(200, { 'Content-Type': 'image/jpeg' }); return res.end(JPEG);
+    }
+
+    if (req.method === 'GET' && url === '/img.webp') {
+      res.writeHead(200, { 'Content-Type': 'image/webp' }); return res.end(WEBP);
+    }
+
     send(404, { message: 'not found' });
   });
 });
@@ -506,6 +540,374 @@ async function main() {
     const r2 = store.loadSettings(f, cfg);
     check(r2.settings.renameModel.baseUrl === 'https://my-relay.example.com', 'API 地址去首尾空白');
     check(r2.settings.renameModel.modelId === '123', '模型 id 统一成字符串');
+  }
+
+  console.log('\n[19] 图片提示词元数据（PNG / JPEG / WebP 写入 ↔ 读取，含输入图文件名 picN）');
+  {
+    // 格式识别
+    check(promptMeta.detectFormat(PNG) === 'png', '识别 PNG');
+    check(promptMeta.detectFormat(JPEG) === 'jpeg', '识别 JPEG');
+    check(promptMeta.detectFormat(WEBP) === 'webp', '识别 WebP');
+    check(promptMeta.detectFormat(GIF) === 'gif' && promptMeta.formatSupport('gif') === false, 'GIF 可识别但不支持元数据（不静默转换）');
+    check(promptMeta.buildRecord('猫') === '{"prompt":"猫","v":1}', '结构化记录形如 {"prompt":"…"}');
+    check(promptMeta.buildRecord('猫', ['a.png', 'b.jpg']) === '{"pic1":"a.png","pic2":"b.jpg","prompt":"猫","v":1}',
+      '带输入图时记录形如 {"pic1":"…","pic2":"…","prompt":"…"}（pic 在 prompt 之前）');
+    check(promptMeta.buildRecord('', ['']) === '{"pic1":"","prompt":"","v":1}', '读不到输入图文件名时 pic 项仍在（值为空串）');
+    check(promptMeta.crc32(Buffer.from('123456789')) === 0xcbf43926, 'CRC32 正确（PNG 分块校验）');
+
+    // 三格式：中文 / 多行 / 引号 / 反斜杠 / emoji 完整往返（并带上输入图文件名 pic1/pic2）
+    const PICS = ['参考 图1.png', ''];
+    for (const [name, buf] of [['PNG', PNG], ['JPEG', JPEG], ['WebP', WEBP]]) {
+      const w = promptMeta.writePromptToBuffer(buf, PROMPT_SPECIAL, PICS);
+      check(w.ok === true, `${name}：写入元数据成功`);
+      check(w.ok && w.buffer.length > buf.length, `${name}：以插入分块的方式追加（原图字节未被重编码）`);
+      const r = promptMeta.extractPromptFromBuffer(w.buffer);
+      check(r.ok === true && r.prompt === PROMPT_SPECIAL, `${name}：中文 / 换行 / 引号 / 反斜杠 / emoji 完整往返`);
+      check(r.ok === true && r.pics.join('|') === '参考 图1.png|', `${name}：输入图文件名按位置往返（读不到的位置是空串，不缺项）`);
+      // 重写：替换自己写过的记录，不重复堆积分块
+      const w2 = promptMeta.writePromptToBuffer(w.buffer, '改写后的提示词', ['only.png']);
+      const r2 = promptMeta.extractPromptFromBuffer(w2.buffer);
+      check(w2.ok === true && r2.prompt === '改写后的提示词' && r2.pics.join('|') === 'only.png', `${name}：重写记录后被读回的是新值（替换而非叠加）`);
+      if (name === 'PNG') {
+        const dim = require(path.join(ROOT, 'electron/src/imageutil')).sniffDimensions(w.buffer);
+        check(dim.width === 16 && dim.height === 16, 'PNG：分辨率不变（像素未重编码）');
+        const chunks = [];
+        let off = 8;
+        while (off + 8 <= w.buffer.length) {
+          const len = w.buffer.readUInt32BE(off);
+          chunks.push(w.buffer.toString('ascii', off + 4, off + 8));
+          off += 12 + len;
+        }
+        check(chunks.join(',') === 'IHDR,iTXt,iTXt,IDAT,IEND', 'PNG：iTXt 紧随 IHDR，IDAT/IEND 原样保留');
+        check(w.buffer.toString('ascii', 0, 8) === PNG.toString('ascii', 0, 8), 'PNG：文件头保持');
+        check(w.buffer.toString('utf8').includes('{"pic1":'), 'PNG：结构化 JSON 记录里带 pic1 键');
+        check(w2.buffer.toString('utf8').split('iTXt').length - 1 === 2, 'PNG：重写后仍是 2 个记录分块（不叠加）');
+      }
+      if (name === 'JPEG') {
+        check(w.buffer[0] === 0xff && w.buffer[1] === 0xd8, 'JPEG：仍以 SOI 开头');
+        check(w.buffer.toString('latin1').includes('adobe:ns:meta'), 'JPEG：写入标准 XMP（APP1）元数据包');
+        check(w.buffer.toString('latin1').includes('APP1') === false, 'JPEG：未追加非标准文本到文件末尾');
+        check(w2.buffer.toString('utf8').split('adobe:ns:meta').length - 1 === 1, 'JPEG：重写后只有一段自有 XMP（不叠加）');
+      }
+      if (name === 'WebP') {
+        check(w.buffer.toString('ascii', 0, 4) === 'RIFF' && w.buffer.toString('ascii', 8, 12) === 'WEBP', 'WebP：仍是 RIFF/WEBP 容器');
+        check(w.buffer.toString('latin1').includes('XMP '), 'WebP：写入 XMP 分块');
+        check(w.buffer.readUInt32LE(4) === w.buffer.length - 8, 'WebP：RIFF 总长度已修正');
+        check(w2.buffer.toString('latin1').split('XMP ').length - 1 === 1, 'WebP：重写后只有一个 XMP 分块（不叠加）');
+      }
+    }
+
+    // 边界与异常
+    const noMeta = promptMeta.extractPromptFromBuffer(PNG);
+    check(noMeta.ok === true && noMeta.prompt === null, '普通图片：可解析但无提示词（安静返回 null）');
+    check(noMeta.ok === true && Array.isArray(noMeta.pics) && noMeta.pics.length === 0, '普通图片：也没有 pic 项（空数组）');
+    const empty = promptMeta.writePromptToBuffer(PNG, '   ');
+    check(empty.ok === false && empty.code === 'EMPTY_PROMPT', '空提示词（且无输入图）不写入');
+    const picOnly = promptMeta.writePromptToBuffer(PNG, '', ['仅图.png']);
+    check(picOnly.ok === true, '只带输入图、没有文字时仍写入');
+    const picOnlyRead = promptMeta.extractPromptFromBuffer(picOnly.buffer);
+    check(picOnlyRead.prompt === null && picOnlyRead.pics.join('|') === '仅图.png', '…记录为 {"pic1":"仅图.png","prompt":""}（有 pic 项、提示词为空）');
+    check(promptMeta.sanitizePics(['C:\\Users\\me\\桌 面.png', 123, null]).join('|') === '桌 面.png||',
+      '文件名只留文件名本身（去掉路径），非字符串 / 空值位置保留空串');
+    check(promptMeta.mergeMeta({ ok: true, prompt: '图片自带', pics: ['图片自带.png'] }, { prompt: '兜底', pics: ['兜底.png'] }).prompt === '图片自带' &&
+      promptMeta.mergeMeta({ ok: true, prompt: '图片自带', pics: [] }, { prompt: '兜底', pics: ['兜底.png'] }).pics.join('|') === '兜底.png',
+      '合并规则：图片自带值优先，只补缺失的那一项');
+
+    // 重写只动「自己写过的分块」，别家工具的元数据（如 ComfyUI 的 tEXt keyword=prompt）必须原样保留
+    {
+      const pngChunk = (type, data) => {
+        const len = Buffer.alloc(4);
+        len.writeUInt32BE(data.length, 0);
+        const t = Buffer.from(type, 'ascii');
+        const crc = Buffer.alloc(4);
+        crc.writeUInt32BE(promptMeta.crc32(Buffer.concat([t, data])), 0);
+        return Buffer.concat([len, t, data, crc]);
+      };
+      const foreign = Buffer.concat([
+        PNG.slice(0, 8), PNG.slice(8, 33),                       // 签名 + IHDR
+        pngChunk('tEXt', Buffer.concat([Buffer.from('prompt', 'latin1'), Buffer.from([0]), Buffer.from('{"3":{"class_type":"KSampler"}}', 'latin1')])),
+        pngChunk('iTXt', Buffer.concat([
+          Buffer.from('Comment', 'latin1'), Buffer.from([0]), Buffer.from([0]), Buffer.from([0]),
+          Buffer.from([0]), Buffer.from([0]), Buffer.from('made by another tool', 'utf8')
+        ])),
+        PNG.slice(33)                                            // IDAT + IEND
+      ]);
+      const fw = promptMeta.writePromptToBuffer(foreign, '我们的提示词', ['输入图.png']);
+      const ft = fw.buffer.toString('utf8');
+      check(fw.ok && ft.includes('KSampler') && ft.includes('made by another tool'),
+        '写入时不误删别家元数据（ComfyUI 的 tEXt keyword=prompt / 其它 iTXt 原样保留）');
+      const fw2 = promptMeta.writePromptToBuffer(fw.buffer, '第二版', ['b.png']);
+      const ft2 = fw2.buffer.toString('utf8');
+      check(ft2.includes('KSampler') && ft2.split('{"pic1"').length - 1 === 1,
+        '二次写入：别家元数据仍在，自己的结构化记录仍只有一份');
+      const onlyForeign = Buffer.concat([
+        PNG.slice(0, 8), PNG.slice(8, 33),
+        pngChunk('iTXt', Buffer.concat([
+          Buffer.from('prompt', 'latin1'), Buffer.from([0]), Buffer.from([0]), Buffer.from([0]),
+          Buffer.from([0]), Buffer.from([0]), Buffer.from('别家写的纯文本提示词', 'utf8')
+        ])),
+        PNG.slice(33)
+      ]);
+      const ofr = promptMeta.extractPromptFromBuffer(onlyForeign);
+      check(ofr.ok && ofr.prompt === '别家写的纯文本提示词' && ofr.pics.length === 0, '没有结构化记录时退回原文分块（别的工具写的提示词仍能读）');
+    }
+    const gifW = promptMeta.writePromptToBuffer(GIF, 'x');
+    check(gifW.ok === false && gifW.code === 'FORMAT_UNSUPPORTED', 'GIF 写入返回 FORMAT_UNSUPPORTED（界面据此提示）');
+    const gifR = promptMeta.extractPromptFromBuffer(GIF);
+    check(gifR.ok === false && gifR.code === 'FORMAT_UNSUPPORTED', 'GIF 读取同样区分「不支持」而非「未找到」');
+    const junk = promptMeta.extractPromptFromBuffer(Buffer.from('not an image at all'));
+    check(junk.ok === false && junk.code === 'FORMAT_UNKNOWN', '非图片字节返回 FORMAT_UNKNOWN');
+    const truncated = promptMeta.extractPromptFromBuffer(PNG.slice(0, 30));
+    check(truncated.ok === false && truncated.code === 'CORRUPT', '截断的 PNG 返回 CORRUPT（不抛异常）');
+    const quote = '引号"与\'单引号\' 换行\n制表\t & <tag> \\ 结束';
+    const qr = promptMeta.extractPromptFromBuffer(promptMeta.writePromptToBuffer(PNG, quote).buffer);
+    check(qr.ok && qr.prompt === quote, 'XML 特殊字符（& < > " \\）转义后完整还原');
+    const html = '<img src=x onerror=alert(1)> 提示词';
+    check(promptMeta.extractPromptFromBuffer(promptMeta.writePromptToBuffer(PNG, html).buffer).prompt === html, 'HTML 片段按纯文本往返（不会被当代码执行）');
+    const long = '长'.repeat(40000);
+    check(promptMeta.extractPromptFromBuffer(promptMeta.writePromptToBuffer(PNG, long).buffer).prompt === long, '超长提示词（4 万字）不被截断');
+  }
+
+  console.log('\n[20] 生成结果落盘即带提示词 + 输入图文件名 + 导出携带 + 并发不串词');
+  {
+    const PROMPT_A = 'A 的提示词：猫 ' + '喵'.repeat(20) + ' 🎨';
+    const PROMPT_B = 'B 的提示词：狗\n第二行 "带引号" \\反斜杠\\';
+    const INPUT_URL = `data:image/png;base64,${PNG.toString('base64')}`;
+    // 并发生成（两个 job 同时跑）：提示词必须各归各的图片
+    const [a, b] = await Promise.all([
+      runScenario('meta_a', { prompt: PROMPT_A, model: 'meta-model-a' }),
+      runScenario('meta_b', { prompt: PROMPT_B, model: 'meta-model-b' })
+    ]);
+    check(a.term && a.term.type === 'result' && a.term.images.length === 2, 'A：并发生成成功（两张图）');
+    check(b.term && b.term.type === 'result' && b.term.images.length === 2, 'B：并发生成成功（两张图）');
+
+    // 每个 job 的提示词只写进自己那批图片
+    const aImg = promptMeta.extractPromptFromFile(path.join(CACHE, a.term.images[0].file));
+    const aImg2 = promptMeta.extractPromptFromFile(path.join(CACHE, a.term.images[1].file));
+    const bImg = promptMeta.extractPromptFromFile(path.join(CACHE, b.term.images[0].file));
+    check(aImg.ok && aImg.prompt === PROMPT_A, 'A 的图片读回 A 的提示词（中文 + emoji 完整）');
+    check(aImg2.ok && aImg2.prompt === PROMPT_A, 'A 的第二张图同样带提示词');
+    check(bImg.ok && bImg.prompt === PROMPT_B, '并发生成时 B 的图片仍是 B 的提示词（不串词）');
+    check(aImg.bytes === fs.statSync(path.join(CACHE, a.term.images[0].file)).size, '生成结果以正常图片尺寸落盘');
+    check(aImg.pics.length === 0 && !fs.readFileSync(path.join(CACHE, a.term.images[0].file), 'utf8').includes('"pic1"'),
+      '纯文生图：记录里不出现任何 pic 项（仍是 {"prompt":"…","v":1}）');
+
+    // 图生图：结果图要带上「用户一起发送的输入图文件名」，顺序与图片一致
+    const { term: it2 } = await runScenario('meta_input', {
+      prompt: '以这张图为参考', model: 'meta-model-a',
+      images: [INPUT_URL, INPUT_URL], imageNames: ['用户桌面图.png', '']
+    });
+    check(it2 && it2.type === 'result' && it2.images.length === 2, '图生图：正常出图（两张图）');
+    const i1 = promptMeta.extractPromptFromFile(path.join(CACHE, it2.images[0].file));
+    const i2 = promptMeta.extractPromptFromFile(path.join(CACHE, it2.images[1].file));
+    check(i1.ok && i1.prompt === '以这张图为参考' && i1.pics.join('|') === '用户桌面图.png|',
+      '图生图：pic1 = 用户文件名，读不到名字的位置是空串（pic 项仍在）');
+    check(i2.ok && i2.pics.join('|') === '用户桌面图.png|', '同一批的每张结果图都带同一组 pic 项');
+    check(fs.readFileSync(path.join(CACHE, it2.images[0].file), 'utf8').includes('{"pic1":"用户桌面图.png","pic2":"","prompt":"以这张图为参考","v":1}'),
+      '记录 JSON 形如 {"pic1":"…","pic2":"","prompt":"…","v":1}');
+    // 渲染进程没传名字（老版本 / 直接粘贴）：pic 项要在，值为空
+    const { term: it4 } = await runScenario('meta_input_noname', {
+      prompt: '没有名字的输入图', model: 'meta-model-a', images: [INPUT_URL, INPUT_URL]
+    });
+    const i4 = promptMeta.extractPromptFromFile(path.join(CACHE, it4.images[0].file));
+    check(i4.ok && i4.pics.join('|') === '|', '读不到任何输入图名字时：pic 项齐全但值为空串');
+
+    // 原型场景（用户口径）：拖入一张「图片.png」+ 提示词「改为黑白」
+    const { term: demo } = await runScenario('meta_demo', {
+      prompt: '改为黑白', model: 'meta-model-a', images: [INPUT_URL], imageNames: ['图片.png']
+    });
+    const demoMeta = promptMeta.extractPromptFromFile(path.join(CACHE, demo.images[0].file));
+    check(demoMeta.prompt === '改为黑白' && demoMeta.pics.join('|') === '图片.png',
+      '原型场景：输入图 + 「改为黑白」→ 结果图记录 {"pic1":"图片.png","prompt":"改为黑白"}');
+    // 多张输入图：pic1 / pic2 / pic3 按发送顺序一一对应（输入框上限 3 张）
+    const { term: three } = await runScenario('meta_three', {
+      prompt: '三图合成', model: 'meta-model-a',
+      images: [INPUT_URL, INPUT_URL, INPUT_URL], imageNames: ['a.png', '', 'c.png']
+    });
+    const threeMeta = promptMeta.extractPromptFromFile(path.join(CACHE, three.images[0].file));
+    check(threeMeta.pics.join('|') === 'a.png||c.png',
+      '多张输入图：pic1/pic2/pic3 与发送顺序一致（读不到名字的那张留空串）');
+    // 只传图不打字：仍要记下「带过输入图」
+    const { term: it3 } = await runScenario('meta_no_text_input', { prompt: '', model: 'meta-model-a', images: [INPUT_URL], imageNames: ['只有图.png'] });
+    const i3 = promptMeta.extractPromptFromFile(path.join(CACHE, it3.images[0].file));
+    check(i3.ok && i3.prompt === null && i3.pics.join('|') === '只有图.png',
+      '只发图不打字：记录 {"pic1":"只有图.png","prompt":""}（提示词为空但 pic 项照写）');
+
+    // 导出：与 result:download 同一条代码路径（lib/exportResultImage）
+    const expDir = path.join(TMP, 'downloads');
+    const exp = exportLib.exportResultImage({
+      srcPath: path.join(CACHE, a.term.images[0].file),
+      destDir: expDir,
+      fallbackPrompt: '会话里记录的提示词'
+    });
+    check(exp.ok === true && fs.existsSync(exp.path), '导出结果图成功');
+    const exported = promptMeta.extractPromptFromFile(exp.path);
+    check(exported.ok && exported.prompt === PROMPT_A, '导出文件带着提示词元数据（用户保存的图片可被再次拖入解析）');
+    check(path.basename(exp.path) === path.basename(a.term.images[0].file), '导出沿用原文件名（元数据可直接透传）');
+
+    // 保存：源图自带 pic 项 → 原样带走；兜底值不得覆盖已有值
+    const expInput = exportLib.exportResultImage({
+      srcPath: path.join(CACHE, it2.images[0].file),
+      destDir: expDir,
+      fallbackPrompt: '不该生效的提示词',
+      fallbackPics: ['不该生效.png']
+    });
+    const expInputMeta = promptMeta.extractPromptFromFile(expInput.path);
+    check(expInputMeta.prompt === '以这张图为参考' && expInputMeta.pics.join('|') === '用户桌面图.png|',
+      '保存图生图结果：图片自带的提示词与 pic 项优先（不被兜底值覆盖）');
+
+    // 旧版本生成的图（只有提示词、没有 picN）：保存 / 另存为时用会话记录里的输入图名补齐
+    const legacyPic = path.join(TMP, 'legacy-pics.png');
+    fs.writeFileSync(legacyPic, promptMeta.writePromptToBuffer(PNG, '旧版本写的提示词').buffer);
+    const expPic = exportLib.exportResultImage({
+      srcPath: legacyPic, destDir: expDir,
+      fallbackPrompt: '旧版本写的提示词', fallbackPics: ['来自会话.png', '']
+    });
+    const expPicMeta = promptMeta.extractPromptFromFile(expPic.path);
+    check(expPic.ok === true && expPic.promptApplied === true, '旧图缺 pic 项：导出时补写（重写元数据）');
+    check(expPicMeta.prompt === '旧版本写的提示词' && expPicMeta.pics.join('|') === '来自会话.png|',
+      '补写后：提示词仍是图片自带的那个，pic 项来自会话记录');
+    check(fs.readFileSync(legacyPic).length === promptMeta.writePromptToBuffer(PNG, '旧版本写的提示词').buffer.length, '补写只在导出文件上生效，源文件不被修改');
+
+    const asPic = path.join(TMP, 'as-pics.png');
+    const asRes = exportLib.exportResultImageAs({
+      srcPath: legacyPic, destPath: asPic,
+      fallbackPrompt: '旧版本写的提示词', fallbackPics: ['来自会话.png', '']
+    });
+    check(asRes.ok === true && asRes.promptApplied === true, '另存为同样补写 pic 项');
+    check(promptMeta.extractPromptFromFile(asPic).pics.join('|') === '来自会话.png|', '另存为的文件读回 pic1 = 来自会话.png');
+    const reSave = exportLib.exportResultImageAs({ srcPath: asPic, destPath: path.join(TMP, 'as-pics-2.png'), fallbackPics: ['来自会话.png', ''] });
+    check(reSave.ok === true && reSave.promptApplied === false, '已带齐元数据的图再另存：原字节透传，不重复写');
+
+    // 旧缓存图（元数据丢失）：用会话里记录的提示词补写
+    const legacy = path.join(TMP, 'legacy.png');
+    fs.writeFileSync(legacy, PNG);
+    const exp2 = exportLib.exportResultImage({ srcPath: legacy, destDir: expDir, fallbackPrompt: '来自会话的旧提示词' });
+    check(promptMeta.extractPromptFromFile(exp2.path).prompt === '来自会话的旧提示词', '旧图缺元数据时用会话记录补写');
+    check(fs.readFileSync(legacy).length === PNG.length, '源文件不被修改');
+
+    // 不支持的格式：保留原图，不静默转换
+    const legacyGif = path.join(TMP, 'legacy.gif');
+    fs.writeFileSync(legacyGif, GIF);
+    const exp3 = exportLib.exportResultImage({ srcPath: legacyGif, destDir: expDir, fallbackPrompt: 'GIF 提示词' });
+    check(exp3.ok === true && exp3.promptApplied === false, 'GIF 导出：带不过去元数据但保留图片');
+    check(promptMeta.extractPromptFromBuffer(fs.readFileSync(exp3.path)).code === 'FORMAT_UNSUPPORTED', 'GIF 仍可被识别为「不支持读写元数据」');
+
+    // 元数据来源：JPEG / WebP 结果同样闭环
+    const { term: jt } = await runScenario('meta_jpg', { prompt: 'JPEG 结果提示词\n第二行', model: 'jpg-model', images: [INPUT_URL], imageNames: ['参考图.jpg'] });
+    check(jt && jt.images.length === 2, 'JPEG 结果图生成成功');
+    const jr = promptMeta.extractPromptFromFile(path.join(CACHE, jt.images[0].file));
+    check(jr.ok && jr.prompt === 'JPEG 结果提示词\n第二行' && jr.format === 'jpeg', 'JPEG 结果图带提示词元数据');
+    check(jr.pics.join('|') === '参考图.jpg', 'JPEG 结果图同时带 pic1（输入图文件名）');
+    const { term: wt } = await runScenario('meta_webp', { prompt: 'WebP 结果提示词 🎨', model: 'webp-model' });
+    const wr = promptMeta.extractPromptFromFile(path.join(CACHE, wt.images[0].file));
+    check(wr.ok && wr.prompt === 'WebP 结果提示词 🎨' && wr.format === 'webp', 'WebP 结果图带提示词元数据');
+
+    // 无文字的图生图：不写空提示词
+    const { term: it } = await runScenario('meta_no_text', { prompt: '', model: 'meta-model-a' });
+    check(it && it.images.length === 2, '无文字请求仍正常出图');
+    const ir = promptMeta.extractPromptFromFile(path.join(CACHE, it.images[0].file));
+    check(ir.ok && ir.prompt === null, '没有提示词时不写空元数据');
+
+    // 已有提示词的图片不被覆盖
+    const keep = promptMeta.applyPromptToFile(path.join(CACHE, b.term.images[0].file), '试图覆盖');
+    check(keep.ok === true && keep.skipped === true, '已有提示词的图片不被二次覆盖');
+    check(promptMeta.extractPromptFromFile(path.join(CACHE, b.term.images[0].file)).prompt === PROMPT_B, '原提示词保持不变');
+  }
+
+  console.log('\n[21] 保存 / 另存为的兜底来源：从会话记录取「提示词 + 输入图文件名」');
+  {
+    const convMeta = require(path.join(ROOT, 'electron/src/conversationMeta'));
+    const convs = {
+      conversations: [
+        {
+          id: 'c1',
+          messages: [
+            // 图生图：两张输入图，第二张读不到名字（剪贴板粘贴）
+            {
+              id: 'u1', role: 'user', text: '把它变成赛博朋克风格',
+              images: [
+                { file: 'up_a.png', name: 'a.png', srcName: '街景.png' },
+                { file: 'up_b.png', name: 'image.png', srcName: '' }
+              ]
+            },
+            { id: 'a1', role: 'assistant', parentId: 'u1', images: [{ file: 'result_1.png' }] },
+            // 纯文生图：没有输入图 → 不应产生 pic 项
+            { id: 'u2', role: 'user', text: '一只坐在窗台上的猫', images: [] },
+            { id: 'a2', role: 'assistant', parentId: 'u2', images: [{ file: 'result_2.png' }] },
+            // 老数据：用户消息里有图但没记 srcName → 位置保留、值为空串
+            { id: 'u3', role: 'user', text: '老会话里的图生图', images: [{ file: 'up_old.png', name: 'old.png' }] },
+            { id: 'a3', role: 'assistant', parentId: 'u3', images: [{ file: 'result_3.png' }] }
+          ]
+        }
+      ]
+    };
+    const m1 = convMeta.metaFromConversations(convs, 'result_1.png');
+    check(m1.prompt === '把它变成赛博朋克风格' && m1.pics.join('|') === '街景.png|',
+      '结果图 → 父用户消息的提示词 + 输入图真实文件名（读不到名字的位置是空串）');
+    check(m1.pics.length === 2, 'pic 项数量 = 用户发送的图片数量（不做压缩）');
+    const m2 = convMeta.metaFromConversations(convs, 'result_2.png');
+    check(m2.prompt === '一只坐在窗台上的猫' && m2.pics.length === 0, '纯文生图：兜底值里没有任何 pic 项');
+    const m3 = convMeta.metaFromConversations(convs, 'result_3.png');
+    check(m3.prompt === '老会话里的图生图' && m3.pics.join('|') === '', '老会话缺 srcName：pic 项仍在，值为空串');
+    check(convMeta.metaFromConversations(convs, 'result_missing.png').pics.length === 0, '会话里找不到该图：返回空值（不抛异常）');
+    check(convMeta.metaFromConversations(null, 'result_1.png').pics.length === 0, '会话数据缺失：返回空值（不抛异常）');
+
+    // 真实的保存链路：老图 + 会话兜底 → 文件里出现 picN
+    const tmpImg = path.join(TMP, 'conv-fallback.png');
+    fs.writeFileSync(tmpImg, promptMeta.writePromptToBuffer(PNG, '把它变成赛博朋克风格').buffer);
+    const exp = exportLib.exportResultImage({
+      srcPath: tmpImg, destDir: path.join(TMP, 'downloads'),
+      fallbackPrompt: m1.prompt, fallbackPics: m1.pics
+    });
+    const back = promptMeta.extractPromptFromBuffer(fs.readFileSync(exp.path));
+    check(back.prompt === '把它变成赛博朋克风格' && back.pics.join('|') === '街景.png|',
+      '导出后：文件里的记录 = {"pic1":"街景.png","pic2":"","prompt":"…"}');
+  }
+
+  console.log('\n[22] 复制到剪贴板的载荷（位图不携带，HTML 里的原图字节携带）');
+  {
+    const clip = require(path.join(ROOT, 'electron/src/clipboardPayload'));
+    const PROMPT_C = '复制用提示词 "带引号" & 符号\n第二行';
+
+    // 纯文本格式：文件名 + 提示词（行为不变）
+    check(clip.buildText({ name: 'result.png', prompt: '一只猫' }) === 'result.png\n一只猫', '文本格式 = 文件名 + 提示词');
+    check(clip.buildText({ name: 'result.png', prompt: '' }) === 'result.png', '没有提示词时文本格式只留文件名');
+
+    // HTML 格式：内嵌原图字节，并把可读信息放进属性
+    const imgBuf = promptMeta.writePromptToBuffer(PNG, PROMPT_C, ['参考图.png', '']).buffer;
+    const h1 = clip.buildHtml({ mime: 'image/png', buf: PNG, name: 'result.png', prompt: PROMPT_C, pics: [] });
+    check(h1.html.includes('src="data:image/png;base64,'), 'HTML 内嵌原图字节（不是重新编码的位图）');
+    check(h1.html.includes('data-filename="result.png"') && h1.html.includes('data-prompt="'), 'HTML 带 data-filename / data-prompt');
+    check(h1.html.includes('data-pics=') === false, '纯文生图：HTML 里不出现 data-pics（与 pic 项规则一致）');
+    check(h1.html.includes('data-prompt="复制用提示词 &quot;带引号&quot; &amp; 符号&#10;第二行"'),
+      '提示词里的引号 / & / 换行被转义（不会破坏 HTML）');
+
+    const h2 = clip.buildHtml({ mime: 'image/jpeg', buf: JPEG, name: 'a"b.jpg', prompt: PROMPT_C, pics: ['参考图.png', ''] });
+    check(h2.html.includes('data-pics="[&quot;参考图.png&quot;,&quot;&quot;]"'),
+      '图生图：HTML 带 data-pics（JSON 数组，读不到名字的位置是空串）');
+    check(h2.html.includes('alt="a&quot;b.jpg"') && h2.html.includes('src="data:image/jpeg;base64,'), '文件名里的引号被转义，MIME 用真实格式');
+    const big = clip.buildHtml({ mime: 'image/png', buf: Buffer.alloc(clip.COPY_HTML_MAX_BYTES + 1), name: 'big.png', prompt: '', pics: [] });
+    check(big.html === '', '超过大小上限时不带 HTML（位图照常复制）');
+
+    // 复制老图：在内存里补写 pic 项（缓存文件不改），剪贴板里的字节与属性都完整
+    const legacyCopy = path.join(TMP, 'copy-legacy.png');
+    fs.writeFileSync(legacyCopy, promptMeta.writePromptToBuffer(PNG, '老图提示词').buffer);
+    const srcBuf = fs.readFileSync(legacyCopy);
+    const patched = exportLib.applyPromptToBuffer(srcBuf, '老图提示词', ['会话里的输入图.png', '']);
+    const backCopy = promptMeta.extractPromptFromBuffer(patched);
+    check(backCopy.prompt === '老图提示词' && backCopy.pics.join('|') === '会话里的输入图.png|',
+      '复制时补写 pic 项：剪贴板里的字节读回 = {"pic1":"会话里的输入图.png","pic2":"","prompt":"老图提示词"}');
+    check(fs.readFileSync(legacyCopy).equals(srcBuf), '补写只作用在剪贴板那一份，缓存 / 源文件保持原样');
+    const h3 = clip.buildHtml({ mime: 'image/png', buf: patched, name: 'copy-legacy.png', prompt: backCopy.prompt, pics: backCopy.pics });
+    check(h3.html.includes('data-pics="[&quot;会话里的输入图.png&quot;,&quot;&quot;]"'),
+      '复制老图得到的 HTML：data-pics 与图片字节里的 pic 项一致');
+    const inner = /src="data:image\/png;base64,([^"]+)"/.exec(h3.html);
+    const innerMeta = inner ? promptMeta.extractPromptFromBuffer(Buffer.from(inner[1], 'base64')) : { ok: false };
+    check(innerMeta.ok === true && innerMeta.prompt === '老图提示词' && innerMeta.pics.join('|') === '会话里的输入图.png|',
+      'HTML 内嵌的字节本身就带着「提示词 + pic 项」（宿主把图存回文件就能读回）');
+    check(patched.length > srcBuf.length && promptMeta.extractPromptFromBuffer(srcBuf).pics.length === 0,
+      '补写前后的差异确实来自新增的 pic 项');
   }
 
   console.log(`\n========== 结果: ${pass} 通过, ${fail} 失败 ==========`);

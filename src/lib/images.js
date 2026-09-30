@@ -124,3 +124,16 @@ export function isImageFile(file) {
   const name = (file.name || '').toLowerCase();
   return ACCEPTED_IMAGE_EXTS.some((e) => name.endsWith('.' + e));
 }
+
+/**
+ * 用户输入图的**真实文件名**（写进结果图 picN 的那个名字）。
+ * 只认用户自己的文件（资源管理器拖入 / 对话框选择）；名字里只保留文件名本身，不带路径。
+ * 注意：系统剪贴板粘贴 / 从别的程序直接复制过来的图片，浏览器给的名字是 "image.png" 这类
+ * 占位名，不是用户文件的名字 —— 这类来源根本不要调用本函数（调用方按来源传 named=false），
+ * 保持 pic 项为空串，但 pic 项依然存在（见 lib/send.js 的 imageNames）。
+ */
+export function sourceFileName(file) {
+  const name = file && typeof file.name === 'string' ? file.name.trim() : '';
+  if (!name) return '';
+  return name.split(/[\\/]/).pop() || '';
+}

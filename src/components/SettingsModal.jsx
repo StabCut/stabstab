@@ -160,6 +160,8 @@ export default function SettingsModal({ initialTab = 'model' }) {
     const cleaned = clone(draft);
     cleaned.requestTimeoutSec = Math.min(3600, Math.max(15, Number(cleaned.requestTimeoutSec) || 300));
     cleaned.compressMaxMB = Math.min(100, Math.max(0.5, Number(cleaned.compressMaxMB) || 10));
+    // 保存文件名取自提示词前 N 个字：0 = 关闭（始终用原文件名）
+    cleaned.saveNamePromptChars = Math.min(50, Math.max(0, Math.round(Number(cleaned.saveNamePromptChars) || 0)));
     // 重命名模型：三个字段都是字符串，留空 = 用代码里的默认地址 / 默认模型
     const rm = cleaned.renameModel || {};
     cleaned.renameModel = {
@@ -575,6 +577,21 @@ export default function SettingsModal({ initialTab = 'model' }) {
             {/* ---------- 高级设置 ---------- */}
             {tab === 'advanced' && (
               <div className="settings-section">
+                <div className="field">
+                  <label>保存文件名取自提示词前 N 个字</label>
+                  <input
+                    type="number" min={0} max={50}
+                    className="num-sm"
+                    value={draft.saveNamePromptChars ?? 5}
+                    onChange={(e) => set({ saveNamePromptChars: e.target.value })}
+                  />
+                  <p className="field-hint">
+                    默认 5。「保存到下载」与「另存为」用提示词开头 N 个字做文件名（例：一只猫坐在-1.png）。
+                    图片里没有提示词（自己拖入的图、旧缓存图）时沿用原文件名；0 = 关闭，始终沿用原文件名。
+                    目标目录里重名时自动加 -1、-2 直到不重复。
+                  </p>
+                </div>
+
                 {modeSeries.length === 0 && (
                   <div className="empty-hint">当前没有任何模型系列支持同步/异步切换。</div>
                 )}

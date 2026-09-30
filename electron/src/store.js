@@ -24,6 +24,7 @@ const DEFAULT_SETTINGS = {
   requestTimeoutSec: 300,              // 单次 API 请求超时（秒），默认 5 分钟
   compressEnabled: true,               // 图片自动压缩开关
   compressMaxMB: 10,                   // 超过该大小的图片自动压缩
+  saveNamePromptChars: 5,              // 保存文件名取自提示词前 N 个字（0 = 不用提示词命名，见「高级设置」）
   modelGroups: [],                     // 见文件头注释
   sourceConfig: {},
   defaultModelId: '',

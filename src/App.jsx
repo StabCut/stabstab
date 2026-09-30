@@ -1,7 +1,9 @@
 import React, { useEffect } from 'react';
 import { AppProvider, useApp } from './lib/store.jsx';
+import { PromptReuseProvider } from './lib/promptReuse.jsx';
 import Sidebar from './components/Sidebar.jsx';
 import ChatView from './components/ChatView.jsx';
+import PromptDropZones from './components/PromptDrop.jsx';
 import SettingsModal from './components/SettingsModal.jsx';
 import Lightbox from './components/Lightbox.jsx';
 import Toasts from './components/Toasts.jsx';
@@ -106,6 +108,8 @@ function Shell() {
     <div className="app-shell">
       <Sidebar />
       <ChatView />
+      {/* 拖动图片时把整个软件一分为二（左右解析区）；平时完全不占位、不拦截操作 */}
+      <PromptDropZones />
       {state.settingsOpen && <SettingsModal />}
       {state.lightbox && <Lightbox />}
       <Toasts />
@@ -116,7 +120,10 @@ function Shell() {
 export default function App() {
   return (
     <AppProvider>
-      <Shell />
+      {/* 顶部解析拖放区 / 待复用提示词（插入·复制）的状态由这里统一持有 */}
+      <PromptReuseProvider>
+        <Shell />
+      </PromptReuseProvider>
     </AppProvider>
   );
 }

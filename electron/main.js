@@ -19,6 +19,10 @@ const renameModel = require('./src/renameModel');
 const registry = require('./src/api/registry');
 const runner = require('./src/api/runner');
 const { sniffDimensions, uniqueName } = require('./src/imageutil');
+const promptMeta = require('./src/promptmeta');
+const exportImage = require('./src/exportImage');
+const conversationMeta = require('./src/conversationMeta');
+const clipboardPayload = require('./src/clipboardPayload');
 
 const isDev = !app.isPackaged;
 const APP_NAME = 'StabStab';
@@ -114,6 +118,154 @@ function effectiveSavePath() {
   return PATHS.downloads;
 }
 
+/** 兜底：从会话记录里找该结果图对应的「提示词 + 输入图文件名」（旧缓存图元数据缺失时用） */
+function metaFromConversations(file) {
+  return conversationMeta.metaFromConversations(conversations, file);
+}
+
+// ---------- 聊天区图片（用户输入图 / API 返回图）的公共操作 ----------
+// 图片右键菜单的「复制 / 保存到下载 / 另存为」与聊天流里原有的复制、下载按钮共用这一组实现，
+// 避免同一份文件读写 / 剪贴板逻辑出现两份会各自漂移的实现。
+// kind: 'upload'（用户输入图，存于 <data>/uploads）| 'result'（API 返回图，存于 <data>/cache）
+const IMAGE_KINDS = {
+  upload: { dir: 'uploads', label: '输入图' },
+  result: { dir: 'cache', label: '结果图' }
+};
+
+/** 由 kind（upload / result）+ 文件名解析出真实路径（结果图额外带上用于兜底的提示词与输入图文件名） */
+function resolveImageSource(kind, file) {
+  const spec = IMAGE_KINDS[kind];
+  if (!spec) return { ok: false, message: '未知的图片类型。' };
+  const name = path.basename(String(file || ''));
+  if (!name) return { ok: false, message: '图片参数无效。' };
+  const src = path.join(PATHS[spec.dir], name);
+  if (!fs.existsSync(src)) return { ok: false, message: spec.label + '不存在（可能已被清理）。' };
+  const meta = imageMetaOf(src, kind === 'result' ? metaFromConversations(name) : null);
+  return {
+    ok: true,
+    src,
+    name,
+    // 提示词 / 输入图文件名：图片自带元数据优先（生成时写进去 / 拖入时自带），
+    // 结果图缺失时用会话记录兜底。保存时的文件名、复制时的附带信息、写回元数据的兜底值都取这一份。
+    prompt: meta.prompt,
+    pics: meta.pics
+  };
+}
+
+/** 图片的有效元数据：文件自带值优先，缺失的那一项（提示词 / 输入图文件名）才用兜底值 */
+function imageMetaOf(srcPath, fallback) {
+  const fb = fallback || { prompt: '', pics: [] };
+  try {
+    const r = promptMeta.extractPromptFromFile(srcPath);
+    if (r && r.ok) {
+      return {
+        prompt: r.prompt || fb.prompt || '',
+        pics: (r.pics && r.pics.length) ? r.pics : (fb.pics || [])
+      };
+    }
+  } catch (e) {
+    log.warn('读取图片提示词元数据失败', { error: e && e.message });
+  }
+  return { prompt: fb.prompt || '', pics: fb.pics || [] };
+}
+
+/** 保存文件名里使用提示词前 N 个字（设置 - 高级设置；0 / 未设置 = 不用提示词命名） */
+function saveNameChars() {
+  const v = parseInt(settings && settings.saveNamePromptChars, 10);
+  return Number.isFinite(v) && v > 0 ? Math.min(v, 50) : 0;
+}
+
+/** 提示词前 N 个字 -> 文件名主干；取不到可用内容返回空串（调用方退回原文件名） */
+function stemFromPrompt(prompt) {
+  const n = saveNameChars();
+  if (!n || !prompt) return '';
+  const head = Array.from(String(prompt).replace(/\s+/g, ' ').trim()).slice(0, n).join('');
+  return head
+    .replace(/[\\/:*?"<>|]/g, '_')         // 文件名非法字符
+    .replace(/[\u0000-\u001f]/g, '')       // 控制字符
+    .replace(/[. ]+$/, '')                 // Windows 不允许以点 / 空格结尾
+    .trim();
+}
+
+/** 保存时的目标文件名：提示词前 N 个字优先（设置里可调），取不到就沿用原文件名 */
+function saveFileNameFor(r) {
+  const ext = path.extname(r.name) || '.png';
+  const stem = stemFromPrompt(r.prompt) || path.basename(r.name, ext);
+  return stem + ext;
+}
+
+/**
+ * 复制图片到系统剪贴板：一次写入三个格式，尽量把「图片 + 提示词 + 输入图文件名（picN）」都带走
+ *   1) image：位图（任何程序都能粘贴，保持原有行为不变）
+ *      —— 位图在系统剪贴板里没有元数据容器，粘到「只认位图」的程序（画图等）或由系统把它
+ *         另存为文件时，元数据仍会丢，这是系统剪贴板本身的限制，无法绕过。
+ *   2) html ：内嵌**原图字节**的 data URI（不是重新编码的位图）+ data-filename / data-prompt / data-pics。
+ *             元数据（含 pic1…picN）随这份字节一起走；宿主若把图存回文件，记录完整保留。
+ *   3) text ：文件名 + 提示词（粘到纯文本框时也能拿到这两项）
+ * 老图缺 picN 时在这里补上（只改剪贴板这一份，缓存文件不动），与保存 / 另存为的规则一致。
+ */
+function copyImageToClipboard(kind, file) {
+  const r = resolveImageSource(kind, file);
+  if (!r.ok) return r;
+  try {
+    const img = nativeImage.createFromPath(r.src);
+    if (img.isEmpty()) return { ok: false, message: '图片解码失败。' };
+    const buf = fs.readFileSync(r.src);
+    // 剪贴板里的字节：自带元数据优先，缺失的 pic 项用会话记录补齐（不改缓存文件）
+    const out = exportImage.applyPromptToBuffer(buf, r.prompt, r.pics);
+    const meta = promptMeta.extractPromptFromBuffer(out);
+    const prompt = (meta.ok && meta.prompt) || r.prompt || '';
+    const pics = (meta.ok && meta.pics && meta.pics.length) ? meta.pics : (r.pics || []);
+    const text = clipboardPayload.buildText({ name: r.name, prompt });
+    const { html } = clipboardPayload.buildHtml({ mime: extToMime(path.extname(r.src)), buf: out, name: r.name, prompt, pics });
+    clipboard.write({ image: img, text, html });
+    log.info('图片已复制到剪贴板', {
+      kind, file: r.name, bytes: buf.length, prompt: !!prompt, pics: pics.length, html: !!html,
+      patched: out !== buf
+    });
+    return { ok: true, withPrompt: !!prompt, withPics: pics.length > 0, withHtml: !!html };
+  } catch (e) {
+    return { ok: false, message: e.message };
+  }
+}
+
+/** 系统「下载」目录：右键菜单「保存到下载」的目标（Windows 的「下载」文件夹 / macOS 的 Downloads） */
+function systemDownloadsDir() {
+  try {
+    const p = app.getPath('downloads');
+    if (p && String(p).trim()) return p;
+  } catch (e) {
+    log.warn('读取系统下载目录失败，改用数据目录下的 downloads', { error: e && e.message });
+  }
+  return PATHS.downloads;
+}
+
+/** 保存到系统「下载」目录（右键菜单的「保存到下载」；文件名按提示词前 N 个字，重名自动 -1、-2） */
+function saveImageToSystemDownloads(kind, file) {
+  const r = resolveImageSource(kind, file);
+  if (!r.ok) return r;
+  return exportImage.exportResultImage({
+    srcPath: r.src,
+    destDir: systemDownloadsDir(),
+    fallbackPrompt: r.prompt,
+    fallbackPics: r.pics,             // 输入图文件名：老图缺 picN 时在保存这一步补上
+    fileName: saveFileNameFor(r)      // 提示词前 N 个字（设置里可调），取不到沿用原文件名
+  });
+}
+
+/** 保存到应用内设置好的默认保存路径（聊天流里原有的「下载」按钮沿用） */
+function saveImageToDefaultDir(kind, file) {
+  const r = resolveImageSource(kind, file);
+  if (!r.ok) return r;
+  return exportImage.exportResultImage({
+    srcPath: r.src,
+    destDir: effectiveSavePath(),
+    fallbackPrompt: r.prompt,
+    fallbackPics: r.pics,
+    fileName: saveFileNameFor(r)
+  });
+}
+
 // ---------- 启动时规范化会话（恢复异步轮询 / 标记中断） ----------
 function normalizeConversationsOnStartup() {
   pendingResumes = [];
@@ -128,6 +280,8 @@ function normalizeConversationsOnStartup() {
         const resolved = meta.modelId ? modelSeriesLib.resolveModel(settings, modelSeries, meta.modelId) : null;
         if (meta.taskId && meta.mode === 'async' && resolved && resolved.apiKey && resolved.supportsAsync) {
           msg.status = 'running';
+          // 恢复后的结果图仍要带着「本次请求的提示词 + 输入图文件名」落盘：从会话记录里取回
+          const req = conversationMeta.metaOfParent(conv, msg);
           pendingResumes.push({
             jobId: msg.id,
             conversationId: conv.id,
@@ -138,7 +292,9 @@ function normalizeConversationsOnStartup() {
             baseUrl: resolved.baseUrl,
             taskId: meta.taskId,
             timeoutSec: settings.requestTimeoutSec,
-            cacheDir: PATHS.cache
+            cacheDir: PATHS.cache,
+            prompt: req.prompt,
+            pics: req.pics
           });
         } else {
           msg.status = 'error';
@@ -291,6 +447,11 @@ function registerIpc() {
 
     const full = {
       ...opts,
+      // 用户随这次请求一起发送的输入图文件名（与 opts.images 顺序一一对应，读不到名字的位置是空串）：
+      // 由 runner 写进结果图的 pic1…picN，保存 / 另存为时随图片一起带走
+      imageNames: Array.isArray(opts.imageNames)
+        ? opts.imageNames.map((n) => (n === null || n === undefined ? '' : String(n)))
+        : [],
       jobId: opts.messageId,
       protocol: resolved.protocol,
       model: resolved.modelName,
@@ -345,53 +506,94 @@ function registerIpc() {
     }
   });
 
-  // ---- 结果图片 ----
-  ipcMain.handle('result:download', (_e, file) => {
+  // ---- 图片提示词元数据（拖入解析 / 复用）----
+  // 只读：解析外部拖入图片的元数据，不写回、不上传、不触发生成。
+  // 返回：{ok:true, prompt:string|null, format} | {ok:false, code, message}
+  ipcMain.handle('prompt:read', (_e, filePath) => {
+    const r = promptMeta.extractPromptFromFile(String(filePath || ''));
+    if (r.ok) log.info('解析图片提示词元数据', { format: r.format, bytes: r.bytes, found: !!r.prompt, pics: (r.pics || []).length });
+    return r;
+  });
+
+  // 兜底：渲染进程拿不到真实路径时，用 FileReader 读出的 dataUrl
+  ipcMain.handle('prompt:read-data', (_e, dataUrl) => {
     try {
-      const src = path.join(PATHS.cache, path.basename(file));
-      if (!fs.existsSync(src)) return { ok: false, message: '缓存图片不存在（缓存可能已被清理）。' };
-      const dir = effectiveSavePath();
-      fs.mkdirSync(dir, { recursive: true });
-      let dest = path.join(dir, path.basename(src));
-      if (fs.existsSync(dest)) {
-        const ext = path.extname(src);
-        const base = path.basename(src, ext);
-        dest = path.join(dir, `${base}_${Date.now()}${ext}`);
-      }
-      fs.copyFileSync(src, dest);
-      log.info('结果图片已保存', { dest });
-      return { ok: true, path: dest };
+      const { buf } = dataUrlToBuffer(dataUrl);
+      return promptMeta.extractPromptFromBuffer(buf);
     } catch (e) {
-      log.error('保存结果图片失败', { error: e.message });
+      return { ok: false, code: 'READ_FAILED', message: e.message };
+    }
+  });
+
+  // 提示词 → 系统剪贴板（文本）
+  ipcMain.handle('prompt:copy', (_e, text) => {
+    const s = typeof text === 'string' ? text : '';
+    if (!s) return { ok: false, message: '提示词为空，未写入剪贴板。' };
+    try {
+      clipboard.writeText(s);
+      return { ok: true };
+    } catch (e) {
+      log.warn('写入剪贴板失败', { error: e.message });
       return { ok: false, message: e.message };
     }
   });
 
-  ipcMain.handle('result:copy-image', (_e, file) => {
-    try {
-      const src = path.join(PATHS.cache, path.basename(file));
-      if (!fs.existsSync(src)) return { ok: false, message: '缓存图片不存在（缓存可能已被清理）。' };
-      const img = nativeImage.createFromPath(src);
-      if (img.isEmpty()) return { ok: false, message: '图片解码失败。' };
-      clipboard.writeImage(img);
-      return { ok: true };
-    } catch (e) {
-      return { ok: false, message: e.message };
-    }
+  // ---- 聊天区图片操作（用户输入图 + API 返回图）----
+  // 右键菜单「复制 / 保存到下载 / 另存为」的主进程实现；渲染进程只传 { kind, file }。
+  ipcMain.handle('image:copy', (_e, payload) => {
+    const { kind, file } = payload || {};
+    return copyImageToClipboard(kind, file);
   });
 
-  ipcMain.handle('attachments:copy-image', (_e, file) => {
-    try {
-      const src = path.join(PATHS.uploads, path.basename(file));
-      if (!fs.existsSync(src)) return { ok: false, message: '输入图片不存在（可能已被清理）。' };
-      const img = nativeImage.createFromPath(src);
-      if (img.isEmpty()) return { ok: false, message: '图片解码失败。' };
-      clipboard.writeImage(img);
-      return { ok: true };
-    } catch (e) {
-      return { ok: false, message: e.message };
-    }
+  // 保存到下载：写进系统「下载」目录（不是应用数据目录里的 downloads）
+  ipcMain.handle('image:save', (_e, payload) => {
+    const { kind, file } = payload || {};
+    return saveImageToSystemDownloads(kind, file);
   });
+
+  // 另存为：系统保存对话框选路径与文件名（默认名 = 提示词前 N 个字 > 建议名 > 原文件名）
+  ipcMain.handle('image:save-as', async (_e, payload) => {
+    const { kind, file, suggestedName } = payload || {};
+    const r = resolveImageSource(kind, file);
+    if (!r.ok) return r;
+    const srcExt = path.extname(r.name) || '.png';
+    // 默认文件名：提示词前 N 个字（设置 - 高级设置）> 渲染进程建议名 > 原文件名
+    const suggested = String(suggestedName || '').replace(/[\\/:*?"<>|]/g, '_').trim() || r.name;
+    const suggestedExt = path.extname(suggested) || srcExt;
+    const stem = stemFromPrompt(r.prompt) || path.basename(suggested, path.extname(suggested));
+    // 先确保默认目录存在：Linux 的 GTK 保存对话框在目录不存在时会退回「上次用过的目录」，
+    // 看起来就像没定位到默认位置；Windows 也存在同样的定位失效问题。
+    const defaultDir = effectiveSavePath();
+    try { fs.mkdirSync(defaultDir, { recursive: true }); } catch (e) { /* 建不出来就让对话框自己决定 */ }
+    const opts = {
+      title: '另存为',
+      buttonLabel: '保存',
+      // 默认名先按「重名就 -1、-2」推到不重复：对话框一打开就是可直接保存的名字；
+      // 用户在对话框里自己敲的名字一律尊重（要不要覆盖由系统对话框确认）。
+      defaultPath: path.join(defaultDir, path.basename(exportImage.uniqueTarget(defaultDir, stem + suggestedExt))),
+      filters: [
+        { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'tiff'] },
+        { name: '所有文件', extensions: ['*'] }
+      ]
+    };
+    const ret = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts);
+    if (ret.canceled || !ret.filePath) return { ok: true, canceled: true };
+    // 用户在对话框里没写扩展名时补上源图扩展名，避免存出无后缀文件
+    const dest = path.extname(ret.filePath) ? ret.filePath : ret.filePath + srcExt;
+    const saved = exportImage.exportResultImageAs({
+      srcPath: r.src,
+      destPath: dest,
+      fallbackPrompt: r.prompt,
+      fallbackPics: r.pics          // 输入图文件名：老图缺 picN 时在另存为这一步补上
+    });
+    if (saved.ok) log.info('图片另存为完成', { kind, file: r.name, dest });
+    return saved;
+  });
+
+  // 原有通道（聊天流里的复制 / 下载按钮）改为复用同一组实现
+  ipcMain.handle('result:download', (_e, file) => saveImageToDefaultDir('result', file));
+  ipcMain.handle('result:copy-image', (_e, file) => copyImageToClipboard('result', file));
+  ipcMain.handle('attachments:copy-image', (_e, file) => copyImageToClipboard('upload', file));
 
   // ---- 对话框 / Shell ----
   ipcMain.handle('dialog:pick-images', async () => {
@@ -458,6 +660,35 @@ function registerIpc() {
   ipcMain.handle('shell:show-in-folder', (_e, p) => {
     shell.showItemInFolder(p);
     return { ok: true };
+  });
+
+  // 在系统文件管理器中打开文件所在位置（轻提示里点击路径）
+  // Windows / macOS：资源管理器 / 访达中「定位并选中」这个文件；
+  // Linux（以 Ubuntu 24.04 为例）：FileManager1 的「定位并选中」接口并非所有文件管理器都实现，
+  //   为保证一定能看到结果，先用 xdg-open 打开所在目录，失败再退回「定位并选中」。
+  ipcMain.handle('shell:reveal-file', async (_e, p) => {
+    const raw = String(p || '').trim();
+    if (!raw) return { ok: false, message: '文件路径为空。' };
+    const target = path.resolve(raw);          // 规范化（相对路径 / 混合分隔符都处理）
+    if (!fs.existsSync(target)) return { ok: false, message: '文件不存在或已被移动。' };
+    try {
+      if (process.platform === 'linux') {
+        const err = await shell.openPath(path.dirname(target));
+        if (!err) {
+          log.info('已用文件管理器打开所在目录', { target });
+          return { ok: true, mode: 'open-dir' };
+        }
+        shell.showItemInFolder(target);
+        log.warn('打开所在目录失败，退回定位并选中', { target, error: err });
+        return { ok: true, mode: 'select', warning: err };
+      }
+      shell.showItemInFolder(target);
+      log.info('已在文件管理器中定位文件', { target });
+      return { ok: true, mode: 'select' };
+    } catch (e) {
+      log.warn('在文件管理器中打开失败', { target, error: e && e.message });
+      return { ok: false, message: e && e.message ? e.message : String(e) };
+    }
   });
 
   ipcMain.on('log:write', (_e, { level, message, extra }) => {
