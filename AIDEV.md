@@ -37,6 +37,8 @@ settings.json（用户数据：添加了哪些系列、系列里有哪些模型�
 - **文生图**（text-to-image）：纯文字提示词生成图片。
 - **图生图 / 图像编辑**（image-to-image）：1–3 张输入图片 + 编辑指令，或纯图片输入。
 - 对话式界面（类 Cherry Studio）：左侧标签管理会话（空对话按序号 1234…，出现首条文字后自动命名），右侧聊天流，底部输入框。
+- **逐标签草稿**：输入区的文字与待发送图片跟着标签独立保留 —— 切走再切回来内容还在，
+  直到该会话被删除（或全部删除）才随之删除；草稿**只存内存**（不落盘，重启软件即消失），见 §4.6。
 - 每个会话**不携带上下文**（上下文长度恒为 0）：每次请求只包含当前这一条输入。
 - **标签自动命名（重命名模型）**：首条文字 → DeepSeek Responses API（默认 `deepseek-flash` 非思考模式）
   精简成 5~6 字中文标题；未配置 Key 或调用失败时截取首条文字。模板/温度/Top-P 在 `rename-model.json`。
@@ -90,13 +92,13 @@ stabstab/
 │   │   ├── ChatView.jsx               # 主区：头部（插入·复制临时按钮）、消息列表、空态、输入框
 │   │   ├── UserMessage.jsx            # 用户气泡：文本/图片、编辑重发、复制、删除
 │   │   ├── AssistantMessage.jsx       # 助手气泡：结果图/错误/异步状态卡片/取消
-│   │   ├── Composer.jsx               # 输入框：粘贴/拖入/多选、size/高级参数、发送/停止、附加提示词解析
+│   │   ├── Composer.jsx               # 输入框：粘贴/拖入/多选、size/高级参数、发送/停止、附加提示词解析、逐标签草稿搬运
 │   │   ├── PromptDrop.jsx             # ★ 全窗口左右解析分区（曲线分隔）+ 「图片提示词」查看弹窗
 │   │   ├── SettingsModal.jsx          # 设置：模型 / 重命名模型 / 基础 / 高级 四页
 │   │   ├── Lightbox.jsx               # 全屏图片预览：滚轮缩放/拖动/ESC
 │   │   └── Toasts.jsx                 # 轻提示
 │   └── lib/
-│       ├── store.jsx                  # React Context + reducer 全局状态 + 防抖落盘
+│       ├── store.jsx                  # React Context + reducer 全局状态 + 防抖落盘（含逐标签草稿 drafts，仅内存）
 │       ├── promptReuse.jsx            # ★ 解析分区显隐状态机 + 元数据解析 + 待复用提示词（临时状态）
 │       ├── models.js                  # ★ 模型系列/模型解析（界面侧，与主进程同口径）
 │       ├── title.js                   # ★ 会话标签自动命名（首条文字 → 重命名模型 → 回退截取）
@@ -327,6 +329,33 @@ text           ← 文件名 + 提示词（纯文本框粘贴用；不含 pic �
 
 **不变量**：命名请求与图片生成并行、不阻塞；`conversations.json` 只存 `name/nameAuto`，不含任何 Key；命名失败静默回退，不弹错误。
 
+### 4.6 逐标签草稿（输入区文字 + 待发送图片，仅内存）
+
+输入区的 `text` / `attachments` 仍然留在 Composer 本地 state（打字不触发全局重渲染），
+但**跟着标签走**：切换标签时先把离开标签的草稿存进 `state.drafts`，再把目标标签的草稿取回来 ——
+于是任何标签自己的草稿都留到它被删除为止，且不会被别的标签覆盖或清空。
+
+```
+[Composer] 本地输入区（text / attachments）
+   ├─ 每次渲染：draftRef = {text, attachments}          ← 最新草稿快照（effect 里读到的是上一拍）
+   ├─ 切换标签（convId 变化）：
+   │     dispatch CONV_DRAFT_PARK {convId: 上一个标签, draft: draftRef}    ← 离开的先存回仓库
+   │     从 state.drafts[新标签] 取回（没有 = 空输入区，绝不沿用上一个标签的内容）
+   └─ 发送成功：dispatch CONV_DRAFT_DROP {convId}       ← 这条草稿被消费，切回来不复活
+[reducer] state.drafts : conversationId -> {text, attachments}
+   ├─ CONV_DRAFT_PARK ：会话已不存在 → 丢弃请求；空草稿 → 删除条目（不留空壳）
+   ├─ CONV_DELETE     ：只删被删标签自己那一份（其它标签的草稿原样保留）
+   └─ CONV_DELETE_ALL ：drafts = {}
+```
+
+- **只存内存**：`flushSave` 只取 `settings / conversations / modelSeries / renameConfig`，`state.drafts` 不在其中 ——
+  所以草稿不落盘、**重启软件即消失**；反过来，草稿也**绝不能塞进 `conversations`**（那一份会被整包写盘，草稿里可能有 base64 图片）。
+- **切换即搬运，不是重置**：`CONV_DRAFT_PARK` 交给 reducer 时，若该会话已被删除则直接丢弃 ——
+  否则「删除标签」之后迟到的那一拍会把草稿重新塞回仓库，草稿就永远不会释放。
+- **发送期间切标签安全**：`doSend` 记下发起时的 `sentConvId`，收尾（清空输入区 / 清待复用提示词 / 焦点）只在该标签仍是当前标签时执行。
+- 与 **待复用提示词**（`state.temporary`，见 §4.5）的区别：后者是解析图片元数据出来的临时按钮态，切标签即失效（`clearReuse`）；
+  输入区草稿跟着标签走。两者生命周期不同，不要混在一起改。
+
 ---
 
 ## 5. 持久化数据结构（Schema）
@@ -473,6 +502,7 @@ text           ← 文件名 + 提示词（纯文本框粘贴用；不含 pic �
 ```
 
 > 助手消息的 `meta.modelId` 是「重启后恢复异步轮询」与「编辑重发」的定位依据：主进程用它反查系列/来源/密钥（密钥不进会话文件）。
+> 逐标签草稿（输入区的文字与待发送图片）**不在这个文件里**：它只活在渲染进程内存（`state.drafts`），重启软件即消失，见 §4.6。
 
 ### 5.5 图片存储位置
 
@@ -509,6 +539,7 @@ text           ← 文件名 + 提示词（纯文本框粘贴用；不含 pic �
     底色必须是**半透明**蒙版（禁止用不透明背景把界面盖白），边缘圆角矩形虚线与中间曲线分隔线**同色同风格**（都走
     `--drop-line` / `--drop-line-strong`），曲线只作装饰（`pointer-events: none`），实际接收者是左右两个半区。
 22. **待复用提示词与「插入／复制」同生命周期**：存在 `state.temporary`，点击按钮 / 发送 / 切换 / 新建 / 删除任意会话（含非当前）/ 全部删除 / 主动改文字都必须一起清空；聚焦、移动光标、附件变化、拖放区显隐不得清理；异步解析必须用版本号 + 会话标识 + 文字快照三重校验，过期结果不得重新显示按钮。
+23. **逐标签草稿只存内存、随标签存亡**：输入区的文字与待发送图片按 `conversationId` 存在 `state.drafts`（仅内存，**不得**进 `state:save`，也**不得**塞进 `conversations`）；切换标签只搬运不清空（别人的草稿不许丢、也不许被上一个标签的内容覆盖），会话 `CONV_DELETE` / `CONV_DELETE_ALL` 时对应草稿随之删除；`CONV_DRAFT_PARK` 必须拒绝已不存在的会话（否则删除后迟到的一拍会把草稿塞回仓库、永不释放），发送成功必须 `CONV_DRAFT_DROP`（切回来不复活已发送的内容），见 §4.6。
 
 ---
 
@@ -712,6 +743,7 @@ node dev-data/qa/meta-decode-check.js   # 元数据写入后仍可被真实解�
 | 改结果图导出行为（保存路径 / 元数据透传 / 补写 picN） | `electron/src/exportImage.js`（`applyPromptToBuffer` → `promptmeta.mergeMeta`）+ `main.js` 的 `image:save` / `image:save-as` / `result:download`（同级目录兜底在 `conversationMeta.metaFromConversations`） |
 | 改顶部解析区显隐规则 | `src/lib/promptReuse.jsx#topUiPhase/useAppFileDrag`（纯函数可直接被 QA 断言） |
 | 改「插入／复制」的清理时机 | `src/lib/store.jsx` 的 `clearReuse` + `CONV_REUSE_SET/CLEAR` + `src/components/Composer.jsx#onTextInput/doSend` |
+| 改「切换标签时草稿怎么留」 | `src/components/Composer.jsx` 的搬运 effect（`draftOwnerRef` / `draftRef`）+ `src/lib/store.jsx` 的 `CONV_DRAFT_PARK/DROP`（仓库只在内存，删除会话时随之删除，见 §4.6） |
 | 改插入的拼接规则 | `src/components/Composer.jsx#appendPromptText`（append，不覆盖、不按光标插入） |
 | 改解析失败文案 | `src/lib/promptReuse.jsx` 的 `PROMPT_MESSAGES` / `promptErrorText`（区分不支持 / 未找到 / 损坏 / 读取失败） |
 | 改持久化字段默认值 | `electron/src/store.js` 的 `DEFAULT_SETTINGS` / `DEFAULT_CONVERSATIONS` |

@@ -90,7 +90,7 @@ export function ParamsPanel({ params, setParams, schema }) {
 }
 
 export default function Composer({ conv, busy }) {
-  const { state, dispatch } = useApp();
+  const { state, dispatch, stateRef } = useApp();
   const toast = useToast();
   const { registerComposerEl, setReusePrompt, nextRequestId } = usePromptReuse();
   const settings = state.settings;
@@ -163,14 +163,32 @@ export default function Composer({ conv, busy }) {
     return () => document.removeEventListener('mousedown', onDoc);
   }, [paramsOpen]);
 
-  // 切换会话时重置输入区
+  // 逐会话草稿：输入区的文字与待发送图片跟着「标签」走 —— 切走再切回来内容还在，
+  // 直到该会话被删除（或全部删除）才随之删除；仓库只存内存（见 lib/store.jsx 的 state.drafts）。
   const convId = conv ? conv.id : null;
+  // 本地输入区当前归属的会话：切换时据此把草稿搬回它自己的标签
+  const draftOwnerRef = useRef(null);
+  // 最新草稿快照：切换 effect 里读到的 text/attachments 还是上一拍的，靠它搬运离开会话的内容
+  const draftRef = useRef({ text: '', attachments: [] });
+  draftRef.current = { text, attachments };
+
   useEffect(() => {
-    setText('');
-    setAttachments([]);
+    // 离开的会话：先把它自己的草稿存回仓库（删除后迟到的这一拍会被 reducer 丢弃）
+    const previous = draftOwnerRef.current;
+    if (previous !== null && previous !== convId) {
+      dispatch({ type: 'CONV_DRAFT_PARK', convId: previous, draft: draftRef.current });
+    }
+    draftOwnerRef.current = convId;
+    // 进入的会话：取回它自己的草稿（没有就是空输入区，绝不沿用上一个标签的内容）
+    const stored = convId === null ? null : stateRef.current.drafts[convId];
+    const nextText = stored ? stored.text : '';
+    const nextAttachments = stored ? stored.attachments : [];
+    setText(nextText);
+    setAttachments(nextAttachments);
+    draftRef.current = { text: nextText, attachments: nextAttachments };
     setSending(false);
-    parseRef.current = 0;      // 作废未完成的解析：过期结果不得再显示插入／复制
-    lastEditRef.current = '';
+    parseRef.current = 0;             // 作废未完成的解析：过期结果不得再显示插入／复制
+    lastEditRef.current = nextText;   // 取回的草稿算「输入区已有内容」，插入／复制按钮不误显示
     silentTextRef.current = null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [convId]);
@@ -350,6 +368,8 @@ export default function Composer({ conv, busy }) {
     if (!conv) { toast('请先新建一个对话', 'warn'); return; }
     if (!text.trim() && attachments.length === 0) { toast('请输入文字或添加图片', 'warn'); return; }
     if (busy) return;
+    // 发送期间用户可能切走：收尾只允许动这条草稿自己的标签，别清掉别的标签正在编辑的内容
+    const sentConvId = conv.id;
     setSending(true);
     try {
       await sendNew({
@@ -360,14 +380,19 @@ export default function Composer({ conv, busy }) {
         modelId,
         log
       });
-      setText('');
-      setAttachments([]);
-      // 已发送：清空待复用提示词与两个临时按钮，并作废未完成的解析
-      parseRef.current = 0;
-      lastEditRef.current = '';
-      silentTextRef.current = null;
-      dispatch({ type: 'CONV_REUSE_CLEAR' });
-      if (taRef.current) taRef.current.focus();
+      // 已发送：这条草稿被消费掉（仓库里同步删除，切走再切回来不会恢复已发送的内容）
+      dispatch({ type: 'CONV_DRAFT_DROP', convId: sentConvId });
+      if (draftOwnerRef.current === sentConvId) {
+        setText('');
+        setAttachments([]);
+        draftRef.current = { text: '', attachments: [] };
+        // 已发送：清空待复用提示词与两个临时按钮，并作废未完成的解析
+        parseRef.current = 0;
+        lastEditRef.current = '';
+        silentTextRef.current = null;
+        dispatch({ type: 'CONV_REUSE_CLEAR' });
+        if (taRef.current) taRef.current.focus();
+      }
     } catch (e) {
       toast('发送失败: ' + e.message, 'error');
       log('error', '发送失败', { error: e.message });

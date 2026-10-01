@@ -16,6 +16,11 @@ export const initialState = {
   modelSeries: { version: 1, series: [] },   // 内置模型系列配置（含 API 来源 / 默认地址）
   renameConfig: null,                        // 重命名模型配置：提示模板 / 温度 / Top-P / 默认地址（主进程下发，可回写）
   conversations: { tabCounter: 0, activeId: null, conversations: [] },
+  // 逐会话「输入区草稿」（文字 + 待发送图片）：conversationId -> {text, attachments}。
+  // 切换标签时由 Composer 搬运（离开的存回、进入的取回），所以每个标签的草稿都留到自己被删除。
+  // 只活在内存里：不进 saveState、重启软件即消失；会话被删除 / 全部删除时随之删除。
+  // ★ 绝不能塞进 conversations —— 那一份会被整包写进 conversations.json（草稿里可能有 base64 图片）。
+  drafts: {},
   busy: {},          // conversationId -> {jobId, mode}
   lightbox: null,    // {images:[{src, title}], index}
   settingsOpen: false,
@@ -35,10 +40,23 @@ function updateConv(state, convId, fn) {
 
 /**
  * 会话结构发生「切换 / 新建 / 删除」时清空待复用提示词（连同顶部的插入·复制按钮）。
- * 切换会话会重置输入框，旧的待复用提示词随之失效，必须一起清掉。
+ * 待复用提示词是输入区的临时状态，不跟着草稿走：切走标签即失效，切回来也不再显示
+ * （输入区本身的文字与图片是逐会话草稿，见下面的 CONV_DRAFT_* —— 两者生命周期不同）。
  */
 function clearReuse(state) {
   return state.temporary ? { ...state, temporary: null } : state;
+}
+
+/**
+ * 从草稿仓库里摘掉一个会话的草稿（没有该会话时原样返回，便于上层保持同一引用不触发重渲染）。
+ * @param {object} drafts 逐会话草稿仓库
+ * @param {string} convId 目标会话 id
+ */
+function dropDraft(drafts, convId) {
+  if (!(convId in drafts)) return drafts;
+  const next = { ...drafts };
+  delete next[convId];
+  return next;
 }
 
 /** 状态机（导出便于 QA 脚本直接验证 reducer 行为：见 dev-data/qa/title-test.mjs） */
@@ -105,12 +123,19 @@ export function reducer(state, action) {
       if (activeId === action.id) activeId = rest.length ? rest[0].id : null;
       const busy = { ...state.busy };
       delete busy[action.id];
-      // 删除任意会话（含非当前会话）都清空待复用提示词
-      return { ...clearReuse(state), busy, conversations: { ...state.conversations, activeId, conversations: rest } };
+      // 删除任意会话（含非当前会话）都清空待复用提示词；被删会话自己的草稿也随之删除，
+      // 其它会话的草稿原样保留（每个标签的草稿只管自己那一份）。
+      return {
+        ...clearReuse(state),
+        drafts: dropDraft(state.drafts, action.id),
+        busy,
+        conversations: { ...state.conversations, activeId, conversations: rest }
+      };
     }
     case 'CONV_DELETE_ALL':
       return {
         ...clearReuse(state),
+        drafts: {},
         busy: {},
         conversations: { ...state.conversations, activeId: null, conversations: [] }
       };
@@ -171,6 +196,27 @@ export function reducer(state, action) {
       const busy = { ...state.busy };
       delete busy[action.convId];
       return { ...state, busy };
+    }
+
+    // ---- 输入区草稿（逐会话，仅内存：切走标签不丢，删除标签才丢）----
+    case 'CONV_DRAFT_PARK': {
+      // 只接受仍然存在的会话：删除会话后迟到的一拍搬运必须丢弃，
+      // 否则草稿会被重新塞回仓库、永远不释放（见 Composer 的搬运 effect）。
+      if (!state.conversations.conversations.some((c) => c.id === action.convId)) return state;
+      const text = (action.draft && action.draft.text) || '';
+      const attachments = (action.draft && action.draft.attachments) || [];
+      // 空草稿不占位：输入区被清空后，仓库里也不留空壳
+      if (!text && attachments.length === 0) {
+        const drafts = dropDraft(state.drafts, action.convId);
+        return drafts === state.drafts ? state : { ...state, drafts };
+      }
+      // 草稿内容原地替换（同一个会话只留最新一份，不做历史）
+      return { ...state, drafts: { ...state.drafts, [action.convId]: { text, attachments } } };
+    }
+    case 'CONV_DRAFT_DROP': {
+      // 草稿已被消费（发送成功）：仓库里同步删掉，避免切走再切回来又恢复已发送的内容
+      const drafts = dropDraft(state.drafts, action.convId);
+      return drafts === state.drafts ? state : { ...state, drafts };
     }
 
     // ---- 待复用提示词（底部拖入图片解析出的临时状态）----
