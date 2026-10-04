@@ -25,6 +25,7 @@ import React, { useMemo } from 'react';
 import plusSrc from '../../assets/icons/plus.svg?raw';
 import closeSrc from '../../assets/icons/close.svg?raw';
 import folderSrc from '../../assets/icons/folder.svg?raw';
+import folderDownloadLineSrc from '../../assets/icons/folder-download-line.svg?raw';
 import trashSrc from '../../assets/icons/trash.svg?raw';
 import gearSrc from '../../assets/icons/gear.svg?raw';
 import pencilSrc from '../../assets/icons/pencil.svg?raw';
@@ -41,6 +42,7 @@ const RAW = {
   plus: plusSrc,
   close: closeSrc,
   folder: folderSrc,
+  folderDownloadLine: folderDownloadLineSrc,
   trash: trashSrc,
   gear: gearSrc,
   pencil: pencilSrc,

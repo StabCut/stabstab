@@ -184,7 +184,9 @@ for f in electron/src/*.js electron/src/api/*.js; do node --check "$f"; done
 | `copyText(text)` | `prompt:copy` | invoke | 提示词 → 系统剪贴板（文本） |
 | `pickImages()` | `dialog:pick-images` | invoke | 多选图片 → [{name,mime,size,dataUrl}] |
 | `pickFolder(defaultPath)` | `dialog:pick-folder` | invoke | 目录选择器 |
-| `openCacheDir()` | `cache:open` | invoke | 文件管理器打开缓存目录 |
+| `openCacheDir()` | `cache:open` | invoke | 文件管理器打开缓存目录（左侧标签栏底部按钮） |
+| `openDownloadsDir()` | `downloads:open` | invoke | 文件管理器打开数据目录下的 downloads（对话区右上角文件夹按钮；开发模式 = dev-data/downloads） |
+| `openSystemDownloadsDir()` | `system-downloads:open` | invoke | 文件管理器打开系统「下载」目录（右上角「下载」按钮；Windows = %USERPROFILE%\Downloads，Ubuntu 24.04 = ~/Downloads；取不到时回退数据目录 downloads） |
 | `openPath(p)` / `showInFolder(p)` | `shell:*` | invoke | 打开路径/定位文件 |
 | `openExternal(url)` | `shell:open-external` | invoke | 打开外部链接（仅 http/https，如 API Key 申请页） |
 | `log(level,message,extra)` | `log:write` | send | 渲染进程日志 → 主进程日志文件 |

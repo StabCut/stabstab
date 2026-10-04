@@ -23,6 +23,9 @@ const stripComments = (t) => t
   .replace(/\/\*[\s\S]*?\*\//g, '')      // 块注释
   .replace(/^[ \t]*\/\/[^\n]*$/gm, '');  // 整行行注释
 
+/** kebab-case 文件名 -> camelCase 变量名主干（folder-download-line -> folderDownloadLine） */
+const kebabToCamel = (s) => s.replace(/-+([a-z0-9])/g, (_m, c) => c.toUpperCase());
+
 // ---------- 1) Icon.jsx ----------
 const jsxRaw = fs.readFileSync(ICON_JSX, 'utf8');
 const jsx = stripComments(jsxRaw);
@@ -96,8 +99,11 @@ for (const [varName, file] of imported) {
     warnings.push(`${file}: 有 ${unclosed.length} 个图形标签未自闭合，建议写成 \`<path ... />\``);
   }
 
-  if (varName.replace(/Src$/, '') !== path.basename(file, '.svg')) {
-    problems.push(`${file}: 导入变量名 ${varName} 与文件名不匹配（约定 xxxSrc <- xxx.svg）`);
+  // 文件名与导入变量名的约定：xxx.svg -> xxxSrc；允许 iconfont 那种中划线文件名，
+  // 按 kebab -> camel 归一后比较（folder-download-line.svg -> folderDownloadLineSrc）。
+  if (varName.replace(/Src$/, '') !== kebabToCamel(path.basename(file, '.svg'))) {
+    problems.push(`${file}: 导入变量名 ${varName} 与文件名不匹配（约定 kebab 文件名 -> camel 变量：`
+      + `${path.basename(file, '.svg')} -> ${kebabToCamel(path.basename(file, '.svg'))}Src）`);
   }
 }
 

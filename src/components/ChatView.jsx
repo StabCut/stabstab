@@ -33,9 +33,18 @@ export default function ChatView() {
   const current = resolveModel(state.settings, state.modelSeries, state.protocols, activeModelId);
   const mode = current ? current.mode : 'sync';
 
-  const openCache = async () => {
-    const r = await window.stab.openCacheDir();
-    if (!r.ok) toast('打开缓存目录失败: ' + r.message, 'error');
+  // 右上角文件夹按钮：打开数据目录下的 downloads（开发模式即 dev-data/downloads），
+  // 与左下角标签栏底部「打开缓存目录」按钮区分开。
+  const openDownloads = async () => {
+    const r = await window.stab.openDownloadsDir();
+    if (!r.ok) toast('打开下载目录失败: ' + r.message, 'error');
+  };
+
+  // 右上角「下载」按钮：打开系统「下载」目录（Windows = 用户目录\Downloads；Ubuntu 24.04 = ~/Downloads）。
+  // 与左侧文件夹按钮的区别：那个开的是应用数据目录里的 downloads，这个是操作系统自己的下载目录。
+  const openSystemDownloads = async () => {
+    const r = await window.stab.openSystemDownloadsDir();
+    if (!r.ok) toast('打开下载目录失败: ' + r.message, 'error');
   };
 
   // 「插入」= 先把输入框内容放到末尾追加（append），再聚焦并把光标落到文本末尾
@@ -72,7 +81,8 @@ export default function ChatView() {
               {mode === 'sync' ? '同步模式' : '异步模式'}
             </span>
           )}
-          <button className="icon-btn" title="一键打开缓存目录（可安全清空）" onClick={openCache}><Icon name="folder" size={19} /></button>
+          <button className="icon-btn" title="一键打开下载目录（保存结果图片的位置）" onClick={openDownloads}><Icon name="folder" size={19} /></button>
+          <button className="icon-btn" title="一键打开系统「下载」目录（Windows：下载 / Ubuntu：~/Downloads）" onClick={openSystemDownloads}><Icon name="folderDownloadLine" size={19} /></button>
         </div>
       </header>
 

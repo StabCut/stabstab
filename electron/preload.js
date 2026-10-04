@@ -50,7 +50,9 @@ contextBridge.exposeInMainWorld('stab', {
   // ---- 对话框 / Shell ----
   pickImages: () => ipcRenderer.invoke('dialog:pick-images'),
   pickFolder: (defaultPath) => ipcRenderer.invoke('dialog:pick-folder', defaultPath),
-  openCacheDir: () => ipcRenderer.invoke('cache:open'),
+  openCacheDir: () => ipcRenderer.invoke('cache:open'),        // 结果图缓存目录（标签栏底部按钮）
+  openDownloadsDir: () => ipcRenderer.invoke('downloads:open'), // 数据目录下的 downloads（对话区右上角文件夹按钮）
+  openSystemDownloadsDir: () => ipcRenderer.invoke('system-downloads:open'), // 系统「下载」目录（右上角「下载」按钮）
   openPath: (p) => ipcRenderer.invoke('shell:open-path', p),
   openExternal: (url) => ipcRenderer.invoke('shell:open-external', url),
   showInFolder: (p) => ipcRenderer.invoke('shell:show-in-folder', p),

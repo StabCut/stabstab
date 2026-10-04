@@ -361,6 +361,32 @@ function createWindow() {
   }
 }
 
+// ---------- 数据目录：在系统文件管理器中打开 ----------
+// 三处文件夹按钮共用这一组实现，只是目标目录不同：
+//   cache           —— 结果图缓存（左侧标签栏底部的文件夹按钮，可安全清空）
+//   downloads       —— 数据目录下的下载目录（对话区右上角「同步模式」右侧的文件夹按钮）
+//                      开发模式即项目内 dev-data/downloads；打包后为 stabstab-data/downloads。
+//   systemDownloads —— 系统「下载」目录（右上角「下载」按钮）：Windows = %USERPROFILE%\Downloads；
+//                      Linux（Ubuntu 24.04）= XDG 下载目录，默认 ~/Downloads。
+const OPEN_DIRS = {
+  cache: { label: '缓存目录', dir: () => PATHS.cache },
+  downloads: { label: '下载目录', dir: () => PATHS.downloads },
+  systemDownloads: { label: '系统下载目录', dir: () => systemDownloadsDir() }
+};
+
+async function openDataDir(kind) {
+  const spec = OPEN_DIRS[kind];
+  if (!spec) return { ok: false, message: '未知的目录类型。' };
+  const dir = spec.dir();
+  try {
+    fs.mkdirSync(dir, { recursive: true });   // 目录可能被用户清空/删除，打开前补建
+    const err = await shell.openPath(dir);
+    return { ok: !err, message: err || '', path: dir };
+  } catch (e) {
+    return { ok: false, message: e.message, path: dir };
+  }
+}
+
 // ---------- IPC ----------
 function registerIpc() {
   // 启动引导：一次拿齐全部初始数据
@@ -633,11 +659,14 @@ function registerIpc() {
     return { ok: true, path: ret.filePaths[0] };
   });
 
-  ipcMain.handle('cache:open', async () => {
-    fs.mkdirSync(PATHS.cache, { recursive: true });
-    const err = await shell.openPath(PATHS.cache);
-    return { ok: !err, message: err || '' };
-  });
+  // 左侧标签栏底部的文件夹按钮：打开结果图缓存目录（可安全清空）
+  ipcMain.handle('cache:open', () => openDataDir('cache'));
+
+  // 对话区右上角「同步模式」右侧的文件夹按钮：打开数据目录下的 downloads（dev-data/downloads）
+  ipcMain.handle('downloads:open', () => openDataDir('downloads'));
+
+  // 该文件夹按钮右侧的「下载」按钮：打开系统「下载」目录（Windows 下载 / Ubuntu ~/Downloads）
+  ipcMain.handle('system-downloads:open', () => openDataDir('systemDownloads'));
 
   ipcMain.handle('shell:open-path', async (_e, p) => {
     const err = await shell.openPath(p);
