@@ -102,7 +102,8 @@ stabstab/
 │       ├── promptReuse.jsx            # ★ 解析分区显隐状态机 + 元数据解析 + 待复用提示词（临时状态）
 │       ├── models.js                  # ★ 模型系列/模型解析（界面侧，与主进程同口径）
 │       ├── title.js                   # ★ 会话标签自动命名（首条文字 → 重命名模型 → 回退截取）
-│       ├── send.js                    # 发送/重发公共逻辑（无上下文、消息配对、压缩、参数过滤）
+│       ├── send.js                    # 发送/重发公共逻辑（无上下文、消息配对、压缩、参数过滤、重发取哪套设置）
+│       ├── composerSelection.js        # ★ 输入区「当前模型 + 当前参数」的实时镜像（编辑重发据此发请求，见 §4.7）
 │       ├── images.js                  # File→dataUrl、尺寸读取、按设置压缩
 │       └── util.js                    # uid/时间/字节/尺寸解析/appfile URL 构造
 ├── build/                             # 打包资源：icon.svg / icon.png / icon.ico
@@ -196,6 +197,7 @@ for f in electron/src/*.js electron/src/api/*.js; do node --check "$f"; done
 ```
 [渲染进程] Composer/UserMessage 收集 text + images(dataUrl) + srcName(输入图真实文件名) + params + modelId
    └─ lib/send.js: sendNew() / resendEdited()
+        │  resendEdited 的 modelId / params 由编辑气泡按**输入区当前设置**给出（resolveResendTarget，见 §4.7）
         ├─ lib/models.js resolveModel(modelId) → 界面用信息（尺寸列表 / 参数 schema / 模式提示 / 是否有 Key）
         ├─ 压缩每张图（compressIfNeeded，按 settings.compress*）
         ├─ dispatch MSG_ADD [userMsg, assistant占位(pending, meta.modelId)]
@@ -357,6 +359,33 @@ text           ← 文件名 + 提示词（纯文本框粘贴用；不含 pic �
 - **发送期间切标签安全**：`doSend` 记下发起时的 `sentConvId`，收尾（清空输入区 / 清待复用提示词 / 焦点）只在该标签仍是当前标签时执行。
 - 与 **待复用提示词**（`state.temporary`，见 §4.5）的区别：后者是解析图片元数据出来的临时按钮态，切标签即失效（`clearReuse`）；
   输入区草稿跟着标签走。两者生命周期不同，不要混在一起改。
+
+### 4.7 编辑重发用「输入区当前设置」（不是消息当时的设置）
+
+用户消息上的「编辑并重新发送」**不是照原样再发一次**：这次请求的**模型 / 尺寸 / 高级参数**
+一律取底部输入框的**当前**选择 —— 当时用模型 A 发的，现在下方换成了模型 B、分辨率也改了，
+重发就按 B 与当前分辨率发（`src/lib/send.js#resolveResendTarget` 是这条规则的唯一实现）。
+
+```
+[Composer] 模型下拉 / 尺寸下拉 / 参数面板变化
+   └─ setComposerSelection(modelId, params)        ← src/lib/composerSelection.js（模块级外部状态）
+[UserMessage] 编辑气泡（打开时才订阅）
+   ├─ 渲染：resolveResendTarget({selection}) → 尺寸下拉的候选与默认值、即将使用的模型名
+   ├─ 尺寸下拉：默认跟随输入区当前尺寸；手选 = 只覆盖这一次重发的 size（sizeOverride）
+   └─ 点「确定并重新发送」：再调一次 getComposerSelection() 取最新一拍
+        └─ resendEdited({modelId: 当前模型, params: buildParams({...当前参数, size}, 当前模型 schema)})
+             └─ 用户消息的 params / model 一并改写成本次真正发出去的那套（消息记录 = 实际请求）
+```
+
+- **为什么不用全局 store**：参数面板的数字 / 文本框每敲一个字符都会变，走 reducer 会让整条消息列表重渲染；
+  这里用模块级外部状态 + `useSyncExternalStore`，且 `useComposerSelection(enabled)` 只在编辑气泡打开时订阅。
+- **模型能力不同**：尺寸候选来自**当前模型**的 `sizeOptions`；输入区遗留的、当前模型不支持的尺寸会被校正到该模型的第一个候选；
+  参数按**当前模型**的 `paramSchema` 过滤（`buildParams`），于是 A 协议的 `n` / `watermark` 不会漏给 B 协议。
+- **兜底**：输入区还没写出任何设置（Composer 尚未发布，属极端时序）时，退回该消息记录里的模型与参数（= 旧行为）。
+- **同步 / 异步判断同源**：编辑气泡里 `busy` 的拦截用当前模型的 `mode`，与实际发请求的模型一致。
+- **消息记录跟着改写**：`MSG_EDIT_PREPARE` 把用户消息的 `params` / `model` 更新为本次实际使用的值，
+  所以会话里留下的永远是「实际发出去了什么」，不是「打算发什么」。
+- 回归脚本：`dev-data/qa/resend-target-test.js`（本地脚本，dev-data 已 gitignore，跑法见文件头）。
 
 ---
 
@@ -542,6 +571,7 @@ text           ← 文件名 + 提示词（纯文本框粘贴用；不含 pic �
     `--drop-line` / `--drop-line-strong`），曲线只作装饰（`pointer-events: none`），实际接收者是左右两个半区。
 22. **待复用提示词与「插入／复制」同生命周期**：存在 `state.temporary`，点击按钮 / 发送 / 切换 / 新建 / 删除任意会话（含非当前）/ 全部删除 / 主动改文字都必须一起清空；聚焦、移动光标、附件变化、拖放区显隐不得清理；异步解析必须用版本号 + 会话标识 + 文字快照三重校验，过期结果不得重新显示按钮。
 23. **逐标签草稿只存内存、随标签存亡**：输入区的文字与待发送图片按 `conversationId` 存在 `state.drafts`（仅内存，**不得**进 `state:save`，也**不得**塞进 `conversations`）；切换标签只搬运不清空（别人的草稿不许丢、也不许被上一个标签的内容覆盖），会话 `CONV_DELETE` / `CONV_DELETE_ALL` 时对应草稿随之删除；`CONV_DRAFT_PARK` 必须拒绝已不存在的会话（否则删除后迟到的一拍会把草稿塞回仓库、永不释放），发送成功必须 `CONV_DRAFT_DROP`（切回来不复活已发送的内容），见 §4.6。
+24. **编辑重发用输入区当前设置**：`resolveResendTarget`（`lib/send.js`）是唯一实现 —— 模型 / 尺寸 / 高级参数取**输入区当前值**（`lib/composerSelection.js` 的实时镜像），**不得**改回「用该消息记录里的 `msg.model` / `msg.params` 发」；尺寸候选与参数过滤都要按**当前模型**（`sizeOptions` / `paramSchema`）算，输入区遗留的不兼容尺寸校正到该模型第一个候选；输入区尚未发布设置时才退回消息记录那套；同步拦截（busy）用的 `mode` 也必须来自当前模型；重发后用户消息的 `params` / `model` 改写为本**实际发送**的那套，见 §4.7。
 
 ---
 

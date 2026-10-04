@@ -167,7 +167,7 @@ stabstab-data/
 
 - **Conversation management**: left-side tabs (numeric names 1234… by default), new / rename / delete / delete-all; the "⋯" menu per tab.
 - **No context**: each request contains only the current single input — context length is always 0.
-- **Message actions**: edit a past user input in place and resend (auto-deletes the old reply, overwrites in place); delete a single message; copy text / image; result images show their resolution.
+- **Message actions**: edit a past user input in place and resend (auto-deletes the old reply, overwrites in place). A resend always uses the **model and parameters currently selected in the composer** (switch to model B or change the resolution below and the resend follows it; the edit bubble can also override the size for that single resend); delete a single message; copy text / image; result images show their resolution.
 - **Image input**: paste (common formats), drag into the composer, or click "+" for multi-select; up to 3 images; pure image / pure text / text+image all supported.
 - **Image preview**: click any input/result image to zoom, scroll to zoom, drag to pan, ESC to close, arrow keys to switch.
 - **Pre-send compression**: enable in Settings → Basic; single images exceeding the threshold (10 MB by default) are compressed; multiple images are checked individually.

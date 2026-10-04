@@ -5,6 +5,7 @@ import { readFirstPromptFromFiles, usePromptReuse } from '../lib/promptReuse.jsx
 import { formatBytes } from '../lib/util.js';
 import { sendNew, buildParams, defaultParams } from '../lib/send.js';
 import { allModels, resolveModel, sizeLabel } from '../lib/models.js';
+import { setComposerSelection } from '../lib/composerSelection.js';
 import Icon from './Icon.jsx';
 
 const MAX_IMAGES = 3; // API 规则：最多 3 张输入图片
@@ -152,6 +153,13 @@ export default function Composer({ conv, busy }) {
       setParams((p) => ({ ...p, size: sizeOptions[0] || 'auto' }));
     }
   }, [sizeOptions, params.size]);
+
+  // 把「当前模型 + 当前参数」镜像出去，供「编辑并重新发送」使用（见 lib/composerSelection.js）：
+  // 重发按这里的当前设置发请求，而不是那条消息当时用的模型与参数。
+  // 放在本组 effect 的最后：上面两处纠正 / 重置算出的值也会经下一拍写进来。
+  useEffect(() => {
+    setComposerSelection(modelId, params);
+  }, [modelId, params]);
 
   // 点击外部关闭参数面板
   useEffect(() => {

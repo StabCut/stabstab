@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { useApp, useToast } from '../lib/store.jsx';
 import { uploadUrl, formatClock } from '../lib/util.js';
-import { buildParams, resendEdited, defaultParams } from '../lib/send.js';
-import { resolveModel, sizeLabel } from '../lib/models.js';
+import { resendEdited, resolveResendTarget } from '../lib/send.js';
+import { sizeLabel } from '../lib/models.js';
+import { useComposerSelection, getComposerSelection } from '../lib/composerSelection.js';
 import { missingImageMessage } from '../lib/imageActions.js';
 import Icon from './Icon.jsx';
 import ImageContextMenu, { useImageMenu } from './ImageContextMenu.jsx';
@@ -13,19 +14,31 @@ export default function UserMessage({ conv, msg }) {
   const [editing, setEditing] = useState(false);
   const [draftText, setDraftText] = useState(msg.text);
   const [kept, setKept] = useState(msg.images || []);
-  // 编辑时使用「当前参数面板」的值：这里提供与发送时一致的默认
-  const [editParams, setEditParams] = useState({ size: 'auto' });
+  // 重发尺寸：null = 跟随下方输入框的当前尺寸；在下拉框里选过 = 只覆盖这一次重发
+  const [sizeOverride, setSizeOverride] = useState(null);
   const [resending, setResending] = useState(false);
   // 图片右键菜单（复制 / 保存到下载 / 另存为）：菜单状态由组件持有，菜单项见 lib/imageActions.js
   const imageMenu = useImageMenu();
 
-  // 该消息当时使用的模型（可能已被用户删除 → current 为 null，此时禁用「编辑重发」）
-  const current = resolveModel(state.settings, state.modelSeries, state.protocols, msg.model && msg.model.id);
-  const schema = (current && current.paramSchema) || {};
-  const sizeOptions = (current && current.sizeOptions) || ['auto'];
+  // ---- 编辑重发用的设置 = 输入区当前设置（模型 / 尺寸 / 参数），不是这条消息当时的设置 ----
+  // 订阅输入区（Composer）的实时选择：下方换模型、换尺寸、调参数，这里跟着变。
+  // 只在编辑气泡打开时订阅：不在编辑态的消息不必跟着参数面板打字重渲染。
+  const selection = useComposerSelection(editing);
+  const target = editing
+    ? resolveResendTarget({
+      settings: state.settings,
+      modelSeries: state.modelSeries,
+      protocols: state.protocols,
+      selection,
+      fallbackModelId: msg.model && msg.model.id,
+      fallbackParams: msg.params,
+      sizeOverride
+    })
+    : null;
+  const mode = (target && target.model) ? target.model.mode : 'sync';
+  const modelChanged = !!(target && target.model && msg.model && target.model.id !== msg.model.id);
 
   const busy = state.busy[conv.id];
-  const mode = current ? current.mode : 'sync';
 
   const openLightbox = (index) => {
     const images = (msg.images || [])
@@ -40,25 +53,38 @@ export default function UserMessage({ conv, msg }) {
   const startEdit = () => {
     setDraftText(msg.text);
     setKept(msg.images || []);
-    setEditParams({ size: 'auto', ...defaultParams(schema), ...(msg.params || {}) });
+    setSizeOverride(null);      // 尺寸默认跟随下方输入框的当前值
     setEditing(true);
   };
 
   const confirmEdit = async () => {
     if (!draftText.trim() && kept.length === 0) { toast('内容不能为空', 'warn'); return; }
     if (busy && mode === 'sync') { toast('当前对话正在等待 API 返回，请稍候', 'warn'); return; }
+    // 点「确定并重新发送」这一刻再取一次输入区设置：气泡打开期间改了下方的模型 / 尺寸也要用最新的
+    const finalTarget = resolveResendTarget({
+      settings: state.settings,
+      modelSeries: state.modelSeries,
+      protocols: state.protocols,
+      selection: getComposerSelection(),
+      fallbackModelId: msg.model && msg.model.id,
+      fallbackParams: msg.params,
+      sizeOverride
+    });
     setResending(true);
     try {
-      await resendEdited({
+      const { resolved } = await resendEdited({
         dispatch, state, conv, userMsg: msg,
         newText: draftText.trim(),
         keptImages: kept,
-        params: buildParams(editParams, schema),
-        modelId: msg.model && msg.model.id,
+        params: finalTarget.params,
+        modelId: finalTarget.modelId,
         log: (l, m, e) => window.stab.log(l, m, e)
       });
       setEditing(false);
-      toast('已重新发送，旧结果已删除', 'info');
+      const changed = !!(resolved && msg.model && resolved.id !== msg.model.id);
+      toast(changed
+        ? `已按下方当前设置用「${resolved.name}」重新发送，旧结果已删除`
+        : '已重新发送，旧结果已删除', 'info');
     } catch (e) {
       toast('重发失败: ' + e.message, 'error');
     } finally {
@@ -113,15 +139,23 @@ export default function UserMessage({ conv, msg }) {
           />
           <div className="edit-size-row">
             <select
-              value={editParams.size}
-              onChange={(e) => setEditParams((p) => ({ ...p, size: e.target.value }))}
-              title="尺寸（重发时生效）"
+              value={target.size}
+              onChange={(e) => setSizeOverride(e.target.value)}
+              title="尺寸：默认跟随下方输入框的当前尺寸；在这里选择只覆盖这一次重发"
             >
-              {sizeOptions.map((s) => (
+              {target.sizeOptions.map((s) => (
                 <option key={s} value={s}>{sizeLabel(s)}</option>
               ))}
             </select>
-            <span className="edit-hint">Ctrl+Enter 确定</span>
+            {target.model && (
+              <span
+                className="edit-hint edit-model-hint"
+                title={`重发使用下方输入框的当前设置（模型 / 尺寸 / 参数）；本条消息当时用的是「${(msg.model && msg.model.name) || '未知模型'}」${modelChanged ? '，本次将改用上面的模型' : ''}`}
+              >
+                重发模型：{target.model.name}
+              </span>
+            )}
+            <span className="edit-hint edit-hint-end">Ctrl+Enter 确定</span>
           </div>
           <div className="edit-actions">
             <button className="ghost-btn" onClick={() => setEditing(false)}>取消</button>

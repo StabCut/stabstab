@@ -2,6 +2,9 @@
  * 发送与重发的公共逻辑。
  * 同一个对话不携带上下文：每次请求只包含当前这一条输入（上下文长度为 0）。
  *
+ * 重发不是「照原样再发一次」：模型 / 尺寸 / 参数取**输入区当前设置**（resolveResendTarget），
+ * 用户在下方把模型换成 B、改了分辨率，编辑重发就用 B 与当前分辨率（见 AIDEV.md §4.7）。
+ *
  * 模型相关：渲染进程只把「模型 id」交给主进程，协议 / 来源 / 密钥 / 同步异步
  *          一律由主进程按当前设置解析（见 electron/src/modelSeries.js#resolveModel）。
  *          这里解析出来的信息只用于界面展示与消息记录（meta）。
@@ -156,7 +159,34 @@ export async function sendNew({ dispatch, state, conv, text, attachments, params
 }
 
 /**
+ * 「编辑并重新发送」用哪套设置 —— 一句话：**输入区（Composer）当前的模型、尺寸与参数**，
+ * 而不是这条消息当时用的那一套（模型换成 B、分辨率改过，重发就按 B 和当前分辨率发）。
+ * 编辑气泡里单独选过尺寸时，只覆盖这一次重发的 size，其余仍取输入区当前值。
+ *
+ * @param selection       输入区当前设置 {modelId, params}（见 lib/composerSelection.js）
+ * @param fallbackModelId 输入区没有模型时的兜底（该消息记录里的模型 id）
+ * @param fallbackParams  输入区一个设置都没有时的兜底（该消息记录里的参数）
+ * @param sizeOverride    编辑气泡里的尺寸覆盖（null / 空 = 跟随输入区当前尺寸）
+ * @returns {{modelId:string, model:object|null, schema:object, sizeOptions:string[], size:string, params:object}}
+ *          model = resolveModel 结果（可能为 null）；params = 本次真正要发的参数
+ */
+export function resolveResendTarget({ settings, modelSeries, protocols, selection, fallbackModelId, fallbackParams, sizeOverride }) {
+  const sel = selection || {};
+  const selParams = sel.params || {};
+  const modelId = sel.modelId || fallbackModelId || '';
+  // 输入区还没写出任何设置（Composer 尚未挂载 / 尚未发布）→ 退回这条消息当时那套，行为与旧版一致
+  const base = sel.modelId ? selParams : ((fallbackParams && Object.keys(fallbackParams).length) ? fallbackParams : selParams);
+  const model = resolveModel(settings, modelSeries, protocols, modelId);
+  const schema = (model && model.paramSchema) || {};
+  const sizeOptions = (model && model.sizeOptions) || ['auto'];
+  const pick = (v) => (sizeOptions.includes(v) ? v : (sizeOptions[0] || 'auto'));
+  const size = pick(sizeOverride && sizeOptions.includes(sizeOverride) ? sizeOverride : base.size);
+  return { modelId, model, schema, sizeOptions, size, params: buildParams({ ...base, size }, schema) };
+}
+
+/**
  * 编辑后重发：更新用户消息、删除配对的旧助手回复，重新发起请求（原地覆盖）。
+ * 模型与参数由调用方（编辑气泡）按**输入区当前设置**给出，见 resolveResendTarget。
  * @param keptImages 数组 [{file, name, srcName?, mime, width, height}]（无 dataUrl，需从磁盘读取）
  */
 export async function resendEdited({ dispatch, state, conv, userMsg, newText, keptImages, params, modelId, log }) {
@@ -199,7 +229,7 @@ export async function resendEdited({ dispatch, state, conv, userMsg, newText, ke
     imageNames: imageNamesOf(compressed),   // 重发后的结果图同样带着输入图文件名
     params
   });
-  return { asst };
+  return { asst, resolved };
 }
 
 export function dataUrlSize(dataUrl) {
