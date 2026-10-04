@@ -62,6 +62,15 @@ exit 1
 LAUNCHER
 chmod +x "$UNPACKED/${APP_NAME}.sh"
 
+echo "==> 标记便携模式（数据跟着解压目录走）"
+# 有 stabstab-portable.txt 时，electron/src/paths.js 会把数据放在 exe 同级的 stabstab-data/
+# 而不是用户目录（~/.config/StabStab）—— 这正是「便携包」应有的行为。
+cat > "$UNPACKED/stabstab-portable.txt" <<'MARKER'
+StabStab 便携包标记。
+存在本文件时，数据（会话 / 设置 / 缓存 / 上传图 / 日志 / 下载）保存在本目录的 stabstab-data/，
+不写系统用户目录；把整个目录拷到别处即带走全部配置。删除本文件则改用 ~/.config/StabStab/。
+MARKER
+
 echo "==> 打包便携版 tar.gz"
 TAR="release/${APP_NAME}-linux-x64.tar.gz"
 rm -f "$TAR"

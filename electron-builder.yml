@@ -53,6 +53,9 @@ nsis:
   createStartMenuShortcut: true
   shortcutName: StabStab
   artifactName: ${productName}-${version}-${arch}-setup.${ext}
+  # 自定义安装器片段：覆盖安装时先把旧版留在安装目录里的 stabstab-data 拷到用户数据目录
+  # （旧卸载器会 RMDir /r $INSTDIR，不抢这一下就丢配置）。见文件内注释。
+  include: build/installer.nsh
 
 portable:
   artifactName: ${productName}-${version}-${arch}-portable.${ext}

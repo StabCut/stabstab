@@ -33,7 +33,7 @@ stabstab/
 │   ├── assets/             # Window icon + built-in model-series.json
 │   └── src/
 │       ├── api/            # Protocol adapters (dashscope / seedream / newapi-images / grsai) + registry + runner
-│       ├── paths.js        # Data-root resolution (next to executable, fallback to user dir)
+│       ├── paths.js        # Data-root resolution (installed → user dir, portable → next to exe) + legacy migration
 │       ├── logger.js       # File logging (<data>/log/app-YYYYMMDD.log)
 │       ├── store.js        # Settings / conversations JSON persistence (atomic write + legacy migration)
 │       ├── modelSeries.js  # Model-series config IO & resolution (authoritative for requests)
@@ -144,22 +144,31 @@ Artifacts in `release\`:
 
 ## Data & Cache (Important)
 
-App data is stored in `stabstab-data/`, next to the executable:
+App data lives in a single `stabstab-data/` directory whose **location depends on how the app runs** (it survives uninstall and overwrite upgrades):
+
+| How it runs | Data directory |
+|---|---|
+| Installed build (Windows installer / Linux deb) | Windows: `%APPDATA%\StabStab\stabstab-data`; Linux: `~/.config/StabStab/stabstab-data` |
+| Portable build (Windows portable / Linux portable tar.gz) | `stabstab-data/` next to the executable (copy the whole folder to take your config along) |
+| Dev mode (`npm run dev`) | `dev-data/` inside the project |
 
 ```
 stabstab-data/
 ├── conversations.json   # Conversations & history (text + image references)
 ├── settings.json        # Settings (model series & models, API keys, theme, timeout, ...)
 ├── model-series.json    # Built-in model-series definitions (series / API sources / default URLs / sync-async switch)
+├── rename-model.json    # Title-model config (prompt template / temperature / Top-P / default URL & model)
+├── .migration.json      # Legacy-data migration record (source directory, whether the copy finished)
 ├── cache/               # Generated result images (downloaded immediately from API URLs)
 ├── uploads/             # User input images (paste / drop / picker)
 ├── downloads/           # Default save path (download result images)
 └── log/                 # Logs (app-YYYYMMDD.log)
 ```
 
+- **Your config survives uninstall and overwrite installs**: data sits in the system user directory (portable builds keep it next to the executable) while the installer only removes the install directory. Earlier versions kept data next to the executable; the first upgrade **migrates it automatically** (including your image history, copy-only — originals are never deleted), and the Windows installer grabs a copy before deleting the old directory (progress is printed in the installer's details pane).
 - The main page offers a one-click “open cache directory” button; **deleting `cache/` frees space and does not affect the next run** (result images in history show a "image cleared" placeholder).
 - `model-series.json` can be hand-edited (e.g. point a source at your own relay); it takes effect after restart, and deleting it re-creates it from the built-in defaults.
-- If the executable directory is not writable (e.g. deb into `/opt`, Windows into `Program Files`), the app automatically falls back to the system user-data directory (`~/.config/StabStab/` or `%APPDATA%/StabStab/`).
+- To find the data directory in use, check the startup log — it records `dataRoot`, and `migratedFrom` when a migration happened.
 
 ---
 
@@ -257,7 +266,7 @@ sandboxed restricted token / AppContainer. The log shows `renderer process gone 
 The main process now appends `--no-sandbox` on Windows by default; set `STABSTAB_KEEP_SANDBOX=1` to restore the sandbox.
 
 **Where are the logs?**
-`stabstab-data/log/app-YYYYMMDD.log` (next to the executable for the portable build).
+`stabstab-data/log/app-YYYYMMDD.log` (system user directory for installed builds, next to the executable for portable builds — see "Data & Cache" above).
 
 ---
 

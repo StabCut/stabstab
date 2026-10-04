@@ -387,6 +387,29 @@ async function openDataDir(kind) {
   }
 }
 
+// ---------- 数据目录：形态与迁移结果写日志 ----------
+// 覆盖安装后配置还在不在，全看数据目录落在哪（见 electron/src/paths.js 顶部注释）。
+// 启动时把形态 + 旧数据迁移结果记下来，用户排查「我的配置去哪了」时一眼能看到。
+function logDataRootInfo() {
+  if (PATHS.notes && PATHS.notes.length) {
+    log.warn('数据目录迁移出现问题', { notes: PATHS.notes, root: PATHS.root });
+  }
+  if (PATHS.migration) {
+    log.info('检测到旧版本数据，已迁移到新的数据目录（只拷不删）', {
+      from: PATHS.migration.from, root: PATHS.root, config: PATHS.migration.copied
+    });
+  }
+  if (PATHS.mediaCopy) {
+    PATHS.mediaCopy.then((r) => {
+      if (r.failed.length) {
+        log.warn('旧数据目录（图片/日志）迁移部分失败', { from: PATHS.migratedFrom, failed: r.failed });
+      } else {
+        log.info('旧数据目录（图片/日志）迁移完成', { from: PATHS.migratedFrom, dirs: r.dirs });
+      }
+    }).catch((e) => log.warn('旧数据目录迁移失败', { from: PATHS.migratedFrom, error: e.message }));
+  }
+}
+
 // ---------- IPC ----------
 function registerIpc() {
   // 启动引导：一次拿齐全部初始数据
@@ -401,12 +424,14 @@ function registerIpc() {
       conversations,
       paths: {
         root: PATHS.root,
+        kind: PATHS.kind,                         // dev | portable | user（数据目录形态）
         cache: PATHS.cache,
         uploads: PATHS.uploads,
         log: PATHS.log,
         downloads: PATHS.downloads,
         modelSeriesFile: PATHS.modelSeries,
         renameModelFile: PATHS.renameModel,
+        migratedFrom: PATHS.migratedFrom,         // 本次启动前迁移过的旧数据目录（没有则 null）
         usedFallback: PATHS.usedFallback
       },
       resumeCount: pendingResumes.length
@@ -743,8 +768,10 @@ if (!gotLock) {
     log.init(PATHS.log);
     log.info('应用启动', {
       name: APP_NAME, version: app.getVersion(), platform: process.platform,
-      electron: process.versions.electron, dataRoot: PATHS.root, usedFallback: PATHS.usedFallback, dev: isDev
+      electron: process.versions.electron, dataRoot: PATHS.root, dataRootKind: PATHS.kind,
+      usedFallback: PATHS.usedFallback, dev: isDev
     });
+    logDataRootInfo();
 
     modelSeries = modelSeriesLib.load(PATHS.modelSeries);
     renameConfig = renameModel.load(PATHS.renameModel);

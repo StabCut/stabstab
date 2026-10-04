@@ -46,7 +46,9 @@ settings.json（用户数据：添加了哪些系列、系列里有哪些模型�
   模型 id 由用户填写；每个「系列·来源」独立保存 API Key 与 API 地址。
 - 支持 **同步**（默认，当前会话阻塞等待）与 **异步 Task API**（后台轮询）两种请求模式；
   异步仅对支持该能力的系列生效（当前只有 qwen 系列）。
-- 会话/设置/缓存/日志全部**本地持久化**在「可执行文件同级目录」的 `stabstab-data/`（不可写时回退系统用户目录）；
+- 会话/设置/缓存/日志全部**本地持久化**在 `stabstab-data/`：打包后落在**用户数据目录**
+  （Windows = `%APPDATA%\StabStab\stabstab-data`，Linux = `~/.config/StabStab/stabstab-data`），
+  便携包落在 exe 同级，开发模式落在项目内 `dev-data/` —— **覆盖安装/卸载重装都不丢配置**，见 §5.6；
   内置模型系列配置同步落地一份到 `<dataRoot>/model-series.json`，可手工编辑。
 
 **技术栈**：Electron 43（Node 22 内核）、React 19、Vite 8、electron-builder 26。
@@ -66,7 +68,7 @@ stabstab/
 │   │   ├── model-series.json          # ★ 内置模型系列定义（系列 / 来源 / 默认地址 / 尺寸）
 │   │   └── rename-model.json          # ★ 内置重命名模型配置（标题提示模板 / 温度 / Top-P / 默认地址）
 │   └── src/
-│       ├── paths.js                   # 数据根目录解析（可执行文件同级 + 回退）
+│       ├── paths.js                   # ★ 数据根目录解析（用户目录 / 便携 exe 同级 / dev-data）+ 旧数据迁移，见 §5.6
 │       ├── logger.js                  # 文件日志 <data>/log/app-YYYYMMDD.log
 │       ├── store.js                   # settings.json / conversations.json 原子读写 + 旧结构迁移
 │       ├── modelSeries.js             # ★ 模型系列配置读写与解析（resolveModel = 发请求的权威口径）
@@ -107,11 +109,12 @@ stabstab/
 │       ├── images.js                  # File→dataUrl、尺寸读取、按设置压缩
 │       └── util.js                    # uid/时间/字节/尺寸解析/appfile URL 构造
 ├── build/                             # 打包资源：icon.svg / icon.png / icon.ico
+│                                      #   + installer.nsh：NSIS 自定义片段，覆盖安装前抢救旧数据（见 §5.6）
 ├── public/icon.svg                    # 渲染进程内引用的 Logo（Vite 原样拷贝到 dist）
 ├── scripts/
 │   ├── test-api.js                    # 后端端到端测试（mock HTTP 服务 + 真实 runner/适配器）
 │   ├── gen-logo.js                    # 生成彭罗斯三角 Logo（需 ImageMagick）
-│   ├── package.sh                     # Ubuntu 一键打包（deb + 便携 tar.gz）
+│   ├── package.sh                     # Ubuntu 一键打包（deb + 便携 tar.gz；给便携包放 stabstab-portable.txt 标记）
 │   └── package.cmd                    # Windows 一键打包（nsis + portable）
 ├── index.html                         # Vite 入口
 ├── vite.config.mjs                    # Vite 配置（base:'./' 必须保留）
@@ -140,7 +143,7 @@ for f in electron/src/*.js electron/src/api/*.js; do node --check "$f"; done
 ```
 
 开发模式数据目录：项目内 `dev-data/`（已 gitignore）。
-打包后数据目录：可执行文件同级 `stabstab-data/`。
+打包后数据目录：安装版在用户数据目录（Windows `%APPDATA%\StabStab\stabstab-data`），便携版在 exe 同级，详见 §5.6。
 
 ---
 
@@ -541,6 +544,34 @@ text           ← 文件名 + 提示词（纯文本框粘贴用；不含 pic �
 - 结果图 → `<data>/cache/<file>`，经 `appfile://cache/<file>` 显示。
 - 下载结果 → `<defaultSavePath>/`（默认 `<data>/downloads`）。
 - 删除 cache/ 目录**不影响程序运行**；历史消息中的结果图会显示「图片已清理」占位。
+- `<data>` = 数据根目录，覆盖安装后必须还在原处（见 §5.6）。
+
+### 5.6 数据目录与「覆盖安装保留配置」
+
+`electron/src/paths.js` 是数据根目录的**唯一入口**（`getPaths(app)`）。规则：
+
+| 运行形态 | 数据根目录 | 理由 |
+|---|---|---|
+| 未打包（`npm run dev`） | `<项目>/dev-data` | 不污染 node_modules，也不写用户目录 |
+| 便携版（electron-builder `portable` 目标，`PORTABLE_EXECUTABLE_DIR` 已设置） | `<便携 exe 同级>/stabstab-data` | 便携包每次运行都解压到临时目录再跑（`portable.nsi` 跑完还 `RMDir /r`），写 `process.execPath` 同级 = 每次全新数据 |
+| exe 同级放了 `stabstab-portable.txt`（Linux 便携 tar.gz 由 `package.sh` 放置） | `<exe 同级>/stabstab-data` | 保持「解压即用、拷走即带走配置」的便携语义 |
+| 其余打包形态（Windows NSIS、Linux deb、macOS） | `<userData>/stabstab-data`（Windows = `%APPDATA%\StabStab\stabstab-data`，Linux = `~/.config/StabStab/stabstab-data`） | **卸载 / 覆盖安装都不会碰它** |
+
+- **为什么安装版绝不能放 exe 同级**：NSIS 覆盖安装会先跑旧版卸载器（`installSection.nsh` 的 `uninstallOldVersion`），
+  而卸载器里有 `RMDir /r $INSTDIR`（`uninstaller.nsh`）—— 安装目录里的东西全会被删。卸载器只删安装目录，
+  除非显式 `--delete-app-data` 或配置 `deleteAppDataOnUninstall`，否则不碰 `%APPDATA%`。
+- **旧数据迁移**（`migrateLegacyData`，只**拷**不删源）：新位置还没有配置时，从
+  `exe 同级/stabstab-data`（旧版位置）→ `PORTABLE_EXECUTABLE_DIR` 同级 → `<userData>/stabstab-data`
+  → `%LOCALAPPDATA%\Programs\{StabStab,stabstab}\stabstab-data` 依次找第一个「像数据根」（含任一配置文件）的来源。
+  小配置（4 个 json）**同步**拷（本次启动就生效），`cache/ uploads/ downloads/ log/` **后台异步**拷（可能几个 G，不阻塞窗口）。
+  搬运进度写在 `<data>/.migration.json`（来源 + 是否搬完），中途退出下次启动**续搬**；源目录消失则收尾标记完成。
+- **安装器侧的抢救**（`build/installer.nsh` 的 `customInit`，经 `electron-builder.yml` 的 `nsis.include` 注入）：
+  它在 `.onInit` 里、`initMultiUser` 之后、安装段之前执行 —— 此时 `$INSTDIR` 还是上一次的安装目录、数据还在，
+  于是先用 `xcopy` 把 `$INSTDIR\stabstab-data` 拷到 `$APPDATA\<productName>\stabstab-data`（= 新版要读的位置），
+  再由安装器照常删旧目录。目标位置已有配置就跳过（绝不拿旧数据盖新数据）；失败也不影响安装（应用启动还会再迁一次）。
+- **排查入口**：启动日志里记 `dataRoot` / `dataRootKind` / `usedFallback` 与迁移结果（`logDataRootInfo`）；
+  `app:bootstrap` 的 `paths.kind` / `paths.migratedFrom` 也一并下发。
+- 回归脚本：`dev-data/qa/paths-test.js`（`node dev-data/qa/paths-test.js`，覆盖三种形态 + 迁移/续搬/不再重复迁移）。
 
 ---
 
@@ -554,7 +585,8 @@ text           ← 文件名 + 提示词（纯文本框粘贴用；不含 pic �
 6. **协议适配器接口**：新增协议必须实现 registry 中约定的方法（见 §7），否则 `runner.start` 直接报 `NO_ADAPTER`。
 7. **appfile 协议**：URL 结构 `appfile://<cache|uploads>/<文件名>`；主进程 handler 用 `path.basename` 防目录穿越。
 8. **Vite `base:'./'`**：打包后经 `file://` 加载，资源必须相对路径，否则白屏。
-9. **数据目录解析**：`app.isPackaged` 决定「可执行文件同级」还是「项目内 dev-data」；`paths.js` 是唯一入口。
+9. **数据目录解析**：`paths.js` 是唯一入口；打包后**安装版必须落用户数据目录**（便携版才允许 exe 同级），
+   绝不写安装目录 —— 覆盖安装时旧卸载器会 `RMDir /r $INSTDIR`，详见 §5.6 与不变量 25。
 10. **防抖落盘**：渲染进程是数据编辑主体，`store.jsx` 中 `state.settings/modelSeries/renameConfig/conversations` 变化后 400ms 防抖 `state:save`；`beforeunload` 立即 flush。
 11. **模型必须经由系列解析**：发请求时 `protocol/baseUrl/apiKey/mode` **只能**由 `modelSeries.resolveModel()` 得出（渲染进程的解析只服务界面）；`modelId` 是唯一的跨进程定位键。
 12. **同步/异步按系列**：只有 `series.requestMode.supported === true`（当前仅 qwen）才允许 `mode='async'`；其它系列即使本地 json 被改成 `async` 也会被强制回 `sync`。
@@ -572,6 +604,11 @@ text           ← 文件名 + 提示词（纯文本框粘贴用；不含 pic �
 22. **待复用提示词与「插入／复制」同生命周期**：存在 `state.temporary`，点击按钮 / 发送 / 切换 / 新建 / 删除任意会话（含非当前）/ 全部删除 / 主动改文字都必须一起清空；聚焦、移动光标、附件变化、拖放区显隐不得清理；异步解析必须用版本号 + 会话标识 + 文字快照三重校验，过期结果不得重新显示按钮。
 23. **逐标签草稿只存内存、随标签存亡**：输入区的文字与待发送图片按 `conversationId` 存在 `state.drafts`（仅内存，**不得**进 `state:save`，也**不得**塞进 `conversations`）；切换标签只搬运不清空（别人的草稿不许丢、也不许被上一个标签的内容覆盖），会话 `CONV_DELETE` / `CONV_DELETE_ALL` 时对应草稿随之删除；`CONV_DRAFT_PARK` 必须拒绝已不存在的会话（否则删除后迟到的一拍会把草稿塞回仓库、永不释放），发送成功必须 `CONV_DRAFT_DROP`（切回来不复活已发送的内容），见 §4.6。
 24. **编辑重发用输入区当前设置**：`resolveResendTarget`（`lib/send.js`）是唯一实现 —— 模型 / 尺寸 / 高级参数取**输入区当前值**（`lib/composerSelection.js` 的实时镜像），**不得**改回「用该消息记录里的 `msg.model` / `msg.params` 发」；尺寸候选与参数过滤都要按**当前模型**（`sizeOptions` / `paramSchema`）算，输入区遗留的不兼容尺寸校正到该模型第一个候选；输入区尚未发布设置时才退回消息记录那套；同步拦截（busy）用的 `mode` 也必须来自当前模型；重发后用户消息的 `params` / `model` 改写为本**实际发送**的那套，见 §4.7。
+25. **数据必须活在安装目录之外**：打包后（非便携）数据根一律 `<userData>/stabstab-data`，**严禁**改回 exe 同级 ——
+    NSIS 覆盖安装会先跑旧卸载器，`RMDir /r $INSTDIR` 会把安装目录连数据一起删掉；便携形态只认
+    `PORTABLE_EXECUTABLE_DIR` 或 exe 同级的 `stabstab-portable.txt` 标记。旧数据迁移（`migrateLegacyData`）**只拷不删**源目录，
+    已有配置时不得再迁（不能覆盖新数据），中断要能靠 `.migration.json` 续搬；安装器侧的抢救只准放在 `customInit`
+    （`customInstall` 太晚，旧卸载器已经删过目录了），目标目录必须与 `paths.js` 算出来的一致，见 §5.6。
 
 ---
 

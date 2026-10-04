@@ -33,7 +33,7 @@ stabstab/
 │   ├── assets/             # 窗口图标 + 内置模型系列配置 model-series.json
 │   └── src/
 │       ├── api/            # 协议适配器（dashscope / seedream / newapi-images / grsai）+ 注册表 + 执行器(runner.js)
-│       ├── paths.js        # 数据根目录解析（可执行文件同级，不可写则回退用户目录）
+│       ├── paths.js        # 数据根目录解析（安装版→用户目录，便携版→exe 同级）+ 旧数据迁移
 │       ├── logger.js       # 日志（<data>/log/app-YYYYMMDD.log）
 │       ├── store.js        # 设置 / 会话 JSON 持久化（原子写入 + 旧结构迁移）
 │       ├── modelSeries.js  # 模型系列配置读写与解析（发请求的权威口径）
@@ -142,7 +142,13 @@ scripts\package.cmd
 
 ## 数据与缓存（重要）
 
-应用数据保存在「可执行文件同级目录」下的 `stabstab-data/`：
+应用数据保存在一个 `stabstab-data/` 目录里，**位置随运行形态而定**（卸载、覆盖安装都不会丢）：
+
+| 运行形态 | 数据目录位置 |
+|---|---|
+| 安装版（Windows 安装包 / Linux deb） | Windows：`%APPDATA%\StabStab\stabstab-data`；Linux：`~/.config/StabStab/stabstab-data` |
+| 便携版（Windows portable / Linux 便携 tar.gz） | 可执行文件同级的 `stabstab-data/`（整个目录拷走即带走全部配置） |
+| 开发模式（`npm run dev`） | 项目内 `dev-data/` |
 
 ```
 stabstab-data/
@@ -150,17 +156,21 @@ stabstab-data/
 ├── settings.json        # 设置（模型系列与模型、API Key、主题、超时等）
 ├── model-series.json    # 内置模型系列配置（系列 / API 来源 / 默认地址 / 同步异步开关）
 ├── rename-model.json    # 重命名模型配置（标题提示模板 / 温度 / Top-P / 默认地址与默认模型）
+├── .migration.json      # 旧数据迁移记录（从哪个旧目录搬来的、是否搬完；没有迁移过则不存在）
 ├── cache/               # 生成结果的图片缓存（API 返回 URL 后立即下载到这里）
 ├── uploads/             # 用户输入图片（粘贴/拖入/选择）
 ├── downloads/           # 默认保存路径（下载结果图片）
 └── log/                 # 日志（app-YYYYMMDD.log）
 ```
 
+- **覆盖安装 / 卸载重装后配置都在**：数据放在系统用户目录（便携版放 exe 同级），安装器只删安装目录。
+  旧版本曾把数据放在 exe 同级，首次升级时会**自动迁移**过去（含历史图片，只拷不删原目录）；
+  Windows 安装包还会在删旧目录之前先抢一份（迁移过程打印在安装界面的「详细信息」里）。
 - 左侧标签栏底部提供「一键打开缓存目录」按钮；**直接删除 `cache/` 目录可清理空间，不影响下次运行**（历史消息中的结果图会显示为“图片已清理”占位）。
 - 对话区右上角「同步模式」右侧有两个目录按钮：文件夹图标打开数据目录下的 `downloads/`（开发模式即项目内 `dev-data/downloads/`）；其右侧「下载」图标打开**系统「下载」目录**（Windows = 用户目录 `Downloads`，Ubuntu 24.04 = `~/Downloads`）。
 - `model-series.json` 可手工编辑（例如把某系列的默认 API 地址换成你自己的中转地址），重启后生效；删除该文件会从程序内置配置重新生成一份。
 - `rename-model.json` 同样可手工编辑（标题生成提示模板 / 温度 / Top-P / 默认 API 地址 / 默认模型 id），重启后生效；设置页「重命名模型」里的滑动条与模板框写的就是这个文件。
-- 若可执行文件所在目录不可写（例如 deb 装到 `/opt`、Windows 装到 `Program Files`），会自动回退到系统用户数据目录（`~/.config/StabStab/` 或 `%APPDATA%/StabStab/`）。
+- 想手动指定或找回数据目录：启动日志会写明本次使用的数据目录（`dataRoot`）以及是否发生过迁移（`migratedFrom`）。
 
 ---
 
@@ -263,7 +273,7 @@ $env:STABSTAB_KEEP_SANDBOX='1'; npm run dev
 ```
 
 **日志在哪？**
-`stabstab-data/log/app-YYYYMMDD.log`（便携版位于可执行文件同级目录）。
+`stabstab-data/log/app-YYYYMMDD.log`（安装版在系统用户目录，便携版在可执行文件同级 —— 见上方「数据与缓存」）。
 
 ---
 
