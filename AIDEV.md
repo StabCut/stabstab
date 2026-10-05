@@ -77,27 +77,29 @@ stabstab/
 │       ├── promptmeta.js              # ★ 图片提示词元数据：PNG iTXt / JPEG XMP(APP1) / WebP XMP 分块 读写（含输入图文件名 picN）
 │       ├── conversationMeta.js        # ★ 会话侧查询：结果图 ↔ 父用户消息的「提示词 + 输入图文件名」（保存兜底写 picN）
 │       ├── clipboardPayload.js        # ★ 复制到剪贴板的载荷：HTML 内嵌原图字节 + data-filename/prompt/pics
+│       ├── zip.js                     # ★ 最小 ZIP 打包 / 解包（零依赖：CRC32 + zlib，含 ZIP64 与 CRC 校验）
+│       ├── dataTransfer.js            # ★ 配置 + 聊天记录 导出 / 导入：包名协议 + 包内目录协议 + 智能合并
 │       └── exportImage.js             # ★ 结果图导出（result:download 的实现，带提示词 + picN 元数据）
 │       └── api/
 │           ├── registry.js            # 适配器注册表 + 预留协议列表 + listProtocols()
 │           ├── util.js                # 适配器公共工具（端点拼接 / 结果图片收集 / 错误归一化）
-│           ├── dashscope.js           # Qwen 系列·官方（DashScope 多模态，同步 + 异步 + 取消）
+│           ├── dashscope.js           # Qwen 系列·官方（DashScope 多模态，仅同步）
 │           ├── seedream.js            # Doubao Seedream 系列·官方（火山方舟 images/generations）
 │           ├── newapi-images.js       # Seedream / GPT Image 系列·New API（OpenAI 兼容图像生成）
-│           ├── grsai.js               # GPT Image 系列·Grsai（SSE 同步 / 只给任务 id 时自动退化轮询）
-│           └── runner.js              # 请求执行器：提交/轮询/下载/事件/取消/恢复（协议无关）
+│           ├── grsai.js               # GPT Image 系列·Grsai（SSE 同步 / 只给任务 id 时协议内部查询结果）
+│           └── runner.js              # 请求执行器：提交/任务兜底查询/下载/事件/取消（协议无关）
 ├── src/                               # 渲染进程（React，经 Vite 构建）
 │   ├── main.jsx                       # 入口 + 全局错误捕获上报
 │   ├── App.jsx                        # 根组件：bootstrap、API 事件路由、主题
 │   ├── components/
-│   │   ├── Sidebar.jsx                # 左侧：Logo、新建、会话列表（含后台状态圆点，见 §4.8）、重命名/删除、底部操作
+│   │   ├── Sidebar.jsx                # 左侧：Logo、新建、会话列表（含后台状态圆点，见 §4.8；拖动排序见 §4.11）、重命名/删除、底部操作
 │   │   ├── ChatView.jsx               # 主区：头部（插入·复制临时按钮）、消息列表（进入标签贴底，见 §4.9）、空态、输入框
-│   │   ├── UserMessage.jsx            # 用户气泡：文本/图片、编辑重发、复制、删除
-│   │   ├── AssistantMessage.jsx       # 助手气泡：结果图/错误/异步状态卡片/取消
-│   │   ├── Composer.jsx               # 输入框：粘贴/拖入/多选、size/高级参数、发送/停止、附加提示词解析、逐标签草稿搬运
+│   │   ├── UserMessage.jsx            # 用户气泡：文本/图片、底部「模型名 + 时间」（见 §4.14）、新对话发送·当前对话发送（见 §4.13）、编辑重发、复制、删除
+│   │   ├── AssistantMessage.jsx       # 助手气泡：结果图/错误/等待卡片（各自带「停止等待」，见 §4.12）
+│   │   ├── Composer.jsx               # 输入框：粘贴/拖入/多选、size/高级参数、发送（等待中也能发）/停止等待、附加提示词解析、逐标签草稿搬运
 │   │   ├── SizePicker.jsx             # ★ 尺寸选择器：候选尺寸（sizeOptions）+ 末尾「自定义…」（两个数字 + 固定 ×，见 §4.10）
 │   │   ├── PromptDrop.jsx             # ★ 全窗口左右解析分区（曲线分隔）+ 「图片提示词」查看弹窗
-│   │   ├── SettingsModal.jsx          # 设置：模型 / 重命名模型 / 基础 / 高级 四页
+│   │   ├── SettingsModal.jsx          # 设置：模型 / 重命名模型 / 基础 / 高级 / 数据管理 五页
 │   │   ├── Lightbox.jsx               # 全屏图片预览：滚轮缩放/拖动/ESC
 │   │   └── Toasts.jsx                 # 轻提示
 │   └── lib/
@@ -195,6 +197,8 @@ for f in electron/src/*.js electron/src/api/*.js; do node --check "$f"; done
 | `pickImages()` | `dialog:pick-images` | invoke | 多选图片 → [{name,mime,size,dataUrl}] |
 | `pickFolder(defaultPath)` | `dialog:pick-folder` | invoke | 目录选择器 |
 | `openCacheDir()` | `cache:open` | invoke | 文件管理器打开缓存目录（左侧标签栏底部按钮） |
+| `exportData()` | `data:export` | invoke | 「另存为」后把配置 + 聊天记录（含被引用的图片）打成 `ss-YYYYMMDD-HHmm.zip`，见 §5.7 |
+| `importData()` | `data:import` | invoke | 选择导出包 → 包名 / 目录协议两道校验 → 解压到缓存目录 → 智能合并叠加，见 §5.7 |
 | `openDownloadsDir()` | `downloads:open` | invoke | 文件管理器打开数据目录下的 downloads（对话区右上角文件夹按钮；开发模式 = dev-data/downloads） |
 | `openSystemDownloadsDir()` | `system-downloads:open` | invoke | 文件管理器打开系统「下载」目录（右上角「下载」按钮；Windows = %USERPROFILE%\Downloads，Ubuntu 24.04 = ~/Downloads；取不到时回退数据目录 downloads） |
 | `openPath(p)` / `showInFolder(p)` | `shell:*` | invoke | 打开路径/定位文件 |
@@ -482,6 +486,117 @@ isGenerating = busy[convId] 存在（同步等待标记）
 - 主进程**不校验**尺寸是否在候选列表里，所以自定义尺寸不需要改任何适配器。
 - 回归脚本：`dev-data/qa/size-picker-test/`（Electron 隐藏窗口 + 真实 DOM 跑交互断言，并按排版截图；跑法见文件头）。
 
+### 4.11 侧栏会话拖动排序（顺序 = 数组顺序）
+
+左侧标签的顺序**就是** `state.conversations.conversations` 的数组顺序（`conversations.json` 里也是这个顺序）：
+
+```
+[Sidebar] 渲染顺序 = conversations 数组顺序（**不再**按 createdAt 排序）
+   └─ 新建会话 CONV_NEW：新会话 unshift 到数组**头部** → 出现在最上面（与旧行为一致）
+[拖动] 整条 .conv-item 都是把手（HTML5 DnD，draggable={!renaming}）
+   ├─ dragstart：记下被拖的会话 id（dragIdRef 供 dragover/drop 读最新值，避免闭包拿到旧 state）
+   ├─ dragover：指针在目标条目**上半 → 插到它之前**，下半 → 插到它之后（.drop-before / .drop-after 画指示线）；
+   │           拖到自己身上不 preventDefault（不允许落在自己身上）
+   ├─ dragover（列表末尾空白处，指针在最后一条下沿之下）→ 提示落到最后（.drop-after 画在最后一条上）
+   └─ drop → dropIndexFor(list, id, overId, pos) → dispatch CONV_REORDER { id, toIndex }
+[reducer] CONV_REORDER → moveConversation(list, id, toIndex)（越界夹紧；找不到 / 原地不动 → 返回 null 保持同一引用）
+   ├─ 只改数组顺序：activeId / drafts / temporary / 消息一律不动（排序不是切换会话）
+   └─ 顺序随既有的 conversations 防抖落盘写进 conversations.json（重启后保持）
+```
+
+- **两个纯函数在 `store.jsx`**（`dropIndexFor` / `moveConversation`，导出便于 QA 断言）：下标必须按
+  「先摘掉自己、再插入」换算（`from < to` 时目标 -1），否则向下拖会永远差一位。
+- **为什么改成数组顺序**：`createdAt` 只表示「什么时候建的」，用户拖动之后就不再等于显示顺序了；
+  数组顺序本来就被整包写盘，直接用它当权威顺序即可（老数据的数组顺序就是原来的 createdAt 倒序，升级后外观不变）。
+- **不影响别处**：`createdAt` 仍用于消息/时间显示，会话删除后的落点仍是 `rest[0]`（数组首条）。
+- **不会误触图片解析分区**：本拖动只写 `text/plain`，`promptReuse.jsx#useAppFileDrag` 只认
+  `dataTransfer.types` 含 `Files` 的拖动，因此拖标签期间不会弹出左右解析区（见 §4.5）。
+- **重命名中不可拖**：`draggable={!renaming}`，否则输入框里选不中文字（`.conv-item` 整体 `user-select: none`，
+  `.conv-rename-input` 单独特判回 `user-select: text`）。
+- 回归脚本：`dev-data/qa/conv-reorder-test/`（真实 `<App/>` + 真实 DragEvent 序列：纯函数换算、DOM 顺序、
+  当前标签不变、不误开解析区、防抖落盘顺序；跑法见 `main.js` 文件头）。
+
+### 4.12 只有同步模式 + 「伪异步」：同一对话里的多个并行请求
+
+**同步/异步开关已经彻底删除**（老版本里的 `requestMode` / `supportsAsync` / `X-DashScope-Async` /
+`/tasks/{id}` 轮询与取消、重启后恢复异步任务、界面上的「同步模式／异步模式」徽标与高级设置里的单选卡片
+全部不存在了）。现在**所有协议一律同步**：提交请求 → 阻塞等待响应 → 下载图片。
+
+但「同步」只表示**一次请求要等结果**，不表示**一个对话只能等一个请求**。等上一个请求返回的时候，
+输入框不锁定，可以继续发送 —— 每个请求完全独立，跟「另开一个对话来请求并等待结果」没有区别：
+
+```
+[发一次] lib/send.js 的 sendNew / resendEdited / sendBubbleAgain
+   ├─ dispatch MSG_ADD [userMsg, assistant占位]                 ← 这个请求自己的配对与位置
+   ├─ dispatch BUSY_SET {convId, jobId: assistantMsg.id}        ← 只登记自己
+   └─ window.stab.generate({conversationId, messageId, ...})    ← jobId === messageId（不变量 2）
+[状态] state.busy : conversationId -> { [jobId]: true }          ← **集合**，不是一个槽位
+   ├─ BUSY_SET   {convId, jobId}    → 加一项
+   ├─ BUSY_CLEAR {convId, jobId}    → 只删这一项（结果/失败/中止事件都只带自己的 messageId）
+   └─ BUSY_CLEAR {convId}（不带 jobId）→ 清掉这个对话的全部等待标记（输入区「停止等待」用）
+[主进程] runner 里每个 jobId 各有自己的 AbortController / 超时 / taskId：
+   ├─ Fetch 完全并发，一个失败/超时/取消都不影响其它 job
+   └─ cancel(jobId) 只中止这一个（见 §4.2 的 cancelJob）
+[渲染进程] App.jsx 的事件路由全部按 messageId 定位 → 结果只会落进它自己那条助手消息
+```
+
+- **隔离的含义**：不共享任何等待状态、不共享超时、不共享错误 —— 事件、busy 项、助手消息三者都以
+  `messageId` 为键；`MSG_EDIT_PREPARE` 也只删「自己 parentId 名下」的回复。
+- **输入区**：`canSend` 不再看 busy（只有「本地正在提交」的 `sending` 会短暂禁用按钮）；
+  工具栏右侧显示「等待中 ×N」与一个「停止等待」按钮，后者对**本对话全部**等待中的 jobId 调 `cancelJob`。
+- **结果卡**：`pending` / `running` 的助手气泡自带一个「停止等待」，只中止**它自己**那一次请求。
+- **超时**：每个请求各自按 `settings.requestTimeoutSec` 计时（互不累加）。
+- **重启**：应用退出时所有在等待的请求都随之中断；`normalizeConversationsOnStartup` 把
+  `pending/running` 的助手消息一律标成 `INTERRUPTED` 失败（不再有「恢复轮询」这回事）。
+- **唯一的 kind:'task' 是谁**：Grsai 某些节点只回一个任务 id，`grsai.js` 会返回 `kind:'task'`，
+  `runner.pollTask` 按适配器给的查询端点取回结果。它是**协议内部**的兜底（没有开关、没有模式徽标、
+  不写 `meta.mode`、也不参与重启恢复），**不是**被删掉的「异步模式」，不要在 UI 上为它加任何模式提示。
+
+### 4.13 用户气泡上的「新对话发送 / 当前对话发送」（把这条内容再发一遍）
+
+用户气泡悬停时那一排按钮从原来的「复制 / 编辑 / 删除」变成
+**「新对话发送 / 当前对话发送 / 复制 / 编辑 / 删除」**（前两个在最前面，`title` 就是这两个词）：
+
+```
+[UserMessage] 两个按钮 → resendBubble('new' | 'current')
+   ├─ 取设置：resolveResendTarget({selection: getComposerSelection(), fallback…})
+   │     —— 与「编辑重发」同一口径：模型 / 尺寸 / 参数用**输入区当前设置**（见 §4.7）
+   ├─ 取内容：这条消息的 text + 全部输入图（msg.images 只存文件名，用 window.stab.readAttachment 读回 dataUrl；
+   │     文件已被清理的图跳过；文字与图都拿不到时抛错提示，不发空请求）
+   ├─ 'current' → sendBubbleAgain()：**在当前对话**里新增一条用户消息 + 它自己的助手结果
+   └─ 'new'     → sendBubbleToNewConversation()：先 makeConversation() 造会话 → dispatch CONV_ADD
+                  （新会话立刻成为当前标签）→ 再 sendBubbleAgain() 发进去
+```
+
+- **与「编辑重发」的区别**：编辑重发是**原地覆盖**（改写用户消息 + 删掉配对旧回复）；
+  这两个按钮**什么都不改**，只是新增一份请求，所以原来那条消息与它的结果原样保留。
+- **与 §4.12 的关系**：「当前对话发送」就是一个新的独立同步请求 —— 上个请求还在等也照发不误，
+  两个（或多个）请求各等各的、互不干扰；「新对话发送」只是把目标会话换成一个新建的会话。
+- **为什么要 `CONV_ADD` 而不是 `CONV_NEW`**：调用方必须**先拿到新会话对象**才能把请求发进去
+  （`window.stab.generate` 要 `conversationId`），而 `CONV_NEW` 的 id 在 reducer 里现场生成。
+  于是 `store.jsx#makeConversation(tabCounter)` 负责造对象与序号，`CONV_ADD` 只负责插到头部并激活。
+- **按钮顺序即需求**：`新对话发送 - 当前对话发送 - 复制 - 编辑 - 删除`；图标 `chatPlus` / `send`
+  （`assets/icons/chat-plus.svg` / `send.svg`，新增图标要走 `npm run check:icons`）。
+- **防连点**：提交期间两个按钮 `disabled`（`.icon-btn:disabled` 置灰），避免同一次点击发出两遍。
+
+### 4.14 用户气泡底部的「模型 + 时间」
+
+`UserMessage.jsx` 的气泡底部信息行（`.msg-meta`）里，**时间左侧**显示这条输入**本次发送使用的模型**：
+
+```
+<div class="msg-meta has-model">
+  <span class="msg-model" title="本次发送使用的模型：…（系列：qwen · 来源：official）">qwen-image-3.0-pro</span>
+  <span class="msg-time">15:30</span>
+</div>
+```
+
+- 数据来源就是消息自带的 `msg.model.name`（`send.js#modelRef` 写入，**不发请求、不做反查**）——
+  这样模型后来在设置里被改名 / 删掉，历史气泡显示的仍是当时真正用的那个名字。
+- 没有 `msg.model` 的老数据（早期版本 / 手工改过的会话）只渲染时间，不会留空位；
+  助手气泡的 `.msg-meta` 不变（只有时间，没有 `has-model`），所以 `.msg-meta.has-model` 的 flex 规则不影响它。
+- 样式（`app.css`）：`.msg-model` 单行 + 省略号（`max-width: 260px`），靠 `.msg-meta.has-model` 变成
+  `flex` + `align-items: baseline` 右对齐贴住时间；`title` 里带系列 / 来源，长模型名悬停可看全。
+
 ---
 
 ## 5. 持久化数据结构（Schema）
@@ -667,6 +782,64 @@ isGenerating = busy[convId] 存在（同步等待标记）
   `app:bootstrap` 的 `paths.kind` / `paths.migratedFrom` 也一并下发。
 - 回归脚本：`dev-data/qa/paths-test.js`（`node dev-data/qa/paths-test.js`，覆盖三种形态 + 迁移/续搬/不再重复迁移）。
 
+### 5.7 「配置 + 聊天记录」导出包协议与合并规则
+
+实现：`electron/src/dataTransfer.js`（业务）+ `electron/src/zip.js`（打包/解包，**零第三方依赖**）；
+界面在**设置 → 数据管理**（`SettingsModal.jsx` 的 `data` 页），IPC 是 `data:export` / `data:import`（见 §4.2）。
+
+**包名协议（导入的第一道校验，先于解压）**
+
+```
+ss-YYYYMMDD-HHmm.zip      例如 ss-20260213-1530.zip（本地时间，精确到分钟）
+```
+
+- 不匹配 / 日期时间不合法 → `{ok:false, code:'BAD_NAME'}`，界面提示「包名不符合格式」。
+- **导出时强制回到协议名**：用户在「另存为」里改名（如 `我的备份.zip`）也会在目标目录里写出 `ss-<当前时间>.zip`，
+  避免导出的包之后导不回来；结果里带 `renamedFrom` 供提示文案使用。
+
+**包内目录协议（第二道校验，解压之后）**
+
+```
+ss-export/
+├── manifest.json        {format:'stabstab-export', version:1, appVersion, exportedAt, counts{conversations,messages,images,missing}}
+├── settings.json        settings.json 原样（含各「系列·来源」的 API Key —— 导出包要保管好）
+├── conversations.json   会话 + 消息（标签名 / 模型引用 / 参数都在）
+├── model-series.json    模型系列定义（用户自定义系列会一起带走）
+├── rename-model.json    重命名模型（提示模板 / 温度 / Top-P / 默认地址）
+├── cache/<file>         只含「聊天记录里引用到」的结果图
+└── uploads/<file>       只含「聊天记录里引用到」的输入图
+```
+
+- 顶层只允许上面这些条目；`manifest.json` 必须存在且 `format === 'stabstab-export'`；
+  `settings.json` 与 `conversations.json` 至少要有一个；媒体目录只允许平铺的图片文件（`.png/.jpg/.jpeg/.webp/.gif/.bmp/.tiff`）。
+  任一条不满足 → `{ok:false, code:'BAD_STRUCTURE'}`；`version` 比程序新 → `BAD_VERSION`；包体损坏 → `BAD_ZIP`。
+  这套严格校验同时挡住了目录穿越（条目名经 `zip.normalizeEntryName` 校验，绝对路径 / `..` / 盘符一律拒绝）。
+- 解压目标是**程序缓存目录** `<dataRoot>/cache/ss-import-<随机>/`，无论导入成败都会清理。
+
+**合并规则（叠加，绝不先清空）**
+
+| 对象 | 规则 |
+|------|------|
+| 图片（独立文件） | 直接叠加到 `<data>/cache`、`<data>/uploads`（目录/文件不存在则创建）；**同名已存在则忽略**（查重） |
+| 选项类设置 | `theme` / `requestTimeoutSec` / `compressEnabled` / `compressMaxMB` / `saveNamePromptChars` / `defaultModelId` 按导入值改动 |
+| `defaultSavePath` | 机器相关的绝对路径：**本机确实存在该目录才采用**，否则保留当前值（并记一条 notes） |
+| `renameModel`（凭据） | 导入的非空字段覆盖，留空的保留当前 |
+| `modelGroups` | 同 id = 忽略；**同系列 + 同来源 + 同名**（不同机器上 id 不同）= 认作同一个模型 → 忽略并记 id 映射；其余**追加** |
+| 系列 | 当前配置没有的自定义系列定义直接新增；导入的模型让某个已隐藏系列重新有模型时，把它从 `hidden` 里放出来（没有模型的系列保持隐藏） |
+| `sourceConfig` | **只补空缺**：本机已有 Key / 地址的不被导入覆盖（避免误换账号） |
+| `rename-model.json` | 非空字符串与合法数值按导入覆盖（`temperature` / `topP` 仍由 `renameModel.save` 夹到区间内） |
+| 聊天记录 | 按 id 查重，新增的**追加在当前列表最新位置（最上面）**，顺序保持包内顺序；`tabCounter` 取两者最大值；`activeId` 保持当前有效标签 —— 见 §6 不变量 28 |
+| 导入消息 | `dot` 清空；`pending/running/polling` 的助手消息按「被中断」标记为 `error`（与启动规范化同口径）；`meta.mode` / 旧 `taskId` 清掉 |
+| 模型引用改指 | 被查重忽略的导入模型 id（`msg.model.id` / `msg.meta.modelId`）改成**本机那个同款模型的 id**，导入的历史对话于是能直接继续重发 |
+
+- 落盘顺序：先叠加图片，再写 `model-series.json` → `rename-model.json` → `settings.json` → `conversations.json`，
+  全部成功后更新主进程内存；任一步失败 → `SAVE_FAILED` / `COPY_FAILED`，内存与已写文件不半途改指向。
+- 渲染进程收到成功结果后 `dispatch({type:'DATA_IMPORT', state})` 整体替换四份数据（`store.jsx`），
+  并把设置弹窗里的草稿同步成导入后的值（避免之后点「保存」把导入的设置盖回去）。
+- 导出前渲染进程先 `flushSave()`：主进程内存里的 `settings/conversations` 才是最新的（§4.1 的防抖落盘）。
+- 合并逻辑是**纯函数**（`mergeImport` / `mergeModelGroups` / `mergeConversations` / `mergeSourceConfig` …），
+  回归脚本见 §9.1 `[23]` `[24]`。
+
 ---
 
 ## 6. 关键不变量（改代码时严禁破坏）
@@ -713,6 +886,33 @@ isGenerating = busy[convId] 存在（同步等待标记）
     必须在 layout 阶段把 `.chat-scroll` **瞬时**滚到最后一条消息（禁止平滑动画，否则切标签会先闪一下顶部）；
     结果图是自适应尺寸、进入那一刻还没解码，所以**不得**只在挂载时贴一次 —— 内容变高要用 `ResizeObserver` 续贴；
     但用户**往回滚过**（距底 > 48px）就不得再自动贴底（读历史时来的新结果不能把视线拽走），滚回底部自动恢复跟随，见 §4.9。
+28. **侧栏顺序 = `conversations` 数组顺序**：渲染进程**不得**再按 `createdAt` 排序（拖动排序会让两者不再一致）；
+    拖动只走 `store.jsx#dropIndexFor`（落点 → 目标下标）→ `CONV_REORDER` → `moveConversation`，
+    只改数组顺序（`activeId` / `drafts` / `temporary` / 消息都不动），顺序随既有防抖落盘持久化；
+    拖动只写 `text/plain`，**不得**让侧栏拖动触发图片解析分区（解析区只认 `Files` 类型，见 §4.5）；见 §4.11。
+29. **同一对话的多个请求必须完全隔离（伪异步）**：`state.busy` 是 `conversationId -> { [jobId]: true }` 的**集合**，
+    **不得**退回「一个对话一个槽位」；每次发送只 `BUSY_SET` 自己的 `jobId`，结果 / 失败 / 中止只 `BUSY_CLEAR`
+    自己的那一项（不带 `jobId` 的 `BUSY_CLEAR` 只给输入区「停止等待」用，清掉该对话全部标记）；
+    `jobId === messageId` 且所有 API 事件都按 `messageId` 定位，于是一个对话里等 2 个以上结果时事件不会串；
+    等待期间**不得**再禁用发送按钮（`canSend` 不看 busy）、**不得**再在编辑重发里用 busy 拦截；
+    单个请求的中止只能走 `window.stab.cancelJob(那个 messageId)`。见 §4.12。
+30. **用户气泡的两个重发按钮不得改动原消息**：「新对话发送 / 当前对话发送」只新增一条用户消息 + 它自己的
+    助手结果（`sendBubbleAgain`），**不得**走 `MSG_EDIT_PREPARE`（那是编辑重发的原地覆盖）；
+    内容只取该气泡的 `text` + 全部输入图（`readAttachment` 读回，缺文件跳过，内容全空则报错不发）；
+    新对话必须先 `makeConversation()` + `CONV_ADD`（拿到 conv 对象才能发请求），**不得**用 `CONV_NEW`。见 §4.13。
+31. **导出包名 + 包内目录协议是导入的两道硬校验**：包名必须 `ss-YYYYMMDD-HHmm.zip`（`BAD_NAME`），
+    解压后 `ss-export/` 里必须齐备 manifest 与允许的条目（`BAD_STRUCTURE`），**分别报错、不得合并成一类**；
+    导出时若用户在「另存为」里改了名，必须写回协议名（否则这个包以后导不回来）。解压只能落在
+    `<dataRoot>/cache/ss-import-*` 临时目录并在结束时清理；条目名一律过 `zip.normalizeEntryName`（挡目录穿越），
+    `zip.js` 保持**零第三方依赖**（生产依赖为空是打包前提，见 §8.1）。见 §5.7。
+32. **导入是「叠加 + 智能合并」，绝不清空 / 绝不覆盖本机凭据**：图片按文件名查重直接落盘，模型按
+    「同 id / 同系列同来源同名」查重后追加（当前没有的系列自动新增并从 `hidden` 放出），聊天记录按 id 查重后
+    **追加在列表最上面**，选项类设置按导入值更新而 `sourceConfig` 的 Key/地址**只补空缺**；
+    被查重忽略的导入模型必须在会话里**改指本机同款模型 id**（否则导入的历史对话重发会找不到模型）；
+    合并逻辑只许走 `dataTransfer.js` 的纯函数（`mergeImport` 一族），落盘失败要整体报错、不更新内存。见 §5.7。
+33. **用户气泡的模型标签只读 `msg.model`**：显示的是**这条消息当时真正用的模型名**（`send.js#modelRef` 写入），
+    不得在渲染时按当前设置反查 / 回填 —— 模型被改名或删掉后，历史气泡仍要显示当时的名字；
+    老数据没有 `msg.model` 时只显示时间，不留空位。见 §4.14。
 
 ---
 
@@ -781,6 +981,8 @@ module.exports = {
 ### 8.1 打包
 
 - electron-builder 配置见 `electron-builder.yml`；`files` 只含 `dist/**`、`electron/**`、`package.json`（生产依赖为空，React 被 Vite 打进 bundle）。
+  ZIP 打包 / 解包是自研的 `electron/src/zip.js`（只用 Node 自带 zlib），**能不加运行时依赖就不加** ——
+  一旦加了依赖，`files` / `asar` 与安装包体积都会跟着变，先确认真的必要。
 - `build/` 是 buildResources（图标源），**运行时窗口图标**在 `electron/assets/icon.png`（打进 asar）。
 - deb 需要 `package.json` 里的 `homepage` 字段（缺了 fpm 报错）；`desktopName` + `linux.syncDesktopName` 保证窗口与 .desktop 关联。
 - 二进制名会被 electron-builder 规范化为 `stabstab`（productName 含中文时），启动脚本已做 `stabstab`/`StabStab` 双名探测。
@@ -806,24 +1008,28 @@ module.exports = {
 
 ### 9.1 后端逻辑单测（mock HTTP 服务，覆盖全部 4 个协议）
 
-无需 GUI，用本地 HTTP 服务模拟各家接口即可验证 runner 的同步/异步/错误/取消全链路 + 各协议解析：
+无需 GUI，用本地 HTTP 服务模拟各家接口即可验证 runner 的同步 / 错误 / 取消 / **并发隔离** 全链路 + 各协议解析：
 
 ```bash
-npm run test:api      # 即 node scripts/test-api.js（当前 217 项断言，含模型系列 / 设置迁移 / 重命名模型 / 图片提示词元数据 + 输入图文件名 picN）
+npm run test:api      # 即 node scripts/test-api.js（当前 297 项断言，含模型系列 / 设置迁移 / 重命名模型 / 图片提示词元数据 + 输入图文件名 picN / ZIP 打包解包 / 导出导入合并）
 ```
 
 该脚本自包含：内置一张 16x16 PNG（校验尺寸嗅探 / b64 结果落盘）、临时目录自动清理。可直接参考或扩展。
 
 mock 端点覆盖：
-- `POST {base}/services/aigc/multimodal-generation/generation`（sync 返回 choices，async 返回 task_id）
-- `GET {base}/tasks/{id}`（PENDING→SUCCEEDED/FAILED）、`POST {base}/tasks/{id}/cancel`
+- `POST {base}/services/aigc/multimodal-generation/generation`（返回 choices；另有 `err-model` 报错、`hang-model` 永不响应）
 - `POST {base}/api/v3/images/generations`（Seedream 官方：`data[].url` + `usage.generated_images`）
 - `POST {base}/v1/images/generations`（New API：返回 `data[].b64_json`，验证 base64 结果落盘）
-- `POST {base}/v1/api/generate`（Grsai：SSE 流 / 只返回任务 id）+ `POST {base}/v1/draw/result`（轮询兜底）
+- `POST {base}/v1/api/generate`（Grsai：SSE 流 / 只返回任务 id）+ `POST {base}/v1/draw/result`（协议内部取结果）
 - `POST {base}/responses`（重命名模型：`output[].content[].output_text` 给 `{"title":"…"}`，另有 401 / 只有思维链 item 两种异常）
 - `GET /img.png`（供结果图下载）
 
-此外还直接单测 `modelSeries.load/save/resolveModel`（内置 json 落地、hidden 与同步异步开关持久化、协议不可被本地 json 篡改）、
+其中 §3 断言「**同步请求不带 `X-DashScope-Async` 请求头**、适配器没有 `supportsAsync` / 任务端点、协议元信息里也没有」，
+§4 断言**同一个 `conversationId` 下的多个请求互不干扰**（一个成功、一个业务错误、一个永不返回，事件各按 `messageId` 命中，
+且能只中止其中一个），§5 断言单个同步请求的取消。
+
+此外还直接单测 `modelSeries.load/save/applyPatch/resolveModel`（内置 json 落地、hidden 持久化、协议不可被本地 json 篡改、
+**老数据的 `requestMode` 被丢弃且 `resolveModel` 不再返回 `mode`/`supportsAsync`**）、
 `store.loadSettings` 的旧结构迁移，§17/§18 的 `renameModel.load/save/mergeConfig/renderTemplate/pickTitle/sanitizeTitle/generateTitle`
 （含 `temperature/top_p` 透传、`$$` 模板渲染、Responses 响应解析、错误码与回退路径），
 以及 §19/§20 的**图片提示词元数据**：PNG iTXt / JPEG XMP / WebP XMP 三格式的中文·换行·引号·反斜杠·emoji 往返、
@@ -834,6 +1040,16 @@ mock 端点覆盖：
 §21 还直接断言 `conversationMeta.metaOfParent/metaFromConversations`（图生图 / 纯文生图 / 老会话缺 `srcName` / 会话数据缺失四种情况）
 与「老图 + 会话兜底 → 导出文件里出现 picN」的完整链路；§22 断言复制到剪贴板的载荷（`clipboardPayload`：data-pics 的 JSON 与转义、
 大小上限、以及「HTML 内嵌的字节本身带着提示词 + pic 项」，含复制老图时的内存补写）。
+
+§23/§24 覆盖本次新增的「配置 + 聊天记录导出 / 导入」：
+
+- `zip.js`：写 / 读往返（UTF-8 中文名、DEFLATE 文本 + STORE 大文件、空条目）、ZIP64 强制分支、
+  条目名安全（反斜杠归一、拒绝 `..` 与盘符）、**改坏一个字节必须报 CRC_MISMATCH**、非 zip 报 BAD_ZIP；
+- `dataTransfer.js`：包名协议（合法 / 大小写 / 五种非法名）、导出内容与 manifest 计数（未被引用的缓存图不进包）、
+  两道校验各自的错误码（BAD_NAME / BAD_STRUCTURE / BAD_VERSION / BAD_ZIP）、
+  合并全链路（选项类设置按导入改动、保存路径本机不存在则保留、模型查重与追加、系列自动新增与 hidden、
+  密钥只补空缺、rename-model 覆盖、聊天记录追加在最上面 + id 映射 + 中断标记 + tabCounter 最大值、
+  图片叠加与重复导入的幂等），以及 `mergeModelGroups` / `mergeSourceConfig` / `mergeConversations` 的纯函数断言。
 
 ### 9.2 冒烟测试（无 GUI 环境）
 
@@ -922,6 +1138,11 @@ node dev-data/qa/meta-decode-check.js   # 元数据写入后仍可被真实解�
 | 改聊天区滚动 / 「进入标签停在最后一条消息」 | `src/components/ChatView.jsx` 的 `useLayoutEffect [convId,msgCount,tailId]` + `ResizeObserver(.message-list)` + `onScroll`（见 §4.9；不要改成只在挂载时贴一次底） |
 | 改解析失败文案 | `src/lib/promptReuse.jsx` 的 `PROMPT_MESSAGES` / `promptErrorText`（区分不支持 / 未找到 / 损坏 / 读取失败） |
 | 改持久化字段默认值 | `electron/src/store.js` 的 `DEFAULT_SETTINGS` / `DEFAULT_CONVERSATIONS` |
+| 改导出 / 导入的包名或包内协议 | `electron/src/dataTransfer.js` 顶部常量（`EXPORT_PREFIX` / `ROOT_DIR` / `FORMAT` / `FORMAT_VERSION` / `MEDIA_DIRS`）+ `zipNameFor` / `parseZipName` / `inspectDir`（见 §5.7） |
+| 改导入的合并规则 | `electron/src/dataTransfer.js` 的 `mergeImport` / `mergeModelGroups` / `mergeConversations` / `mergeSourceConfig` / `mergeRenameConfig`（纯函数，改完在 `scripts/test-api.js` §24 补断言） |
+| 改 ZIP 打包 / 解包实现 | `electron/src/zip.js`（唯一实现：`writeZip` / `listZip` / `extractAll`；保持零第三方依赖） |
+| 改「数据管理」页界面 / 文案 | `src/components/SettingsModal.jsx` 的 `data` 页 + `doExport` / `doImport`；样式 `.import-result*` 在 `src/styles/app.css` |
+| 改用户气泡底部的模型显示 | `src/components/UserMessage.jsx` 的 `.msg-meta`（`.msg-model` + `.msg-time`）+ `app.css` 的 `.msg-meta.has-model` / `.msg-model`（见 §4.14） |
 | 改主题配色 | `src/styles/app.css` 顶部 CSS 变量 |
 | 加 IPC | `preload.js` 暴露 + `main.js` `ipcMain.handle` + 渲染进程 `window.stab.*` |
 | 改打包产物 | `electron-builder.yml` + `scripts/package.{sh,cmd}` |
