@@ -117,3 +117,46 @@ export function sizeLabel(s) {
   if (m) return `尺寸：${m[1]}×${m[2]}`;
   return `尺寸：${s}`;
 }
+
+/* ---------------- 自定义尺寸（尺寸选择器末尾的「自定义」） ----------------
+ * 用户只填**两个数字**，中间的乘号是固定的：界面上一律显示 `×`，
+ * 真正发给 API 的值按协议拼回去（见 sizeSeparator）。
+ */
+
+/** 尺寸下拉里「自定义」这一项的哨兵值（不是真正发给 API 的尺寸） */
+export const CUSTOM_SIZE = '__custom__';
+
+/**
+ * 解析像素尺寸：`2688*1536` / `2048x2048` / `1024×1024` 都认。
+ * @returns {{w:number,h:number}|null} 不是像素尺寸（auto / 1K / 16:9 …）时返回 null
+ */
+export function parseSizeDims(s) {
+  const m = /^(\d{1,5})\s*[*x×X]\s*(\d{1,5})$/.exec(String(s === undefined || s === null ? '' : s).trim());
+  if (!m) return null;
+  const w = parseInt(m[1], 10);
+  const h = parseInt(m[2], 10);
+  if (!w || !h) return null;
+  return { w, h };
+}
+
+/**
+ * 自定义尺寸里两个数字之间**用什么符号拼**（用户不用管，由协议决定）：
+ * DashScope（Qwen 系列）要 `宽*高`；Seedream / New API / Grsai 用 `宽x高`。
+ */
+export function sizeSeparator(model) {
+  const protocol = model && (model.protocol || (model.protocolInfo && model.protocolInfo.id));
+  return protocol === 'dashscope-multimodal' ? '*' : 'x';
+}
+
+/** 按当前协议规范化尺寸值（不是像素尺寸则原样返回）：自定义尺寸换模型后符号自动跟着变 */
+export function normalizeSize(model, value) {
+  const d = parseSizeDims(value);
+  if (!d) return value;
+  return `${d.w}${sizeSeparator(model)}${d.h}`;
+}
+
+/** 尺寸是否可用：候选列表里的值，或用户自己填的像素尺寸 */
+export function isValidSize(model, value, options) {
+  const opts = (options && options.length) ? options : ((model && model.sizeOptions) || []);
+  return opts.includes(value) || !!parseSizeDims(value);
+}

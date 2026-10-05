@@ -2,10 +2,10 @@ import React, { useState } from 'react';
 import { useApp, useToast } from '../lib/store.jsx';
 import { uploadUrl, formatClock } from '../lib/util.js';
 import { resendEdited, resolveResendTarget } from '../lib/send.js';
-import { sizeLabel } from '../lib/models.js';
 import { useComposerSelection, getComposerSelection } from '../lib/composerSelection.js';
 import { missingImageMessage } from '../lib/imageActions.js';
 import Icon from './Icon.jsx';
+import SizePicker from './SizePicker.jsx';
 import ImageContextMenu, { useImageMenu } from './ImageContextMenu.jsx';
 
 export default function UserMessage({ conv, msg }) {
@@ -138,15 +138,14 @@ export default function UserMessage({ conv, msg }) {
             }}
           />
           <div className="edit-size-row">
-            <select
+            <SizePicker
+              className="size-select"
               value={target.size}
-              onChange={(e) => setSizeOverride(e.target.value)}
-              title="尺寸：默认跟随下方输入框的当前尺寸；在这里选择只覆盖这一次重发"
-            >
-              {target.sizeOptions.map((s) => (
-                <option key={s} value={s}>{sizeLabel(s)}</option>
-              ))}
-            </select>
+              options={target.sizeOptions}
+              model={target.model}
+              onChange={setSizeOverride}
+              selectTitle="尺寸：默认跟随下方输入框的当前尺寸；在这里选择只覆盖这一次重发（最后一项可自定义）"
+            />
             {target.model && (
               <span
                 className="edit-hint edit-model-hint"

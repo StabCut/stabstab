@@ -4,9 +4,10 @@ import { fileToDataUrl, readImageMeta, isImageFile, sourceFileName } from '../li
 import { readFirstPromptFromFiles, usePromptReuse } from '../lib/promptReuse.jsx';
 import { formatBytes } from '../lib/util.js';
 import { sendNew, buildParams, defaultParams } from '../lib/send.js';
-import { allModels, resolveModel, sizeLabel } from '../lib/models.js';
+import { allModels, resolveModel, parseSizeDims, sizeSeparator } from '../lib/models.js';
 import { setComposerSelection } from '../lib/composerSelection.js';
 import Icon from './Icon.jsx';
+import SizePicker from './SizePicker.jsx';
 
 const MAX_IMAGES = 3; // API 规则：最多 3 张输入图片
 
@@ -147,12 +148,19 @@ export default function Composer({ conv, busy }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [protocol]);
 
-  // 尺寸不在当前模型的候选列表里时纠正
+  // 尺寸不在当前模型的候选列表里时纠正：用户自己填的像素尺寸（尺寸下拉末尾的「自定义」）
+  // 保留，只把中间的符号统一成当前协议要的写法（Qwen `*` / 其余 `x`）；其余回落第一个候选。
+  // 用函数式 setParams：收敛后返回同一个对象，React 直接跳过，不会来回震荡。
+  const sizeSep = sizeSeparator(current);
   useEffect(() => {
-    if (!sizeOptions.includes(params.size)) {
-      setParams((p) => ({ ...p, size: sizeOptions[0] || 'auto' }));
-    }
-  }, [sizeOptions, params.size]);
+    setParams((p) => {
+      if (sizeOptions.includes(p.size)) return p;
+      const d = parseSizeDims(p.size);
+      if (!d) return { ...p, size: sizeOptions[0] || 'auto' };
+      const next = `${d.w}${sizeSep}${d.h}`;
+      return next === p.size ? p : { ...p, size: next };
+    });
+  }, [sizeOptions, sizeSep, params.size]);
 
   // 把「当前模型 + 当前参数」镜像出去，供「编辑并重新发送」使用（见 lib/composerSelection.js）：
   // 重发按这里的当前设置发请求，而不是那条消息当时用的模型与参数。
@@ -492,14 +500,14 @@ export default function Composer({ conv, busy }) {
           ))}
         </select>
 
-        <select
+        <SizePicker
           className="size-select"
           value={params.size}
-          onChange={(e) => setParams((p) => ({ ...p, size: e.target.value }))}
-          title="输出尺寸 / 比例"
-        >
-          {sizeOptions.map((s) => <option key={s} value={s}>{sizeLabel(s)}</option>)}
-        </select>
+          options={sizeOptions}
+          model={current}
+          onChange={(size) => setParams((p) => ({ ...p, size }))}
+          selectTitle="输出尺寸 / 比例（最后一项可自定义：填两个数字即可）"
+        />
 
         <div className="params-wrap" ref={paramsWrapRef}>
           <button

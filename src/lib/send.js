@@ -11,7 +11,7 @@
  */
 import { uid, formatBytes } from './util.js';
 import { compressIfNeeded, dataUrlBytes } from './images.js';
-import { resolveModel } from './models.js';
+import { resolveModel, normalizeSize, isValidSize } from './models.js';
 import { maybeAutoTitle } from './title.js';
 
 /** 依参数面板的 schema 生成初始参数值（size 由尺寸下拉单独维护） */
@@ -166,7 +166,8 @@ export async function sendNew({ dispatch, state, conv, text, attachments, params
  * @param selection       输入区当前设置 {modelId, params}（见 lib/composerSelection.js）
  * @param fallbackModelId 输入区没有模型时的兜底（该消息记录里的模型 id）
  * @param fallbackParams  输入区一个设置都没有时的兜底（该消息记录里的参数）
- * @param sizeOverride    编辑气泡里的尺寸覆盖（null / 空 = 跟随输入区当前尺寸）
+ * @param sizeOverride    编辑气泡里的尺寸覆盖（null / 空 = 跟随输入区当前尺寸；
+ *                        可以是候选值，也可以是用户自己填的像素尺寸，见 components/SizePicker.jsx）
  * @returns {{modelId:string, model:object|null, schema:object, sizeOptions:string[], size:string, params:object}}
  *          model = resolveModel 结果（可能为 null）；params = 本次真正要发的参数
  */
@@ -179,8 +180,10 @@ export function resolveResendTarget({ settings, modelSeries, protocols, selectio
   const model = resolveModel(settings, modelSeries, protocols, modelId);
   const schema = (model && model.paramSchema) || {};
   const sizeOptions = (model && model.sizeOptions) || ['auto'];
-  const pick = (v) => (sizeOptions.includes(v) ? v : (sizeOptions[0] || 'auto'));
-  const size = pick(sizeOverride && sizeOptions.includes(sizeOverride) ? sizeOverride : base.size);
+  // 候选值或自定义像素尺寸都算有效；都没有就退回第一个候选（分隔符按当前协议统一）
+  const ok = (v) => !!v && isValidSize(model, v, sizeOptions);
+  const requested = ok(sizeOverride) ? sizeOverride : (ok(base.size) ? base.size : (sizeOptions[0] || 'auto'));
+  const size = normalizeSize(model, requested);
   return { modelId, model, schema, sizeOptions, size, params: buildParams({ ...base, size }, schema) };
 }
 

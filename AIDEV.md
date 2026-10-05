@@ -95,6 +95,7 @@ stabstab/
 │   │   ├── UserMessage.jsx            # 用户气泡：文本/图片、编辑重发、复制、删除
 │   │   ├── AssistantMessage.jsx       # 助手气泡：结果图/错误/异步状态卡片/取消
 │   │   ├── Composer.jsx               # 输入框：粘贴/拖入/多选、size/高级参数、发送/停止、附加提示词解析、逐标签草稿搬运
+│   │   ├── SizePicker.jsx             # ★ 尺寸选择器：候选尺寸（sizeOptions）+ 末尾「自定义…」（两个数字 + 固定 ×，见 §4.10）
 │   │   ├── PromptDrop.jsx             # ★ 全窗口左右解析分区（曲线分隔）+ 「图片提示词」查看弹窗
 │   │   ├── SettingsModal.jsx          # 设置：模型 / 重命名模型 / 基础 / 高级 四页
 │   │   ├── Lightbox.jsx               # 全屏图片预览：滚轮缩放/拖动/ESC
@@ -140,6 +141,11 @@ scripts\package.cmd  # Windows 打包（setup.exe + portable.exe）
 # 语法检查（主进程无构建，改完先跑这个）
 node --check electron/main.js && node --check electron/preload.js
 for f in electron/src/*.js electron/src/api/*.js; do node --check "$f"; done
+
+# 本地回归（dev-data 已 gitignore，脚本头有各自跑法）
+#   dev-data/qa/resend-target-test.js     编辑重发取哪套设置（含自定义尺寸）
+#   dev-data/qa/size-picker-test/         尺寸选择器「自定义」的交互 + 排版截图（Electron 隐藏窗口）
+#   dev-data/qa/paths-test.js             数据目录解析与迁移
 ```
 
 开发模式数据目录：项目内 `dev-data/`（已 gitignore）。
@@ -375,7 +381,7 @@ text           ← 文件名 + 提示词（纯文本框粘贴用；不含 pic �
    └─ setComposerSelection(modelId, params)        ← src/lib/composerSelection.js（模块级外部状态）
 [UserMessage] 编辑气泡（打开时才订阅）
    ├─ 渲染：resolveResendTarget({selection}) → 尺寸下拉的候选与默认值、即将使用的模型名
-   ├─ 尺寸下拉：默认跟随输入区当前尺寸；手选 = 只覆盖这一次重发的 size（sizeOverride）
+   ├─ 尺寸下拉：默认跟随输入区当前尺寸；手选 = 只覆盖这一次重发的 size（sizeOverride，候选值或自定义像素值都行）
    └─ 点「确定并重新发送」：再调一次 getComposerSelection() 取最新一拍
         └─ resendEdited({modelId: 当前模型, params: buildParams({...当前参数, size}, 当前模型 schema)})
              └─ 用户消息的 params / model 一并改写成本次真正发出去的那套（消息记录 = 实际请求）
@@ -383,7 +389,8 @@ text           ← 文件名 + 提示词（纯文本框粘贴用；不含 pic �
 
 - **为什么不用全局 store**：参数面板的数字 / 文本框每敲一个字符都会变，走 reducer 会让整条消息列表重渲染；
   这里用模块级外部状态 + `useSyncExternalStore`，且 `useComposerSelection(enabled)` 只在编辑气泡打开时订阅。
-- **模型能力不同**：尺寸候选来自**当前模型**的 `sizeOptions`；输入区遗留的、当前模型不支持的尺寸会被校正到该模型的第一个候选；
+- **模型能力不同**：尺寸候选来自**当前模型**的 `sizeOptions`；候选之外的值，**能解析成像素尺寸（`宽×高`）的算合法的自定义尺寸、保留**
+  （符号按当前协议规范化），既不是候选也不是像素尺寸的遗留值才校正到该模型的第一个候选；
   参数按**当前模型**的 `paramSchema` 过滤（`buildParams`），于是 A 协议的 `n` / `watermark` 不会漏给 B 协议。
 - **兜底**：输入区还没写出任何设置（Composer 尚未发布，属极端时序）时，退回该消息记录里的模型与参数（= 旧行为）。
 - **同步 / 异步判断同源**：编辑气泡里 `busy` 的拦截用当前模型的 `mode`，与实际发请求的模型一致。
@@ -450,6 +457,30 @@ isGenerating = busy[convId] 存在（同步等待标记）
   同一标签里结果消息从 running 变 success 不改条数也不改末尾 id，因此正在读历史时不会被拉下去（这正是 pinned 的用途）。
 - 瞬时滚动（不用 `scroll-behavior: smooth`）：切标签是「定位」而不是「播放动画」。
 - 与 `.chat-scroll` 无关的滚动（输入框 `textarea` 自己的贴底、灯箱、解析弹窗）各管各的，不要混用。
+
+### 4.10 尺寸选择器的「自定义」（输入区工具条与编辑气泡共用）
+
+候选尺寸来自来源配置（`model-series.json` 的 `sources[].sizeOptions`）。两个尺寸选择器（输入区、编辑气泡）
+**末尾都多一项「尺寸：自定义…」**：选中后右边出现两个数字输入框，**中间的乘号是固定的**，用户只填两个数字。
+实现只有一处：`src/components/SizePicker.jsx`（Composer / UserMessage 都复用它）。
+
+```
+[SizePicker] 受控组件：value = 真正发出去的尺寸字符串，onChange(next)
+   ├─ 自定义态记在**本地 state**，不能只看「value 在不在候选列表里」——
+   │    用户填的数字正好等于某个候选值（例如 2048×2048）时，两个输入框必须继续留着
+   ├─ 选中「自定义」：沿用上次填过的数字（第一次 1024×1024 打底）并**立即生效**，不必再点别处
+   ├─ 每敲一个数字就回调，但**两个数字都有效才拼值**（清空输入框不会把尺寸发成空）
+   ├─ 符号由协议决定（models.js#sizeSeparator）：DashScope(Qwen) = `宽*高`，Seedream / New API / Grsai = `宽x高`
+   └─ 界面上一律显示 `×`（与 sizeLabel 一致），用户看不到协议差异
+[models.js] CUSTOM_SIZE / parseSizeDims / sizeSeparator / normalizeSize / isValidSize（纯函数，UI 与 send.js 共用）
+[Composer] 尺寸校正 effect：候选值原样保留；像素值只规范化符号；其余回落第一个候选（收敛后返回同一对象，不震荡）
+[send.js] resolveResendTarget：sizeOverride 与输入区尺寸都按同一套「候选 ∨ 像素值」判定，再按当前模型协议规范化
+```
+
+- **为什么符号要按协议**：`size` 是原样透传给适配器的（`runner.js` → `body.size` / `parameters.size`），
+  DashScope 要 `2688*1536`，Seedream / New API / Grsai 按文档写 `2048x2048`；界面显示统一用 `×`。
+- 主进程**不校验**尺寸是否在候选列表里，所以自定义尺寸不需要改任何适配器。
+- 回归脚本：`dev-data/qa/size-picker-test/`（Electron 隐藏窗口 + 真实 DOM 跑交互断言，并按排版截图；跑法见文件头）。
 
 ---
 
@@ -644,7 +675,8 @@ isGenerating = busy[convId] 存在（同步等待标记）
 2. **jobId === assistant 消息 id**：`runner` 的 `activeJobs` 以 `messageId` 为键；取消、停止等待都依赖此约定。
 3. **user↔assistant 配对**：assistant 消息的 `parentId` 指向其用户消息；「编辑重发」通过 `MSG_EDIT_PREPARE` 删除 `parentId===userMsgId` 的旧回复。
 4. **图片 base64 格式**：`data:<mime>;base64,<data>`（各协议统一用这个格式接收输入图）。
-5. **size 参数**：`'auto'` 表示**不发送** size 字段（交给模型推荐）；qwen 用 `宽*高`（如 `2688*1536`），Seedream 官方支持 `1K/2K/4K` 或 `2048x2048`，Grsai 支持比例（如 `16:9`）。候选列表来自来源配置（`model-series.json` 的 `sources[].sizeOptions`）。
+5. **size 参数**：`'auto'` 表示**不发送** size 字段（交给模型推荐）；qwen 用 `宽*高`（如 `2688*1536`），Seedream 官方支持 `1K/2K/4K` 或 `2048x2048`，Grsai 支持比例（如 `16:9`）。候选列表来自来源配置（`model-series.json` 的 `sources[].sizeOptions`）；
+   候选之外**允许用户自定义像素尺寸**（尺寸选择器末尾的「自定义」，见 §4.10）——分隔符按协议：DashScope `*`，其余 `x`（`models.js#sizeSeparator` / `normalizeSize`），主进程原样透传、不校验。
 6. **协议适配器接口**：新增协议必须实现 registry 中约定的方法（见 §7），否则 `runner.start` 直接报 `NO_ADAPTER`。
 7. **appfile 协议**：URL 结构 `appfile://<cache|uploads>/<文件名>`；主进程 handler 用 `path.basename` 防目录穿越。
 8. **Vite `base:'./'`**：打包后经 `file://` 加载，资源必须相对路径，否则白屏。
