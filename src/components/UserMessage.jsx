@@ -197,9 +197,32 @@ export default function UserMessage({ conv, msg }) {
           </div>
         )}
         {msg.text && <div className="msg-text">{msg.text}</div>}
-        <div className="msg-meta">{formatClock(msg.createdAt)}</div>
+        {/* 本次发送使用的模型：显示在时间左侧（模型名字右对齐贴住时间，长名字省略号截断） */}
+        <div className={`msg-meta${msg.model && msg.model.name ? ' has-model' : ''}`}>
+          {msg.model && msg.model.name && (
+            <span
+              className="msg-model"
+              title={`本次发送使用的模型：${msg.model.name}${msg.model.seriesId ? `（系列：${msg.model.seriesId}${msg.model.sourceId ? ` · 来源：${msg.model.sourceId}` : ''}）` : ''}`}
+            >
+              {msg.model.name}
+            </span>
+          )}
+          <span className="msg-time">{formatClock(msg.createdAt)}</span>
+        </div>
       </div>
       <div className="msg-actions">
+        <button
+          className="icon-btn"
+          title="新对话发送"
+          disabled={resendingAgain}
+          onClick={() => resendBubble('new')}
+        ><Icon name="chatPlus" size={16} /></button>
+        <button
+          className="icon-btn"
+          title="当前对话发送"
+          disabled={resendingAgain}
+          onClick={() => resendBubble('current')}
+        ><Icon name="send" size={16} /></button>
         {msg.text && <button className="icon-btn" title="复制文字" onClick={copyText}><Icon name="copy" size={16} /></button>}
         <button className="icon-btn" title="编辑并重新发送" onClick={startEdit}><Icon name="pencil" size={16} /></button>
         <button className="icon-btn" title="删除该条消息" onClick={remove}><Icon name="trash" size={16} /></button>

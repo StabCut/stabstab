@@ -258,7 +258,16 @@ button { cursor: pointer; }
 .assistant-bubble { background: var(--bubble-assistant); border: 1px solid var(--border); border-bottom-left-radius: 4px; box-shadow: var(--shadow); }
 
 .msg-text { white-space: pre-wrap; word-break: break-word; line-height: 1.6; }
+/* 气泡底部一行：左边是「本次发送使用的模型」（用户气泡才有），右边是时间 */
 .msg-meta { font-size: 11px; opacity: 0.55; margin-top: 6px; text-align: right; }
+.msg-meta:has(.msg-model), .msg-meta.has-model { display: flex; align-items: baseline; justify-content: flex-end; gap: 8px; }
+/* 模型名：单行、超长省略号；`min-width: 0` 才能让 flex 子项真的收缩 */
+.msg-model {
+  min-width: 0; max-width: 260px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-weight: 500;
+}
+.msg-time { flex: none; font-variant-numeric: tabular-nums; }
 
 .msg-images { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .user-img-wrap { position: relative; border-radius: 8px; overflow: hidden; }
