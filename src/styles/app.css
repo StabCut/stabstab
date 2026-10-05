@@ -163,9 +163,20 @@ button { cursor: pointer; }
 .conv-item {
   display: flex; align-items: center; gap: 8px;
   padding: 8px 10px; border-radius: 8px; cursor: pointer; position: relative;
+  /* 整条标签是拖动排序的把手：禁止选中文字，避免拖动时先选出一片文字 */
+  user-select: none;
 }
 .conv-item:hover { background: var(--bg-hover); }
 .conv-item.active { background: var(--bg-active); }
+/* 拖动排序（见 AIDEV.md §4.11）：被拖起的标签淡出，落点用一条强调色细线表示插到上/下 */
+.conv-item.dragging { opacity: 0.45; cursor: grabbing; }
+.conv-item.drop-before::before,
+.conv-item.drop-after::after {
+  content: ''; position: absolute; left: 6px; right: 6px; height: 2px;
+  background: var(--accent); border-radius: 1px;
+}
+.conv-item.drop-before::before { top: 0; }
+.conv-item.drop-after::after { bottom: 0; }
 .conv-name {
   flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px;
 }
@@ -181,6 +192,7 @@ button { cursor: pointer; }
 .conv-rename-input {
   flex: 1; background: var(--bg-input); border: 1px solid var(--accent);
   border-radius: 6px; padding: 3px 8px; outline: none;
+  user-select: text;   /* 标签整体 user-select:none，重命名输入框要能选中文字 */
 }
 .conv-more { opacity: 0; }
 .conv-item:hover .conv-more, .conv-item.active .conv-more { opacity: 1; }

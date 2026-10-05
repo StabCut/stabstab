@@ -197,6 +197,13 @@ export function reducer(state, action) {
     case 'CONV_DOT_SET':
       // 后台（非当前标签）的生成落了终态：成功 → 绿点，失败 → 红点；点开该标签即消费
       return updateConv(state, action.id, (c) => ({ ...c, dot: action.dot || null }));
+    case 'CONV_REORDER': {
+      // 拖动排序：侧栏顺序 = conversations 数组顺序（落盘即为用户看到的顺序，见 §4.11）。
+      // 不碰 activeId / drafts / temporary：排序既不是切换会话，也不影响输入区状态。
+      const next = moveConversation(state.conversations.conversations, action.id, action.toIndex);
+      if (!next) return state;   // 找不到 / 原地不动 → 保持同一引用，不触发重渲染与落盘
+      return { ...state, conversations: { ...state.conversations, conversations: next } };
+    }
 
     // ---- 消息 ----
     case 'MSG_ADD':
@@ -333,6 +340,44 @@ export function conversationDot(state, conv) {
   if (!conv || state.conversations.activeId === conv.id) return null;
   if (isGenerating(state, conv)) return 'running';
   return conv.dot || null;
+}
+
+/**
+ * 侧栏拖动排序的落点下标（纯函数，导出便于 QA 断言，见 AIDEV.md §4.11）：
+ * 把 list 里 id 那一条插到 overId 的「之前 / 之后」，返回它在新数组里的目标下标；
+ * 找不到 id / overId、拖到自己身上、算完还是原地 → 返回 -1（调用方据此不派发任何动作）。
+ *
+ * @param {Array}  list   当前顺序（= state.conversations.conversations）
+ * @param {string} id     被拖动的会话 id
+ * @param {string} overId 松手时指针所在的会话 id
+ * @param {'before'|'after'} pos 指针在目标条目上半（before）还是下半（after）
+ *
+ * 目标下标必须按「先摘掉自己、再插入」换算（from < to 时 -1），否则向下拖会差一位。
+ */
+export function dropIndexFor(list, id, overId, pos) {
+  const arr = list || [];
+  const from = arr.findIndex((c) => c.id === id);
+  const over = arr.findIndex((c) => c.id === overId);
+  if (from < 0 || over < 0 || from === over) return -1;
+  let to = pos === 'after' ? over + 1 : over;
+  if (from < to) to -= 1;
+  return to === from ? -1 : to;
+}
+
+/**
+ * 把 id 那一条移动到 toIndex（越界夹紧）。找不到该会话 / 下标非法 / 原地不动都返回 null，
+ * 调用方保持原数组引用 —— 于是「拖了但没改变顺序」不会触发重渲染，也不会被防抖写盘。
+ */
+export function moveConversation(list, id, toIndex) {
+  const arr = list || [];
+  const from = arr.findIndex((c) => c.id === id);
+  if (from < 0) return null;
+  const to = Math.max(0, Math.min(arr.length - 1, Number(toIndex)));
+  if (!Number.isFinite(to) || to === from) return null;
+  const next = arr.slice();
+  const [moved] = next.splice(from, 1);
+  next.splice(to, 0, moved);
+  return next;
 }
 
 /**

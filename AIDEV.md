@@ -39,7 +39,7 @@ settings.json（用户数据：添加了哪些系列、系列里有哪些模型�
 
 - **文生图**（text-to-image）：纯文字提示词生成图片。
 - **图生图 / 图像编辑**（image-to-image）：1–3 张输入图片 + 编辑指令，或纯图片输入。
-- 对话式界面（类 Cherry Studio）：左侧标签管理会话（空对话按序号 1234…，出现首条文字后自动命名），右侧聊天流，底部输入框。
+- 对话式界面（类 Cherry Studio）：左侧标签管理会话（空对话按序号 1234…，出现首条文字后自动命名，可拖动改变顺序，见 §4.11），右侧聊天流，底部输入框。
 - **逐标签草稿**：输入区的文字与待发送图片跟着标签独立保留 —— 切走再切回来内容还在，
   直到该会话被删除（或全部删除）才随之删除；草稿**只存内存**（不落盘，重启软件即消失），见 §4.6。
 - 每个会话**不携带上下文**（上下文长度恒为 0）：每次请求只包含当前这一条输入。
@@ -712,7 +712,7 @@ isGenerating = waitingJobs(state, convId) 非空（busy 里有任意 jobId）
   "version": 1,
   "tabCounter": 0,       // 数字标签命名，只增不减
   "activeId": null,      // 当前激活会话
-  "conversations": [
+  "conversations": [     // ★ 数组顺序 = 侧栏显示顺序（拖动排序改的就是它，见 §4.11）；新会话插在数组头部
     {
       "id": "c_xxx", "name": "1", "nameAuto": true,
       // name  = 空对话是序号（"1"）；出现首条文字后自动命名（见 §4.4）
@@ -748,7 +748,11 @@ isGenerating = waitingJobs(state, convId) 非空（busy 里有任意 jobId）
 }
 ```
 
-> 助手消息的 `meta.modelId` 是「重启后恢复异步轮询」与「编辑重发」的定位依据：主进程用它反查系列/来源/密钥（密钥不进会话文件）。
+> 助手消息的 `meta.modelId` 是「重启后按模型反查配置」的定位依据（密钥不进会话文件）；
+> **没有 `meta.mode`**（请求模式只有同步）。同一个对话里的多个请求各占一条助手消息，
+> `messageId` 就是 `jobId`，所以「哪个结果属于哪个请求」永远明确（见 §4.12）。
+> **`conversations[]` 的数组顺序 = 侧栏显示顺序**（拖动排序直接改数组顺序，见 §4.11）：`createdAt` 只用于时间显示，
+> 渲染进程**不得**再按它排序；主进程启动规范化（`normalizeConversationsOnStartup`）也不得重排数组。
 > 逐标签草稿（输入区的文字与待发送图片）**不在这个文件里**：它只活在渲染进程内存（`state.drafts`），重启软件即消失，见 §4.6。
 
 ### 5.5 图片存储位置
@@ -1100,6 +1104,8 @@ node dev-data/qa/promptdrop-test.mjs    # 提示词复用纯逻辑断言（appen
 node dev-data/qa/dom-behavior-test.js   # 在真实应用窗口里跑 DOM 行为断言（48 项），electron 跑
 node dev-data/qa/picname-flow-test.js   # 输入图文件名链路（拖入/粘贴 → generate.imageNames，10 项），electron 跑
 node dev-data/qa/meta-decode-check.js   # 元数据写入后仍可被真实解码器解码（electron 跑，PNG/JPEG/WebP）
+node dev-data/qa/conv-reorder-test/build.mjs   # 侧栏拖动排序：先构建 bundle
+node_modules\.bin\electron dev-data\qa\conv-reorder-test\main.js  # …再用真实 DragEvent 序列跑断言 + 截图（含「拖起淡出 + 落点线」）
 ```
 
 `picname-flow-test.js` 用真实 `dist/index.html` + 真实 `lib/send.js`，只把 `api:generate` 换成捕获桩：
