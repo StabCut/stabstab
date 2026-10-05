@@ -15,7 +15,7 @@ const newapiImages = require('./newapi-images');
 const grsai = require('./grsai');
 
 const adapters = {
-  [dashscope.id]: dashscope,        // qwen 系列·官方（DashScope 多模态，同步 + 异步）
+  [dashscope.id]: dashscope,        // qwen 系列·官方（DashScope 多模态，同步）
   [seedream.id]: seedream,          // Doubao Seedream 系列·官方（火山方舟 Ark）
   [newapiImages.id]: newapiImages,  // Doubao Seedream / GPT Image 系列·New API（OpenAI 兼容）
   [grsai.id]: grsai                 // GPT Image 系列·Grsai
@@ -34,7 +34,7 @@ function listProtocols() {
     id: a.id,
     label: a.label,
     available: true,
-    supportsAsync: !!a.supportsAsync,
+    // 只有同步一种请求模式：没有 supportsAsync（见 AIDEV.md §4.12）
     supportsImageInput: a.supportsImageInput !== false,
     defaultBaseUrl: a.defaultBaseUrl,
     defaultModel: a.defaultModel,

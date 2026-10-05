@@ -59,10 +59,9 @@ if (process.platform === 'linux') {
 let win = null;
 let PATHS = null;
 let settings = null;
-let modelSeries = null;     // 内置模型系列配置（含来源 / 默认地址 / 同步异步开关）
+let modelSeries = null;     // 内置模型系列配置（含来源 / 默认地址 / 尺寸；只有同步一种请求模式）
 let renameConfig = null;    // 重命名模型配置（提示模板 / 温度 / Top-P / 默认地址，见 electron/assets/rename-model.json）
 let conversations = null;   // 主进程内存副本（权威数据由渲染进程通过 state:save 同步）
-let pendingResumes = [];   // 启动时需要恢复轮询的异步任务
 
 // ---------- 自定义协议：appfile://cache|x|x.png ----------
 protocol.registerSchemesAsPrivileged([
@@ -267,9 +266,10 @@ function saveImageToDefaultDir(kind, file) {
   });
 }
 
-// ---------- 启动时规范化会话（恢复异步轮询 / 标记中断） ----------
+// ---------- 启动时规范化会话（标记中断的请求 / 清理旧字段） ----------
+// 只有同步一种请求模式：应用退出时所有等待中的请求都随之中断，重启后一律标记为失败，
+// 由用户重新发送（老版本数据里可能带着异步 task_id，同样按中断处理 —— 异步模式已删除）。
 function normalizeConversationsOnStartup() {
-  pendingResumes = [];
   if (!conversations || !Array.isArray(conversations.conversations)) return;
   for (const conv of conversations.conversations) {
     // 重启后清空侧栏圆点（结果已在会话中可见）：旧数据里的 unread 布尔字段就地删除，
@@ -279,36 +279,16 @@ function normalizeConversationsOnStartup() {
     for (const msg of (conv.messages || [])) {
       if (msg.role !== 'assistant') continue;
       if (['pending', 'running', 'polling'].includes(msg.status)) {
-        const meta = msg.meta || {};
-        // 按消息里记录的模型 id 反查「系列 / 来源 / 密钥」，避免把密钥写进会话文件
-        const resolved = meta.modelId ? modelSeriesLib.resolveModel(settings, modelSeries, meta.modelId) : null;
-        if (meta.taskId && meta.mode === 'async' && resolved && resolved.apiKey && resolved.supportsAsync) {
-          msg.status = 'running';
-          // 恢复后的结果图仍要带着「本次请求的提示词 + 输入图文件名」落盘：从会话记录里取回
-          const req = conversationMeta.metaOfParent(conv, msg);
-          pendingResumes.push({
-            jobId: msg.id,
-            conversationId: conv.id,
-            messageId: msg.id,
-            protocol: resolved.protocol,
-            model: resolved.modelName,
-            apiKey: resolved.apiKey,
-            baseUrl: resolved.baseUrl,
-            taskId: meta.taskId,
-            timeoutSec: settings.requestTimeoutSec,
-            cacheDir: PATHS.cache,
-            prompt: req.prompt,
-            pics: req.pics
-          });
-        } else {
-          msg.status = 'error';
-          msg.error = { code: 'INTERRUPTED', message: '应用重启，该请求被中断，请重新发送。' };
-          msg.finishedAt = Date.now();
-        }
+        msg.status = 'error';
+        msg.error = { code: 'INTERRUPTED', message: '应用重启，该请求被中断，请重新发送。' };
+        msg.finishedAt = Date.now();
+        // 旧版本留下的异步任务字段一并清掉（异步模式已删除）
+        if (msg.taskId) msg.taskId = null;
+        if (msg.taskStatus) msg.taskStatus = null;
+        if (msg.meta && msg.meta.mode) delete msg.meta.mode;
       }
     }
   }
-  if (pendingResumes.length) log.info('发现需要恢复的异步任务', { count: pendingResumes.length });
 }
 
 // ---------- 窗口 ----------
@@ -368,7 +348,7 @@ function createWindow() {
 // ---------- 数据目录：在系统文件管理器中打开 ----------
 // 三处文件夹按钮共用这一组实现，只是目标目录不同：
 //   cache           —— 结果图缓存（左侧标签栏底部的文件夹按钮，可安全清空）
-//   downloads       —— 数据目录下的下载目录（对话区右上角「同步模式」右侧的文件夹按钮）
+//   downloads       —— 数据目录下的下载目录（对话区右上角的文件夹按钮）
 //                      开发模式即项目内 dev-data/downloads；打包后为 stabstab-data/downloads。
 //   systemDownloads —— 系统「下载」目录（右上角「下载」按钮）：Windows = %USERPROFILE%\Downloads；
 //                      Linux（Ubuntu 24.04）= XDG 下载目录，默认 ~/Downloads。
@@ -437,8 +417,7 @@ function registerIpc() {
         renameModelFile: PATHS.renameModel,
         migratedFrom: PATHS.migratedFrom,         // 本次启动前迁移过的旧数据目录（没有则 null）
         usedFallback: PATHS.usedFallback
-      },
-      resumeCount: pendingResumes.length
+      }
     };
   });
 
@@ -451,7 +430,7 @@ function registerIpc() {
         nativeTheme.themeSource = settings.theme === 'system' ? 'system' : (settings.theme === 'dark' ? 'dark' : 'light');
       }
       if (payload && payload.modelSeries) {
-        // 只允许改「隐藏哪些系列」「同步/异步开关」以及自定义系列，内置结构由 merge 保证不被破坏
+        // 只允许改「隐藏哪些系列」以及自定义系列，内置结构由 merge 保证不被破坏
         modelSeries = modelSeriesLib.save(PATHS.modelSeries, payload.modelSeries);
       }
       if (payload && payload.renameConfig) {
@@ -472,7 +451,8 @@ function registerIpc() {
   ipcMain.handle('protocols:list', () => ({ ok: true, protocols: registry.listProtocols() }));
 
   // ---- 生成请求 ----
-  // 渲染进程只传「模型 id」；协议 / 来源 / 密钥 / 同步异步在这里统一解析（主进程才是权威口径）
+  // 渲染进程只传「模型 id」；协议 / 来源 / 密钥 / 地址在这里统一解析（主进程才是权威口径）。
+  // 每个请求一个 jobId（= 助手消息 id）：同一对话可同时有多个请求在等待，互不影响。
   ipcMain.handle('api:generate', (_e, opts) => {
     const base = { conversationId: opts.conversationId, messageId: opts.messageId };
     const resolved = modelSeriesLib.resolveModel(settings, modelSeries, opts.modelId);
@@ -514,7 +494,6 @@ function registerIpc() {
       sourceId: resolved.sourceId,
       apiKey: resolved.apiKey,
       baseUrl: resolved.baseUrl,
-      mode: resolved.mode,
       timeoutSec: settings.requestTimeoutSec,
       cacheDir: PATHS.cache
     };
@@ -527,13 +506,6 @@ function registerIpc() {
   // 渲染进程只把「首条用户文字」传进来；密钥 / 地址 / 模型 id / 提示模板 / 温度 / Top-P 由主进程决定。
   // 永不抛异常：失败时回 {ok:false, code, message}，渲染进程回退到「截取首条文字」。
   ipcMain.handle('title:generate', (_e, text) => renameModel.generateTitle(settings, text, renameConfig));
-
-  ipcMain.handle('api:resume', () => {
-    const list = pendingResumes;
-    pendingResumes = [];
-    for (const r of list) runner.resume(r, sendEvent);
-    return { ok: true, resumed: list.length };
-  });
 
   // ---- 附件 ----
   ipcMain.handle('attachments:save', async (_e, att) => {
@@ -787,7 +759,7 @@ function registerIpc() {
   // 左侧标签栏底部的文件夹按钮：打开结果图缓存目录（可安全清空）
   ipcMain.handle('cache:open', () => openDataDir('cache'));
 
-  // 对话区右上角「同步模式」右侧的文件夹按钮：打开数据目录下的 downloads（dev-data/downloads）
+  // 对话区右上角的文件夹按钮：打开数据目录下的 downloads（dev-data/downloads）
   ipcMain.handle('downloads:open', () => openDataDir('downloads'));
 
   // 该文件夹按钮右侧的「下载」按钮：打开系统「下载」目录（Windows 下载 / Ubuntu ~/Downloads）

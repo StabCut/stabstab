@@ -3,8 +3,10 @@
 > 本文档面向 **AI 编程助手 / 后续开发者**，用于在既有代码基础上继续开发、调试、扩展与维护。
 > 阅读本文档前请先了解：这是一个 **Electron + React + Vite** 的 AI 图像生成工作台（文生图 / 图生图），
 > 交互参考 Cherry Studio，已接入 **模型系列（Model Series）** 架构：
-> **Qwen 图像系列**（DashScope 多模态，同步 + 异步）、**Doubao Seedream 系列**（官方火山方舟 / New API）、
+> **Qwen 图像系列**（DashScope 多模态）、**Doubao Seedream 系列**（官方火山方舟 / New API）、
 > **GPT Image 系列**（Grsai / NewApi）；每个系列可挂多个来源，来源与协议适配器一一绑定。
+> **请求模式只有「同步」一种**：提交后阻塞等待图片返回；同一个对话里可以同时等 2 个以上
+> 互不干扰的请求（「伪异步」，见 §4.12）。**同步/异步开关已彻底删除**，不要再加回来。
 
 ---
 
@@ -24,8 +26,9 @@ settings.json（用户数据：添加了哪些系列、系列里有哪些模型�
 ```
 
 - 内置系列**不可真正删除**：设置页的删除 = 置 `hidden: true` 并从 `modelGroups` 移除（密钥保留在 `sourceConfig`，可随时重新添加）。
-- **同步/异步只对声明 `requestMode.supported = true` 的系列生效**（当前仅 qwen）：开关值存在 `model-series.json` 的 `series[].requestMode.value`；其它系列一律同步（单次请求阻塞等待）。
-- 发请求时**由主进程按 `modelId` 反查**协议 / 来源 / 密钥 / 地址 / 模式（`electron/src/modelSeries.js#resolveModel`），渲染进程只传 `modelId`——渲染进程不持有权威凭据副本。
+- **请求模式只有同步**：`model-series.json` 里没有 `requestMode`，来源也没有 `supportsAsync`
+  （老版本数据里的这两个字段在 `modelSeries.mergeSeries` 里被丢弃）。所有系列一律「单次请求阻塞等待图片返回」。
+- 发请求时**由主进程按 `modelId` 反查**协议 / 来源 / 密钥 / 地址（`electron/src/modelSeries.js#resolveModel`），渲染进程只传 `modelId`——渲染进程不持有权威凭据副本。
 - 渲染进程侧的同一套解析在 `src/lib/models.js`（供下拉框、尺寸列表、参数面板、提示文案使用）。**改规则时两处都要改**。
 
 ---
@@ -178,12 +181,11 @@ for f in electron/src/*.js electron/src/api/*.js; do node --check "$f"; done
 
 | 方法 | IPC 通道 | 方向 | 说明 |
 |------|----------|------|------|
-| `bootstrap()` | `app:bootstrap` | invoke | 一次返回 settings/modelSeries/renameConfig/conversations/paths/platform/resumeCount |
+| `bootstrap()` | `app:bootstrap` | invoke | 一次返回 settings/modelSeries/renameConfig/conversations/paths/platform |
 | `saveState({settings,conversations,modelSeries,renameConfig})` | `state:save` | invoke | 防抖整包落盘（四份数据一起写） |
-| `listProtocols()` | `protocols:list` | invoke | 协议元信息：sizeOptions / paramSchema / supportsAsync… |
+| `listProtocols()` | `protocols:list` | invoke | 协议元信息：sizeOptions / paramSchema / supportsImageInput |
 | `generate(opts)` | `api:generate` | invoke | 发起生成（立即返回 jobId）；`opts.imageNames` = 输入图文件名（顺序同 images），见 §4.5 |
-| `cancelJob(jobId)` | `api:cancel` | invoke | 取消/停止等待 |
-| `resumeJobs()` | `api:resume` | invoke | 重启后恢复异步轮询 |
+| `cancelJob(jobId)` | `api:cancel` | invoke | 中止**这一个**请求的等待（同对话里的其它请求不受影响，见 §4.12） |
 | `onApiEvent(cb)` | `api:event` | on | 结果/状态事件流 |
 | `generateTitle(text)` | `title:generate` | invoke | 会话标签自动命名：把首条文字交给重命名模型，回 `{ok,name}` / `{ok:false,code,message}` |
 | `saveAttachment({name,mime,dataUrl})` | `attachments:save` | invoke | 保存用户输入图 → 返回 file 名（真实文件名由渲染进程随 `generate` 的 `imageNames` 上行） |
@@ -397,7 +399,8 @@ text           ← 文件名 + 提示词（纯文本框粘贴用；不含 pic �
   （符号按当前协议规范化），既不是候选也不是像素尺寸的遗留值才校正到该模型的第一个候选；
   参数按**当前模型**的 `paramSchema` 过滤（`buildParams`），于是 A 协议的 `n` / `watermark` 不会漏给 B 协议。
 - **兜底**：输入区还没写出任何设置（Composer 尚未发布，属极端时序）时，退回该消息记录里的模型与参数（= 旧行为）。
-- **同步 / 异步判断同源**：编辑气泡里 `busy` 的拦截用当前模型的 `mode`，与实际发请求的模型一致。
+- **等待中也能编辑重发**：同步等待不再锁输入区（见 §4.12），所以编辑气泡里没有 busy 拦截；
+  这条消息名下**正在等待的旧回复会先被 `cancelJob` 中止**（它们马上要被删掉，没必要白跑）。
 - **消息记录跟着改写**：`MSG_EDIT_PREPARE` 把用户消息的 `params` / `model` 更新为本次实际使用的值，
   所以会话里留下的永远是「实际发出去了什么」，不是「打算发什么」。
 - 回归脚本：`dev-data/qa/resend-target-test.js`（本地脚本，dev-data 已 gitignore，跑法见文件头）。
@@ -418,19 +421,21 @@ text           ← 文件名 + 提示词（纯文本框粘贴用；不含 pic �
    ├─ 是当前标签 → null（正看着的会话不打扰；点开标签 = 圆点被消费）
    ├─ isGenerating(state, conv) → 'running'    ← 黄点是**推导**出来的，不额外记「谁在跑」
    └─ conv.dot || null                         ← 终态点（绿/红）由事件写入并落盘
-isGenerating = busy[convId] 存在（同步等待标记）
-             ∨ 助手消息 status ∈ {pending, running}（异步任务 / 重启后恢复的轮询没有 busy）
+isGenerating = waitingJobs(state, convId) 非空（busy 里有任意 jobId）
+             ∨ 助手消息 status ∈ {pending, running}（兜底：事件与状态短暂不同步时）
 [App.jsx] dotActionForEvent(ev, activeId)      ← 事件 → 圆点动作的唯一实现
    · 只有 result（→success）/ error（→error）给点，且事件到达时会话不是当前标签
    · status（还在跑）、cancelled（用户主动停止）都不给点
 [reducer] CONV_ACTIVATE → 把该会话 dot 清空（消费）；CONV_DOT_SET → 写终态
 ```
 
-- **黄点为什么是推导的**：切换标签、异步后台轮询、重启后恢复的异步任务三条路径都不需要「谁在跑」的
-  额外账本 —— 只要还在生成就自然亮黄点；`busy` 只管同步模式，异步只看消息状态。
+- **黄点为什么是推导的**：切换标签、同一对话里的多个并行请求都不需要「谁在跑」的
+  额外账本 —— 只要还在生成就自然亮黄点；`busy[convId]` 里只要还有任意一个 jobId 就算生成中。
 - **消费语义**：点开标签即 `dot = null`（绿/红终态从此不再出现，切走再切回来也不复活）；
   黄点属于「当前状态」，切走时该黄还会再亮 —— 这是「还在等结果」的正确表达。
 - **优先级**：正在生成优先于上一次的终态 —— 同一标签又发了一条，圆点从绿/红回到黄。
+- **多个并行请求共用一个圆点**：一个对话等 2 个结果时也只是一个黄点；哪一个先落终态就按它给
+  绿/红点（后到的终态会覆盖前一个）—— 圆点表达的是「这个标签有没有需要你看的动静」。
 - **持久化**：`conversations[].dot` 只有 `null | 'success' | 'error'`（`'running'` 不落盘）；
   主进程启动时 `normalizeConversationsOnStartup` 把 `dot` 清空（结果已在会话里可见），
   并删除旧版本遗留的布尔字段 `unread`。
@@ -638,7 +643,8 @@ isGenerating = busy[convId] 存在（同步等待标记）
 
 `electron/assets/model-series.json` 随包发布（只读）；首次启动复制一份到 `<dataRoot>/model-series.json`（可写）。
 合并规则：**系列/来源的成员与协议以程序内置为准**；本地副本可覆盖文案与默认值（label / description / hint / baseUrl / sizeOptions / apiKeyUrl），
-并保存用户的 `hidden`（移除系列）与 `requestMode.value`（同步/异步）开关；本地副本里的非内置系列原样保留。
+并保存用户的 `hidden`（移除系列）；本地副本里的非内置系列原样保留。
+**老版本数据里的 `requestMode` 与 `sources[].supportsAsync` 会被 `mergeSeries` 丢弃**（同步/异步开关已删除）。
 
 ```jsonc
 {
@@ -652,16 +658,12 @@ isGenerating = busy[convId] 存在（同步等待标记）
       "hidden": false,                       // true = 已从设置列表移除（可重新添加）
       "protocol": "dashscope-multimodal",    // 系列默认协议（来源未指定时兜底）
       "modelPlaceholder": "例如：qwen-image-3.0-pro",
-      "requestMode": {                       // ★ 「高级设置」的同步/异步开关（只对 supported=true 的系列显示）
-        "supported": true, "default": "sync", "value": "sync"
-      },
       "sources": [
         {
           "id": "official",
           "label": "官方（DashScope / 阿里云百炼）",
           "protocol": "dashscope-multimodal", // 绑定 registry 里的适配器 id
           "baseUrl": "https://dashscope.aliyuncs.com/api/v1",  // 默认地址：设置页自动填充 / 恢复默认
-          "supportsAsync": true,
           "apiKeyUrl": "https://bailian.console.aliyun.com/",
           "hint": "……（设置页显示的协议要点）",
           "sizeOptions": ["auto", "2688*1536", "…"]
@@ -673,6 +675,7 @@ isGenerating = busy[convId] 存在（同步等待标记）
 ```
 
 内置的三个系列：`qwen`（官方 DashScope 一个来源）、`doubao-seedream`（官方 Ark / New API）、`gpt-image`（Grsai / New API）。
+三个系列都**只有同步**，配置里没有 `requestMode` / `supportsAsync` 这样的字段。
 
 ### 5.3 `rename-model.json`（重命名模型配置：标题提示模板 / 温度 / Top-P / 默认地址）
 
@@ -730,12 +733,12 @@ isGenerating = busy[convId] 存在（同步等待标记）
         { // 助手消息（parentId 指向配对用户消息）
           "id": "m_a", "role": "assistant", "parentId": "m_u",
           "status": "success",          // pending|running|success|error|cancelled
-          "taskStatus": null,           // 异步: PENDING|RUNNING|...
+          "taskStatus": null,           // 仅协议内部任务兜底（Grsai 只回任务 id）时才有值
           "images": [ { "file": "result_xxx.png", "width": 2048, "height": 2048, "url": "https://...", "bytes": 123 } ],
           "texts": [], "error": null, "usage": { "output_width": 2048, "output_height": 2048, "output_image_count": 1 },
           "requestId": null, "taskId": null, "finishedAt": 0, "durationMs": 1234,
           "meta": { "protocol": "dashscope-multimodal", "model": "qwen-image-3.0-pro",
-                    "modelId": "m_xxx", "seriesId": "qwen", "sourceId": "official", "mode": "sync" },
+                    "modelId": "m_xxx", "seriesId": "qwen", "sourceId": "official" },
           "createdAt": 0
         }
       ]
@@ -856,8 +859,11 @@ ss-export/
 9. **数据目录解析**：`paths.js` 是唯一入口；打包后**安装版必须落用户数据目录**（便携版才允许 exe 同级），
    绝不写安装目录 —— 覆盖安装时旧卸载器会 `RMDir /r $INSTDIR`，详见 §5.6 与不变量 25。
 10. **防抖落盘**：渲染进程是数据编辑主体，`store.jsx` 中 `state.settings/modelSeries/renameConfig/conversations` 变化后 400ms 防抖 `state:save`；`beforeunload` 立即 flush。
-11. **模型必须经由系列解析**：发请求时 `protocol/baseUrl/apiKey/mode` **只能**由 `modelSeries.resolveModel()` 得出（渲染进程的解析只服务界面）；`modelId` 是唯一的跨进程定位键。
-12. **同步/异步按系列**：只有 `series.requestMode.supported === true`（当前仅 qwen）才允许 `mode='async'`；其它系列即使本地 json 被改成 `async` 也会被强制回 `sync`。
+11. **模型必须经由系列解析**：发请求时 `protocol/baseUrl/apiKey` **只能**由 `modelSeries.resolveModel()` 得出（渲染进程的解析只服务界面）；`modelId` 是唯一的跨进程定位键。
+12. **没有同步/异步开关**：请求模式恒为「同步」；`model-series.json` / `resolveModel` / 适配器元信息里都**不得**再出现
+    `requestMode` / `supportsAsync` / `mode` 字段；DashScope 不得发送 `X-DashScope-Async`，也不得轮询 `/tasks/{id}`。
+    界面不得再显示任何「同步模式／异步模式」徽标或选项（见 §4.12）。唯一保留的 `kind:'task'` 是 Grsai 协议内部的
+    结果查询兜底（服务端只回任务 id 时），它不是可切换的模式，也不参与重启恢复。
 13. **钥匙不进会话**：`conversations.json` 只记 `meta.modelId/seriesId/sourceId`，绝不写入 API Key。
 14. **标签命名只认首条文字**：自动命名只在「会话里还没有带文字的用户消息」时触发一次；`nameAuto === false`（用户手动改过名）时永不覆盖，见 §4.4。
 15. **重命名模型走 Responses API**：`POST {baseUrl}/responses`（`input` + `instructions` + `reasoning.effort='none'` + `text.format=json_object`），**不是** chat/completions；默认地址 / 默认模型 / 提示模板 / 温度 / Top-P 一律来自 `rename-model.json`（主进程解析，渲染进程只传首条文字）。
@@ -926,20 +932,21 @@ module.exports = {
   label: '展示名',
   defaultBaseUrl: 'https://...',
   defaultModel: '模型默认名',
-  supportsAsync: true|false,     // 是否支持异步 Task API（还要系列声明 requestMode.supported 才会启用）
   supportsImageInput: true,      // 是否支持输入图（图生图）；false 时界面可据此提示
   modelPlaceholder: '例如：xxx',  // 模型 id 输入框的灰色提示
   sizeOptions: ['auto', '2688*1536', ...],   // 前端 size 下拉的兜底候选（来源 json 里的 sizeOptions 优先）
   paramSchema: { n: {...}, negative_prompt: {...}, ... }, // 前端参数面板元信息（决定发什么参数）
   buildSubmitRequest(ctx) -> {url, method, headers, body},
-  parseSubmit(json, httpStatus, mode) -> {kind:'result',images,texts,usage,requestId} | {kind:'task',taskId,taskStatus} | {kind:'error',error:{code,message,requestId}},
-  buildTaskQuery(ctx) -> {url, method, headers},            // 仅异步协议需要
+  parseSubmit(json, httpStatus) -> {kind:'result',images,texts,usage,requestId} | {kind:'task',taskId,taskStatus} | {kind:'error',error:{code,message,requestId}},
+  // ↓ 可选：只有「服务端没法一次返回结果、必须先给任务 id」的协议才需要（目前只有 Grsai）。
+  //   这不是可切换的「异步模式」，只是该协议自己的取结果方式。
+  buildTaskQuery(ctx) -> {url, method, headers},
   parseTask(json, httpStatus) -> {status:'SUCCEEDED'|'FAILED'|'RUNNING'|'PENDING'|'UNKNOWN'|'CANCELED', images?, texts?, usage?, error?},
-  buildTaskCancel(ctx) -> {url, method, headers} | null      // 仅异步协议需要；返回 null = 无服务端取消接口
+  buildTaskCancel(ctx) -> {url, method, headers} | null      // 返回 null = 无服务端取消接口
 };
 ```
 
-`ctx` 结构：`{apiKey, baseUrl, model, prompt, images:[dataUrl], params, mode, taskId?}`。
+`ctx` 结构：`{apiKey, baseUrl, model, prompt, images:[dataUrl], params, taskId?}`（**没有 `mode`**）。
 
 `paramSchema` 字段类型（`Composer.jsx#ParamsPanel` 按类型渲染，`lib/send.js#buildParams` 按 schema 过滤参数）：
 
@@ -959,16 +966,17 @@ module.exports = {
 4. （可选）把未实现的协议放入 `reserved` 数组，会显示为「预留/禁用」。
 5. 跑 `npm run test:api`，在 `scripts/test-api.js` 里补一个 mock 端点 + 场景。
 
-`runner.js` 的 `start/resume/cancel/pollTask/deliverResult` 是**协议无关**的，新增协议无需改动执行器。
+`runner.js` 的 `start/cancel/cancelAll/deliverResult/pollTask` 是**协议无关**的，新增协议无需改动执行器
+（`pollTask` 只在适配器返回 `kind:'task'` 时被用到）。
 
 ### 7.1 四个内置协议要点（对接新来源时照抄这份对照表）
 
-| 系列 · 来源 | 适配器 id | 端点 | 模式 | 请求要点 | 结果解析 |
-|-------------|-----------|------|------|----------|----------|
-| Qwen · 官方 | `dashscope-multimodal` | `POST {base}/services/aigc/multimodal-generation/generation` | 同步 + 异步（`X-DashScope-Async: enable`） | `input.messages[].content=[{image},{text}]`，参数 n/negative_prompt/watermark/prompt_extend/seed/size | `output.choices[].message.content[].image`（旧版 `output.results[].url`） |
-| Doubao Seedream · 官方（火山方舟 Ark） | `seedream-official` | `POST {base}/images/generations`（base 默认 `https://ark.cn-beijing.volces.com/api/v3`） | 仅同步 | `{model,prompt,size,image,response_format:'url',watermark?,output_format?}`；`image` 单图=字符串、多图=数组；Ark 文档要求**不要传不支持的字段**，因此可选参数只在用户显式选择后才发送 | `data[].url`（或 `b64_json`），`usage.generated_images` 归一化为 `output_image_count` |
-| Seedream / GPT Image · New API | `newapi-images` | `POST {base}/images/generations`（base 形如 `https://host/v1`） | 仅同步 | `{model,prompt,size,n,quality?,style?,response_format:'url',image?}`；令牌页面生成 Bearer | `data[].url \| data[].b64_json`（两者都会落盘） |
-| GPT Image · Grsai | `grsai-image` | `POST {base}`（完整地址 `…/v1/api/generate`） | 仅同步（若服务端只回任务 id，自动退化为 `POST {host}/v1/draw/result {id}` 轮询） | `{model,prompt,images?,aspectRatio?}`；`aspectRatio` 支持 `16:9` 这类比例或 `1024x1024` 像素值；`images` 为 dataUrl / URL 数组 | SSE `data:` 行里的 `results[].url`，或 JSON `{code:0,data:{results:[{url}]}}` |
+| 系列 · 来源 | 适配器 id | 端点 | 请求要点 | 结果解析 |
+|-------------|-----------|------|----------|----------|
+| Qwen · 官方 | `dashscope-multimodal` | `POST {base}/services/aigc/multimodal-generation/generation` | `input.messages[].content=[{image},{text}]`，参数 n/negative_prompt/watermark/prompt_extend/seed/size；**纯同步，不发任何异步请求头** | `output.choices[].message.content[].image`（旧版 `output.results[].url`） |
+| Doubao Seedream · 官方（火山方舟 Ark） | `seedream-official` | `POST {base}/images/generations`（base 默认 `https://ark.cn-beijing.volces.com/api/v3`） | `{model,prompt,size,image,response_format:'url',watermark?,output_format?}`；`image` 单图=字符串、多图=数组；Ark 文档要求**不要传不支持的字段**，因此可选参数只在用户显式选择后才发送 | `data[].url`（或 `b64_json`），`usage.generated_images` 归一化为 `output_image_count` |
+| Seedream / GPT Image · New API | `newapi-images` | `POST {base}/images/generations`（base 形如 `https://host/v1`） | `{model,prompt,size,n,quality?,style?,response_format:'url',image?}`；令牌页面生成 Bearer | `data[].url \| data[].b64_json`（两者都会落盘） |
+| GPT Image · Grsai | `grsai-image` | `POST {base}`（完整地址 `…/v1/api/generate`） | `{model,prompt,images?,aspectRatio?}`；`aspectRatio` 支持 `16:9` 这类比例或 `1024x1024` 像素值；`images` 为 dataUrl / URL 数组 | SSE `data:` 行里的 `results[].url`，或 JSON `{code:0,data:{results:[{url}]}}`；**若服务端只回任务 id**，协议内部按 `POST {host}/v1/draw/result {id}` 取回结果（不是可切换的异步模式） |
 
 > 文档来源：工作区 `seedream系列api.md`、`gpt-image系列.md`、`api-url.txt` 与千问平台静态 HTML。
 > 注意 `seedream系列api.md` 里的「官方版本 api 示例」给的是 `/api/v3/responses`（文本对话示例），**生图实际用 `/api/v3/images/generations`**。
@@ -1153,7 +1161,7 @@ node dev-data/qa/meta-decode-check.js   # 元数据写入后仍可被真实解�
 
 - API Key 只存于本机 `settings.json`（图片模型在 `sourceConfig['<系列>.<来源>']`，重命名模型在 `renameModel.apiKey`），
   日志**不打印** Key，也不打印完整 base64（只记字节数）；重命名请求的日志只记模型 / 字数 / 耗时 / 生成的标题。
-- `runner` 日志会记录模型名、协议、模式、图片数量、size、耗时、错误码/信息，便于排查但脱敏。
+- `runner` 日志会记录模型名、协议、图片数量、size、耗时、错误码/信息，便于排查但脱敏。
 - 提交代码时不要把 `dev-data/`、`stabstab-data/`、`release/`、`node_modules/` 纳入版本控制（已在 `.gitignore`）。
 - **不要**把任何 Personal Access Token / API Key 提交进仓库或写入脚本。
 

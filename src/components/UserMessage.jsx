@@ -35,10 +35,7 @@ export default function UserMessage({ conv, msg }) {
       sizeOverride
     })
     : null;
-  const mode = (target && target.model) ? target.model.mode : 'sync';
   const modelChanged = !!(target && target.model && msg.model && target.model.id !== msg.model.id);
-
-  const busy = state.busy[conv.id];
 
   const openLightbox = (index) => {
     const images = (msg.images || [])
@@ -59,7 +56,6 @@ export default function UserMessage({ conv, msg }) {
 
   const confirmEdit = async () => {
     if (!draftText.trim() && kept.length === 0) { toast('内容不能为空', 'warn'); return; }
-    if (busy && mode === 'sync') { toast('当前对话正在等待 API 返回，请稍候', 'warn'); return; }
     // 点「确定并重新发送」这一刻再取一次输入区设置：气泡打开期间改了下方的模型 / 尺寸也要用最新的
     const finalTarget = resolveResendTarget({
       settings: state.settings,

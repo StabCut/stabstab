@@ -75,7 +75,6 @@ module.exports = {
   label: 'Doubao Seedream 官方（火山方舟 Ark）',
   defaultBaseUrl: DEFAULT_BASE_URL,
   defaultModel: 'doubao-seedream-4-0-250828',
-  supportsAsync: false,
   supportsImageInput: true,
   modelPlaceholder: '例如：doubao-seedream-4-0-250828',
   sizeOptions: ['auto', '1K', '2K', '4K', '1024x1024', '2048x2048', '1536x1024', '1024x1536', '1280x720', '720x1280'],

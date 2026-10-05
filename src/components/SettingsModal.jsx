@@ -288,13 +288,10 @@ export default function SettingsModal({ initialTab = 'model' }) {
       defaultModel: cleaned.defaultModelId,
       renameModel: `${cleaned.renameModel.modelId || '（默认）'}@${cleaned.renameModel.baseUrl || '（默认地址）'}`,
       renameModelConfigured: !!cleaned.renameModel.apiKey,
-      renameLlm: `temperature=${renameTemp},topP=${renameTopP}`,
-      requestModes: draftSeries.series.filter((s) => s.requestMode && s.requestMode.supported).map((s) => `${s.id}=${s.requestMode.value}`).join(',')
+      renameLlm: `temperature=${renameTemp},topP=${renameTopP}`
     });
     close();
   };
-
-  const modeSeries = seriesList.filter((s) => s.requestMode && s.requestMode.supported);
 
   return (
     <div className="modal-mask" onClick={(e) => { if (e.target === e.currentTarget) close(); }}>
@@ -333,7 +330,6 @@ export default function SettingsModal({ initialTab = 'model' }) {
                           <div className="series-title">{s.label}</div>
                           <div className="series-sub">
                             可用 API 来源：{(s.sources || []).map((x) => x.label).join(' / ')}
-                            {s.requestMode && s.requestMode.supported ? `　·　支持同步/异步（当前：${s.requestMode.value === 'async' ? '异步' : '同步'}）` : '　·　仅同步模式'}
                           </div>
                         </div>
                         <button className="icon-btn" title="移除该模型系列（可随时重新添加）" onClick={() => removeSeries(s.id)}>
@@ -626,7 +622,10 @@ export default function SettingsModal({ initialTab = 'model' }) {
                     value={draft.requestTimeoutSec}
                     onChange={(e) => set({ requestTimeoutSec: e.target.value })}
                   />
-                  <p className="field-hint">默认 300 秒（5 分钟）。同步等待与异步轮询均受此约束；超时后输入框恢复可用。</p>
+                  <p className="field-hint">
+                    默认 300 秒（5 分钟）。每个请求各自计时：等待超过该时长就中止并显示失败。
+                    等待期间不影响继续发送 —— 同一个对话可以同时等多个请求，各自独立（见下方说明）。
+                  </p>
                 </div>
 
                 <div className="field">

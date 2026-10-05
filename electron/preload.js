@@ -14,9 +14,9 @@ contextBridge.exposeInMainWorld('stab', {
   listProtocols: () => ipcRenderer.invoke('protocols:list'),
 
   // ---- 生成请求 ----
+  // 每个请求独立：generate 立即返回，结果经 onApiEvent 推送；cancelJob 只中止指定的那一个。
   generate: (opts) => ipcRenderer.invoke('api:generate', opts),
   cancelJob: (jobId) => ipcRenderer.invoke('api:cancel', jobId),
-  resumeJobs: () => ipcRenderer.invoke('api:resume'),
   onApiEvent: (cb) => {
     const handler = (_e, data) => cb(data);
     ipcRenderer.on('api:event', handler);

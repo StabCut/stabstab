@@ -17,6 +17,7 @@ function Shell() {
       const convId = ev.conversationId;
       const msgId = ev.messageId;
       if (ev.type === 'status') {
+        // 只可能来自协议内部的任务兜底（Grsai 某些节点只回任务 id）；不是可切换的「异步模式」
         dispatch({
           type: 'MSG_UPDATE', convId, msgId,
           patch: { status: 'running', taskStatus: ev.status, taskId: ev.taskId }
@@ -65,12 +66,8 @@ function Shell() {
         const prot = await window.stab.listProtocols();
         dispatch({ type: 'SET_PROTOCOLS', protocols: prot.protocols || [] });
         window.stab.log('info', '渲染进程启动完成', {
-          conversations: (boot.conversations && boot.conversations.conversations || []).length,
-          resumeCount: boot.resumeCount
+          conversations: (boot.conversations && boot.conversations.conversations || []).length
         });
-        if (boot.resumeCount > 0) {
-          window.stab.resumeJobs();
-        }
       } catch (e) {
         console.error('bootstrap failed', e);
       }

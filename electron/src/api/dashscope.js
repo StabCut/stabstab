@@ -5,19 +5,16 @@
  * 规则来源（工作区文档）：
  *  - 同步：POST {baseUrl}/services/aigc/multimodal-generation/generation
  *      body: { model, input:{messages:[{role:'user',content:[{image:...},{text:...}]}]}, parameters:{...} }
- *      响应: output.choices[0].message.content[] -> [{image: url}]
- *  - 异步：同一端点 + 请求头 X-DashScope-Async: enable -> 返回 output.task_id
- *      轮询: GET {baseUrl}/tasks/{task_id}
- *      取消: POST {baseUrl}/tasks/{task_id}/cancel （仅 PENDING 可取消）
+ *      响应: output.choices[0].message.content[] -> [{image: url}]（旧版 output.results[].url）
  *  - 图片输入：公开 URL 或 data:<mime>;base64,<data>，最多 3 张。
+ *  - **没有异步模式**：不发送 X-DashScope-Async 请求头、不轮询 /tasks/{id}、没有取消接口。
+ *    一次请求阻塞等待图片返回（见 AIDEV.md §4.12）。
  *
  * 适配器接口（新增其它协议时照此实现并在 registry 注册）：
- *   id / label / defaultBaseUrl / defaultModel / sizeOptions / supportsAsync
+ *   id / label / defaultBaseUrl / defaultModel / sizeOptions
  *   buildSubmitRequest(ctx) -> {url, method, headers, body}
- *   parseSubmit(json, httpStatus, mode) -> {kind:'result',...} | {kind:'task',...}
- *   buildTaskQuery(ctx) -> {url, method, headers}
- *   parseTask(json, httpStatus) -> {status:'SUCCEEDED'|'FAILED'|'RUNNING', ...}
- *   buildTaskCancel(ctx) -> {url, method, headers}
+ *   parseSubmit(json, httpStatus) -> {kind:'result',...} | {kind:'error',...}
+ *   （可选，仅当服务端只能给任务 id 时）buildTaskQuery / parseTask / buildTaskCancel
  */
 
 const DEFAULT_BASE_URL = 'https://dashscope.aliyuncs.com/api/v1';
@@ -64,7 +61,6 @@ function buildSubmitRequest(ctx) {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${ctx.apiKey || ''}`
   };
-  if (ctx.mode === 'async') headers['X-DashScope-Async'] = 'enable';
   return {
     url: `${normBase(ctx.baseUrl)}${GEN_PATH}`,
     method: 'POST',
@@ -73,7 +69,7 @@ function buildSubmitRequest(ctx) {
   };
 }
 
-/** 从同步成功响应或任务成功结果中提取图片 URL 列表 */
+/** 从成功响应中提取图片 URL 列表 */
 function extractResult(output, usage) {
   const images = [];
   // 新版结构：output.choices[].message.content[].image
@@ -110,7 +106,7 @@ function extractResult(output, usage) {
   return { images, texts, usage: usage || null };
 }
 
-function parseSubmit(json, httpStatus, mode, requestId) {
+function parseSubmit(json, httpStatus) {
   // 服务端错误：非 2xx 或带 code
   if (httpStatus < 200 || httpStatus >= 300 || (json && json.code)) {
     return {
@@ -118,73 +114,17 @@ function parseSubmit(json, httpStatus, mode, requestId) {
       error: {
         code: (json && json.code) || `HTTP_${httpStatus}`,
         message: (json && json.message) || `HTTP ${httpStatus}`,
-        requestId: (json && json.request_id) || requestId || null
+        requestId: (json && json.request_id) || null
       }
     };
   }
-  const output = json.output || {};
-  if (mode === 'async' || output.task_id) {
-    return {
-      kind: 'task',
-      taskId: output.task_id,
-      taskStatus: output.task_status || 'PENDING',
-      requestId: json.request_id || requestId || null
-    };
-  }
-  const { images, texts, usage } = extractResult(output, json.usage);
+  const { images, texts, usage } = extractResult(json.output || {}, json.usage);
   return {
     kind: 'result',
     images,
     texts,
     usage,
-    requestId: json.request_id || requestId || null
-  };
-}
-
-function buildTaskQuery(ctx) {
-  return {
-    url: `${normBase(ctx.baseUrl)}/tasks/${encodeURIComponent(ctx.taskId)}`,
-    method: 'GET',
-    headers: { Authorization: `Bearer ${ctx.apiKey || ''}` }
-  };
-}
-
-function parseTask(json, httpStatus) {
-  const output = (json && json.output) || {};
-  const status = output.task_status || 'UNKNOWN';
-  if (httpStatus < 200 || httpStatus >= 300) {
-    return {
-      status: 'FAILED',
-      error: {
-        code: (json && json.code) || `HTTP_${httpStatus}`,
-        message: (json && json.message) || `任务查询失败 (HTTP ${httpStatus})`,
-        requestId: json && json.request_id
-      }
-    };
-  }
-  if (status === 'SUCCEEDED') {
-    const { images, texts, usage } = extractResult(output, json.usage);
-    return { status, images, texts, usage, requestId: json.request_id };
-  }
-  if (status === 'FAILED' || status === 'UNKNOWN' || status === 'CANCELED') {
-    return {
-      status,
-      error: {
-        code: output.code || status,
-        message: output.message || `任务${status === 'CANCELED' ? '已取消' : '失败'}`,
-        requestId: json.request_id
-      }
-    };
-  }
-  // PENDING / RUNNING
-  return { status };
-}
-
-function buildTaskCancel(ctx) {
-  return {
-    url: `${normBase(ctx.baseUrl)}/tasks/${encodeURIComponent(ctx.taskId)}/cancel`,
-    method: 'POST',
-    headers: { Authorization: `Bearer ${ctx.apiKey || ''}` }
+    requestId: json.request_id || null
   };
 }
 
@@ -193,7 +133,6 @@ module.exports = {
   label: 'DashScope 多模态生成（千问图像）',
   defaultBaseUrl: DEFAULT_BASE_URL,
   defaultModel: 'qwen-image-3.0-pro',
-  supportsAsync: true,
   // 需求给定的 size 列表（+ 自动）
   sizeOptions: ['auto', '2688*1536', '2368*1728', '2048*2048', '1728*2368', '1536*2688'],
   paramSchema: {
@@ -204,8 +143,5 @@ module.exports = {
     seed: { type: 'int', min: 0, max: 2147483647, default: null, label: '随机种子' }
   },
   buildSubmitRequest,
-  parseSubmit,
-  buildTaskQuery,
-  parseTask,
-  buildTaskCancel
+  parseSubmit
 };

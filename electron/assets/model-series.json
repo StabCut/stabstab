@@ -6,28 +6,26 @@
     "series[].sources[]  —— 该系列支持的 API 来源（设置页下拉框的可选项，与协议适配器一一绑定）",
     "sources[].baseUrl   —— 该来源的默认 API 地址：设置页自动填充 / 「恢复默认」用",
     "sources[].sizeOptions —— 该来源可选的输出尺寸/比例（设置页与输入区共用）",
-    "series[].requestMode —— 同步/异步开关：supported=true 时「高级设置」才显示该系列的同步/异步选项（当前仅 qwen 系列）",
-    "hidden               —— true = 用户已从「模型设置」列表移除（可随时重新添加）"
+    "hidden               —— true = 用户已从「模型设置」列表移除（可随时重新添加）",
+    "请求模式：全部系列一律「同步」——单次请求阻塞等待图片返回；没有同步/异步开关（见 AIDEV.md §4.12）"
   ],
   "series": [
     {
       "id": "qwen",
       "label": "Qwen 图像系列",
-      "description": "千问图像系列（qwen-image-3.0-pro 等）。协议沿用当前项目实现：DashScope 多模态生成，支持同步与异步（Task API）。",
+      "description": "千问图像系列（qwen-image-3.0-pro 等）。协议沿用当前项目实现：DashScope 多模态生成（同步，单次请求阻塞等待图片返回）。",
       "builtin": true,
       "hidden": false,
       "protocol": "dashscope-multimodal",
       "modelPlaceholder": "例如：qwen-image-3.0-pro",
-      "requestMode": { "supported": true, "default": "sync", "value": "sync" },
       "sources": [
         {
           "id": "official",
           "label": "官方（DashScope / 阿里云百炼）",
           "protocol": "dashscope-multimodal",
           "baseUrl": "https://dashscope.aliyuncs.com/api/v1",
-          "supportsAsync": true,
           "apiKeyUrl": "https://bailian.console.aliyun.com/",
-          "hint": "同步：POST /services/aigc/multimodal-generation/generation；异步：加请求头 X-DashScope-Async: enable 后轮询 /tasks/{id}。尺寸形如 2688*1536，最多 3 张输入图。",
+          "hint": "同步：POST /services/aigc/multimodal-generation/generation，Authorization: Bearer <DASHSCOPE_API_KEY>。尺寸形如 2688*1536，最多 3 张输入图。",
           "sizeOptions": ["auto", "2688*1536", "2368*1728", "2048*2048", "1728*2368", "1536*2688"]
         }
       ]
@@ -35,19 +33,17 @@
     {
       "id": "doubao-seedream",
       "label": "Doubao Seedream 系列",
-      "description": "豆包 Seedream 生图系列（doubao-seedream-* 具体模型 id 由用户填写）。仅同步模式：单次请求阻塞等待图片返回。",
+      "description": "豆包 Seedream 生图系列（doubao-seedream-* 具体模型 id 由用户填写）。同步模式：单次请求阻塞等待图片返回。",
       "builtin": true,
       "hidden": false,
       "protocol": "seedream-official",
       "modelPlaceholder": "例如：doubao-seedream-4-0-250828",
-      "requestMode": { "supported": false, "default": "sync", "value": "sync" },
       "sources": [
         {
           "id": "official",
           "label": "官方（火山方舟 Ark）",
           "protocol": "seedream-official",
           "baseUrl": "https://ark.cn-beijing.volces.com/api/v3",
-          "supportsAsync": false,
           "apiKeyUrl": "https://ark.volcengine.com/region:cn-beijing/apikey",
           "hint": "同步：POST {baseUrl}/images/generations，Authorization: Bearer <ARK_API_KEY>；size 可用 1K/2K/4K 或 2048x2048 这类像素值；有输入图时用 image 字段（URL 或 data:base64）。",
           "sizeOptions": ["auto", "1K", "2K", "4K", "1024x1024", "2048x2048", "1536x1024", "1024x1536", "1280x720", "720x1280"]
@@ -57,7 +53,6 @@
           "label": "New API",
           "protocol": "newapi-images",
           "baseUrl": "https://toprouter.sealoshzh.site/v1",
-          "supportsAsync": false,
           "hint": "同步：OpenAI 兼容 POST {baseUrl}/images/generations，body {model,prompt,size,n,response_format}；Bearer 令牌在「令牌」页面生成。",
           "sizeOptions": ["auto", "1024x1024", "1536x1024", "1024x1536", "2048x2048", "1792x1024", "1024x1792"]
         }
@@ -66,21 +61,19 @@
     {
       "id": "gpt-image",
       "label": "GPT Image 系列（gpt-image-2 / 2.5 …）",
-      "description": "GPT Image 生图系列（gpt-image-2、gpt-image-2-vip、gpt-image-2.5 等，模型 id 由用户填写）。仅同步模式。",
+      "description": "GPT Image 生图系列（gpt-image-2、gpt-image-2-vip、gpt-image-2.5 等，模型 id 由用户填写）。同步模式。",
       "builtin": true,
       "hidden": false,
       "protocol": "newapi-images",
       "modelPlaceholder": "例如：gpt-image-2 / gpt-image-2.5",
-      "requestMode": { "supported": false, "default": "sync", "value": "sync" },
       "sources": [
         {
           "id": "grsai",
           "label": "Grsai",
           "protocol": "grsai-image",
           "baseUrl": "https://grsaiapi.com/v1/api/generate",
-          "supportsAsync": false,
           "apiKeyUrl": "https://grsai.ai/zh/dashboard/api-keys",
-          "hint": "同步：POST {baseUrl}（全球节点 grsai.com／国内节点 grsai.dakka.com.cn），body {model,prompt,images,aspectRatio}；aspectRatio 支持 16:9 这类比例或 1024x1024 像素值。",
+          "hint": "同步：POST {baseUrl}（全球节点 grsai.com／国内节点 grsai.dakka.com.cn），body {model,prompt,images,aspectRatio}；aspectRatio 支持 16:9 这类比例或 1024x1024 像素值。服务端只回任务 id 时，协议内部自动查询结果（不是可切换的请求模式）。",
           "sizeOptions": ["auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9", "1024x1024", "2048x2048"]
         },
         {
@@ -88,7 +81,6 @@
           "label": "New API",
           "protocol": "newapi-images",
           "baseUrl": "https://toprouter.sealoshzh.site/v1",
-          "supportsAsync": false,
           "hint": "同步：OpenAI 兼容 POST {baseUrl}/images/generations；size 默认 1024x1024，quality 默认 standard，响应 data[].url（或 b64_json）。",
           "sizeOptions": ["auto", "1024x1024", "1536x1024", "1024x1536", "2048x2048", "1792x1024", "1024x1792"]
         }

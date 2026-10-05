@@ -5,13 +5,13 @@
  * 两个来源：
  *   1) 程序内置（只读）：electron/assets/model-series.json —— 随包发布，定义「有哪些系列、每个系列支持哪些 API 来源、各来源默认地址/尺寸」。
  *   2) 数据目录副本（唯一可写）：<dataRoot>/model-series.json —— 首次启动自动落地；保存用户的开关
- *      （series[].hidden 隐藏系列、series[].requestMode.value 同步/异步选择）以及用户自己在 json 里追加的自定义系列。
+ *      （series[].hidden 隐藏系列）以及用户自己在 json 里追加的自定义系列。
  *
  * 合并策略（升级安全）：
  *   - 系列/来源的「成员」与「协议」永远以程序内置为准（内置协议才能被适配器执行）；
  *   - 文案与默认值（label/description/modelPlaceholder/hint/baseUrl/sizeOptions/apiKeyUrl）本地副本可覆盖；
  *   - 本地副本里非内置 id 的系列原样保留（builtin:false）；
- *   - requestMode.supported=false 的系列强制 value='sync'（当前只有 qwen 系列支持异步）。
+ *   - 只有「同步」一种请求模式：老版本数据里的 requestMode / supportsAsync 一律丢弃（见 AIDEV.md §4.12）。
  */
 const fs = require('fs');
 const path = require('path');
@@ -49,10 +49,6 @@ function mergeSeries(seed, cur) {
     for (const k of SERIES_OVERRIDABLE) {
       if (cur[k] !== undefined) out[k] = clone(cur[k]);
     }
-    const rm = (cur.requestMode && typeof cur.requestMode === 'object') ? cur.requestMode : {};
-    if (rm.value === 'async' || rm.value === 'sync') {
-      out.requestMode = { ...(out.requestMode || {}), value: rm.value };
-    }
     // 来源：内置来源为主，本地来源补充覆盖；本地额外新增的来源保留
     const curSources = Array.isArray(cur.sources) ? cur.sources.filter((s) => s && s.id && s.protocol) : [];
     const byId = new Map(curSources.map((s) => [s.id, s]));
@@ -72,13 +68,11 @@ function mergeSeries(seed, cur) {
     out.sources = merged;
   }
   out.builtin = true;
-  const rm = out.requestMode || {};
-  const supported = !!rm.supported;
-  out.requestMode = {
-    supported,
-    default: rm.default === 'async' ? 'async' : 'sync',
-    value: (supported && rm.value === 'async') ? 'async' : 'sync'
-  };
+  // 老版本数据可能带 requestMode / supportsAsync：一律丢弃，只有同步一种请求模式
+  delete out.requestMode;
+  if (Array.isArray(out.sources)) {
+    for (const s of out.sources) delete s.supportsAsync;
+  }
   if (!Array.isArray(out.sources) || !out.sources.length) {
     out.sources = [{ id: 'default', label: '默认来源', protocol: out.protocol, baseUrl: out.defaultBaseUrl || '' }];
   }
@@ -131,7 +125,7 @@ function save(file, data) {
   return merged;
 }
 
-/** 兼容渲染进程提交的简写：只带 hidden / requestMode 的补丁 */
+/** 兼容渲染进程提交的简写：只带 hidden 的补丁 */
 function applyPatch(file, patch) {
   const cur = readJson(file) || { series: [] };
   const series = Array.isArray(cur.series) ? cur.series : [];
@@ -139,9 +133,7 @@ function applyPatch(file, patch) {
     const item = series.find((s) => s && s.id === p.id);
     if (item) {
       if (p.hidden !== undefined) item.hidden = !!p.hidden;
-      if (p.requestMode && (p.requestMode.value === 'sync' || p.requestMode.value === 'async')) {
-        item.requestMode = { ...(item.requestMode || {}), value: p.requestMode.value };
-      }
+      delete item.requestMode;
     }
   }
   return save(file, { ...cur, series });
@@ -172,7 +164,8 @@ function sourceConfigOf(settings, seriesId, sourceId) {
 
 /**
  * 由模型 id 解析出「真正用于发请求」的全部信息。
- * @returns {{group,model,series,source,seriesId,sourceId,protocol,apiKey,baseUrl,supportsAsync,mode,hidden}|null}
+ * 只有同步一种请求模式，因此没有 mode 字段（见 AIDEV.md §4.12）。
+ * @returns {{group,model,series,seriesId,sourceId,source,protocol,apiKey,baseUrl,hidden,modelName}|null}
  */
 function resolveModel(settings, config, modelId) {
   const groups = (settings && Array.isArray(settings.modelGroups)) ? settings.modelGroups : [];
@@ -188,9 +181,6 @@ function resolveModel(settings, config, modelId) {
   const source = findSource(series, model.sourceId);
   const sc = sourceConfigOf(settings, group.seriesId, source ? source.id : '');
   const protocol = (source && source.protocol) || (series && series.protocol) || null;
-  const rm = (series && series.requestMode) || {};
-  const supportsAsync = !!(rm.supported && source && source.supportsAsync);
-  const mode = (supportsAsync && rm.value === 'async') ? 'async' : 'sync';
   return {
     group, model, series,
     seriesId: group.seriesId,
@@ -199,8 +189,6 @@ function resolveModel(settings, config, modelId) {
     protocol,
     baseUrl: (sc.baseUrl && sc.baseUrl.trim()) || (source && source.baseUrl) || '',
     apiKey: sc.apiKey || '',
-    supportsAsync,
-    mode,
     hidden: !!(series && series.hidden),
     modelName: model.name
   };

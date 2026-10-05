@@ -2,10 +2,13 @@
  * 发送与重发的公共逻辑。
  * 同一个对话不携带上下文：每次请求只包含当前这一条输入（上下文长度为 0）。
  *
- * 重发不是「照原样再发一次」：模型 / 尺寸 / 参数取**输入区当前设置**（resolveResendTarget），
- * 用户在下方把模型换成 B、改了分辨率，编辑重发就用 B 与当前分辨率（见 AIDEV.md §4.7）。
+ * 请求模式只有「同步」一种（见 AIDEV.md §4.12）：提交后阻塞等待返回。但**同一个对话里可以
+ * 同时等好几个请求** —— 每次发送各占一个 jobId（= 助手消息 id），互不阻塞、互不影响。
  *
- * 模型相关：渲染进程只把「模型 id」交给主进程，协议 / 来源 / 密钥 / 同步异步
+ * 重发不是「照原样再发一次」：模型 / 尺寸 / 参数取**输入区当前设置**（resolveResendTarget），
+ * 用户在下方把模型换成 B、改了分辨率，编辑重发 / 气泡重发就用 B 与当前分辨率（见 AIDEV.md §4.7）。
+ *
+ * 模型相关：渲染进程只把「模型 id」交给主进程，协议 / 来源 / 密钥
  *          一律由主进程按当前设置解析（见 electron/src/modelSeries.js#resolveModel）。
  *          这里解析出来的信息只用于界面展示与消息记录（meta）。
  */
@@ -70,8 +73,8 @@ function makeAssistantPlaceholder({ parentId, resolved }) {
     id: uid('m'),
     role: 'assistant',
     parentId,
-    status: 'pending',           // pending -> running -> success/error/cancelled
-    taskStatus: resolved.mode === 'async' ? 'PENDING' : null,
+    status: 'pending',           // pending -> success/error/cancelled
+    taskStatus: null,            // 仅在协议内部任务兜底（Grsai 只回任务 id）时才有值
     images: [],
     texts: [],
     error: null,
@@ -81,8 +84,7 @@ function makeAssistantPlaceholder({ parentId, resolved }) {
       model: resolved.name,
       modelId: resolved.id,
       seriesId: resolved.seriesId,
-      sourceId: resolved.sourceId,
-      mode: resolved.mode
+      sourceId: resolved.sourceId
     }
   };
 }
@@ -123,7 +125,6 @@ function imageNamesOf(items) {
 export async function sendNew({ dispatch, state, conv, text, attachments, params, modelId, log }) {
   const settings = state.settings;
   const resolved = pickModel(settings, state.modelSeries, state.protocols, modelId);
-  const mode = resolved.mode;
   const compressed = await compressAll(attachments, settings, log);
 
   const userMsg = {
@@ -138,7 +139,8 @@ export async function sendNew({ dispatch, state, conv, text, attachments, params
   const asst = makeAssistantPlaceholder({ parentId: userMsg.id, resolved });
 
   dispatch({ type: 'MSG_ADD', convId: conv.id, messages: [userMsg, asst] });
-  if (mode === 'sync') dispatch({ type: 'BUSY_SET', convId: conv.id, jobId: asst.id, mode });
+  // 只登记这一个请求（jobId = 助手消息 id）：同对话里其它还在等待的请求各自有一项，互不影响
+  dispatch({ type: 'BUSY_SET', convId: conv.id, jobId: asst.id });
 
   // 会话标签自动命名：首条文字 → 重命名模型（未配置/失败则截取首条文字）。
   // 与图片生成并行，不阻塞请求；结果经 CONV_RENAME_AUTO 异步更新侧栏标签。
@@ -188,24 +190,41 @@ export function resolveResendTarget({ settings, modelSeries, protocols, selectio
 }
 
 /**
+ * 把一条消息记录的输入图读回 dataUrl（文件已被清理 / 不存在 → 跳过该张）。
+ * @param images 消息里的 images 数组（[{file,name,srcName,mime,width,height}]，没有 dataUrl）
+ */
+async function attachmentsOfMessage(images) {
+  const out = [];
+  for (const img of (images || [])) {
+    if (!img || !img.file) continue;
+    try {
+      const r = await window.stab.readAttachment(img.file);
+      if (r && r.ok) out.push({ ...img, dataUrl: r.dataUrl, mime: r.mime || img.mime });
+    } catch (e) { /* 缺失则跳过 */ }
+  }
+  return out;
+}
+
+/**
  * 编辑后重发：更新用户消息、删除配对的旧助手回复，重新发起请求（原地覆盖）。
  * 模型与参数由调用方（编辑气泡）按**输入区当前设置**给出，见 resolveResendTarget。
+ * 旧回复若还在等待中，一并中止（它马上要被删掉，没必要继续占着远端请求与本地等待）。
  * @param keptImages 数组 [{file, name, srcName?, mime, width, height}]（无 dataUrl，需从磁盘读取）
  */
 export async function resendEdited({ dispatch, state, conv, userMsg, newText, keptImages, params, modelId, log }) {
   const settings = state.settings;
   const resolved = pickModel(settings, state.modelSeries, state.protocols, modelId || (userMsg.model && userMsg.model.id));
-  const mode = resolved.mode;
+
+  // 先停掉这条消息名下还在等待的旧请求（通常是「上一个请求还没回来就点了编辑重发」）
+  const stale = (conv.messages || []).filter(
+    (m) => m.role === 'assistant' && m.parentId === userMsg.id && (m.status === 'pending' || m.status === 'running')
+  );
+  for (const m of stale) {
+    try { await window.stab.cancelJob(m.id); } catch (e) { /* 已经结束 / 不存在：忽略 */ }
+  }
 
   // 读取原图并压缩
-  const attachments = [];
-  for (const img of keptImages) {
-    try {
-      const r = await window.stab.readAttachment(img.file);
-      if (r.ok) attachments.push({ ...img, dataUrl: r.dataUrl, mime: r.mime });
-    } catch (e) { /* 缺失则跳过 */ }
-  }
-  const compressed = await compressAll(attachments, settings, log);
+  const compressed = await compressAll(await attachmentsOfMessage(keptImages), settings, log);
 
   const patch = {
     text: newText || '',
@@ -219,7 +238,7 @@ export async function resendEdited({ dispatch, state, conv, userMsg, newText, ke
 
   const asst = makeAssistantPlaceholder({ parentId: userMsg.id, resolved });
   dispatch({ type: 'MSG_ADD', convId: conv.id, messages: [asst] });
-  if (mode === 'sync') dispatch({ type: 'BUSY_SET', convId: conv.id, jobId: asst.id, mode });
+  dispatch({ type: 'BUSY_SET', convId: conv.id, jobId: asst.id });
 
   await window.stab.generate({
     conversationId: conv.id,

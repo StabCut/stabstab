@@ -4,10 +4,11 @@
  * 数据结构（见 electron/src/store.js 与 electron/assets/model-series.json）：
  *   settings.modelGroups   [{ seriesId, models:[{id,name,sourceId}] }]  已添加的模型系列
  *   settings.sourceConfig  { '<seriesId>.<sourceId>': {apiKey, baseUrl} }
- *   state.modelSeries      { series:[{id,label,sources:[{id,label,protocol,baseUrl,sizeOptions,…}],requestMode,…}] }
+ *   state.modelSeries      { series:[{id,label,sources:[{id,label,protocol,baseUrl,sizeOptions,…}],…}] }
  *
  * 注意：主进程 electron/src/modelSeries.js 里的 resolveModel 是发请求时的权威口径，
  *       本文件只服务于界面（下拉框、尺寸列表、参数面板、提示文案），两者需保持同一套规则。
+ *       请求模式只有「同步」一种（见 AIDEV.md §4.12），界面不再解析 mode / 异步开关。
  */
 
 export function seriesById(modelSeries, id) {
@@ -61,7 +62,8 @@ export function allModels(settings, modelSeries) {
 
 /**
  * 解析一个模型 id → 界面需要的全部信息。
- * @param protocols state.protocols（主进程下发的适配器元信息：sizeOptions/paramSchema/supportsAsync…）
+ * 只有同步一种请求模式，因此没有 mode / canAsync（见 AIDEV.md §4.12）。
+ * @param protocols state.protocols（主进程下发的适配器元信息：sizeOptions/paramSchema…）
  */
 export function resolveModel(settings, modelSeries, protocols, modelId) {
   const groups = (settings && settings.modelGroups) || [];
@@ -79,8 +81,6 @@ export function resolveModel(settings, modelSeries, protocols, modelId) {
   const protocolInfo = (protocols || []).find((p) => p.id === protocol) || null;
   const sc = sourceConfigOf(settings, group.seriesId, source ? source.id : '');
   const apiKey = sc.apiKey || '';
-  const rm = (series && series.requestMode) || {};
-  const canAsync = !!(rm.supported && protocolInfo && protocolInfo.supportsAsync);
   return {
     id: model.id,
     name: model.name,
@@ -95,8 +95,6 @@ export function resolveModel(settings, modelSeries, protocols, modelId) {
     apiKey,
     hasKey: !!apiKey.trim(),
     baseUrl: (sc.baseUrl && sc.baseUrl.trim()) || (source && source.baseUrl) || (protocolInfo && protocolInfo.defaultBaseUrl) || '',
-    canAsync,
-    mode: (canAsync && rm.value === 'async') ? 'async' : 'sync',
     sizeOptions: (source && source.sizeOptions) || (protocolInfo && protocolInfo.sizeOptions) || ['auto'],
     paramSchema: (protocolInfo && protocolInfo.paramSchema) || {},
     supportsImageInput: !protocolInfo || protocolInfo.supportsImageInput !== false,

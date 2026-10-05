@@ -4,7 +4,8 @@ import { cacheUrl, formatClock, formatBytes } from '../lib/util.js';
 import Icon from './Icon.jsx';
 import ImageContextMenu, { useImageMenu } from './ImageContextMenu.jsx';
 
-const STATUS_LABEL = {
+// 协议内部任务兜底（Grsai 某些节点只回任务 id）时的状态文案；常规同步请求不会走到这里
+const TASK_STATUS_LABEL = {
   PENDING: '排队中（PENDING）',
   RUNNING: '生成中（RUNNING）',
   SUCCEEDED: '已完成',
@@ -52,9 +53,13 @@ export default function AssistantMessage({ conv, msg }) {
     else toast(r.message || '保存失败', 'error');
   };
 
-  const cancelTask = async () => {
+  /**
+   * 停止等待：只中止**这一次**请求（jobId = 本消息 id）。
+   * 同一个对话里其它还在等待的请求完全不受影响 —— 这正是伪异步的隔离（见 AIDEV.md §4.12）。
+   */
+  const stopWaiting = async () => {
     const r = await window.stab.cancelJob(msg.id);
-    if (!r.ok) toast(r.message || '取消失败', 'warn');
+    if (!r || !r.ok) toast((r && r.message) || '停止失败（该请求可能已经结束）', 'warn');
   };
 
   const remove = () => dispatch({ type: 'MSG_DELETE', convId: conv.id, msgId: msg.id });
@@ -66,7 +71,10 @@ export default function AssistantMessage({ conv, msg }) {
     body = (
       <div className="result-card waiting">
         <span className="spinner" />
-        <span>{msg.meta && msg.meta.mode === 'async' ? '正在提交异步任务…' : '正在生成，请稍候…'}</span>
+        <span>正在生成，请稍候…</span>
+        <button className="ghost-btn small" onClick={stopWaiting} title="只中止这一次请求的等待（其它并行请求不受影响；结果不再显示）">
+          停止等待
+        </button>
       </div>
     );
   } else if (msg.status === 'running') {
@@ -74,16 +82,14 @@ export default function AssistantMessage({ conv, msg }) {
       <div className="result-card waiting">
         <span className="spinner" />
         <span>
-          {msg.meta && msg.meta.mode === 'async'
-            ? `异步任务${STATUS_LABEL[msg.taskStatus] || msg.taskStatus || '处理中'}`
+          {msg.taskStatus
+            ? `服务端处理中：${TASK_STATUS_LABEL[msg.taskStatus] || msg.taskStatus}`
             : '正在生成，请稍候…'}
         </span>
-        {msg.taskId && <span className="task-id" title="任务 ID">{String(msg.taskId).slice(0, 8)}…</span>}
-        {msg.meta && msg.meta.mode === 'async' && (
-          <button className="ghost-btn small" onClick={cancelTask} title="PENDING 状态可取消任务；RUNNING 将继续执行直到完成">
-            取消任务
-          </button>
-        )}
+        {msg.taskId && <span className="task-id" title="服务端任务 ID（协议内部查询用）">{String(msg.taskId).slice(0, 8)}…</span>}
+        <button className="ghost-btn small" onClick={stopWaiting} title="只中止这一次请求的等待（其它并行请求不受影响；结果不再显示）">
+          停止等待
+        </button>
       </div>
     );
   } else if (msg.status === 'success') {

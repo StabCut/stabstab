@@ -128,10 +128,11 @@ export default function Composer({ conv, busy }) {
     [settings, state.modelSeries, state.protocols, modelId]
   );
 
-  const mode = current ? current.mode : 'sync';
   const schema = (current && current.paramSchema) || {};
   const sizeOptions = (current && current.sizeOptions) || ['auto'];
   const protocol = current ? current.protocol : null;
+  // 这个对话此刻还有几个请求在等返回（可以同时等多个：等待中也能继续发送，见 AIDEV.md §4.12）
+  const waiting = busy ? Object.keys(busy).length : 0;
 
   // 模型列表变化时纠正选择
   useEffect(() => {
@@ -378,12 +379,12 @@ export default function Composer({ conv, busy }) {
     if (e.dataTransfer && e.dataTransfer.files) addFiles(e.dataTransfer.files, true);   // 拖入：File.name 即真实文件名
   };
 
-  const canSend = !!conv && !sending && !busy && !!current && (text.trim().length > 0 || attachments.length > 0);
+  // 等待返回中也能继续发送：同一个对话可以有多个互相独立的请求同时等待（见 AIDEV.md §4.12）
+  const canSend = !!conv && !sending && !!current && (text.trim().length > 0 || attachments.length > 0);
 
   const doSend = async () => {
     if (!conv) { toast('请先新建一个对话', 'warn'); return; }
     if (!text.trim() && attachments.length === 0) { toast('请输入文字或添加图片', 'warn'); return; }
-    if (busy) return;
     // 发送期间用户可能切走：收尾只允许动这条草稿自己的标签，别清掉别的标签正在编辑的内容
     const sentConvId = conv.id;
     setSending(true);
@@ -417,10 +418,15 @@ export default function Composer({ conv, busy }) {
     }
   };
 
-  const stopWaiting = () => {
-    if (!busy) return;
-    dispatch({ type: 'BUSY_CLEAR', convId: conv.id });
-    toast('已停止等待；结果返回后仍会显示并保存', 'info');
+  /**
+   * 「停止等待」：中止本对话里全部还在等待的请求（每个请求独立中止，见 runner.cancel）。
+   * 与结果卡上那个「停止等待」的区别只是范围（全部 / 单个）；两者都能在等待期间随时继续发送。
+   */
+  const stopAllWaiting = async () => {
+    const jobs = busy ? Object.keys(busy) : [];
+    if (!jobs.length) return;
+    await Promise.all(jobs.map((id) => window.stab.cancelJob(id).catch(() => {})));
+    toast(jobs.length > 1 ? `已停止等待 ${jobs.length} 个请求` : '已停止等待；这一次请求的结果不再显示', 'info');
   };
 
   const onKeyDown = (e) => {
@@ -522,22 +528,21 @@ export default function Composer({ conv, busy }) {
 
         <div className="toolbar-spacer" />
 
-        <span className="mode-hint" title={current ? `${current.seriesLabel} · ${current.sourceLabel}` : ''}>
-          {mode === 'sync' ? '同步：需等待返回' : '异步：后台轮询任务'}
-        </span>
+        {waiting > 0 && (
+          <span className="wait-hint" title="这个对话里还在等待返回的请求数量；等待期间可以继续发送，各自独立">
+            等待中 ×{waiting}
+          </span>
+        )}
 
-        {busy && mode === 'sync' ? (
-          <>
-            <button className="ghost-btn stop-btn" onClick={stopWaiting} title="解锁输入框；请求继续在后台进行，结果返回后仍会显示">
-              ⏹ 停止等待
-            </button>
-            <button className="send-btn" disabled>发送中…</button>
-          </>
-        ) : (
-          <button className="send-btn" disabled={!canSend} onClick={doSend} title="Enter 发送">
-            {sending ? '处理中…' : '发送'}
+        {waiting > 0 && (
+          <button className="ghost-btn stop-btn" onClick={stopAllWaiting} title="中止本对话里全部还在等待的请求（各自独立，结果不再显示；输入的草稿与已发出的内容都不受影响）">
+            ⏹ 停止等待
           </button>
         )}
+
+        <button className="send-btn" disabled={!canSend} onClick={doSend} title="Enter 发送（等待返回期间也能继续发送，多个请求互不干扰）">
+          {sending ? '处理中…' : '发送'}
+        </button>
       </div>
     </div>
   );

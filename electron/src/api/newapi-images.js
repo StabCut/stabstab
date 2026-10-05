@@ -85,7 +85,6 @@ module.exports = {
   label: 'New API（OpenAI 兼容图像生成）',
   defaultBaseUrl: DEFAULT_BASE_URL,
   defaultModel: 'gpt-image-2',
-  supportsAsync: false,
   supportsImageInput: true,
   modelPlaceholder: '例如：gpt-image-2',
   sizeOptions: ['auto', '1024x1024', '1536x1024', '1024x1536', '2048x2048', '1792x1024', '1024x1792'],

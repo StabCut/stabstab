@@ -211,7 +211,6 @@ module.exports = {
   label: 'Grsai 生图',
   defaultBaseUrl: DEFAULT_BASE_URL,
   defaultModel: 'gpt-image-2',
-  supportsAsync: false,
   supportsImageInput: true,
   modelPlaceholder: '例如：gpt-image-2 / gpt-image-2.5',
   sizeOptions: ['auto', '1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '5:4', '4:5', '21:9', '1024x1024', '2048x2048'],

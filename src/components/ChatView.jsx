@@ -1,7 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef } from 'react';
 import { useApp, useActiveConversation, useToast } from '../lib/store.jsx';
 import { PROMPT_MESSAGES } from '../lib/promptReuse.jsx';
-import { resolveModel } from '../lib/models.js';
 import UserMessage from './UserMessage.jsx';
 import AssistantMessage from './AssistantMessage.jsx';
 import Composer from './Composer.jsx';
@@ -27,11 +26,8 @@ export default function ChatView() {
   const temporary = state.temporary;
 
   const busy = conv ? state.busy[conv.id] : null;
-  // 请求模式现在按「模型系列」独立配置：这里显示当前会话最近一条请求所用模型的模式
-  const lastWithModel = conv ? [...(conv.messages || [])].reverse().find((m) => m.meta && m.meta.mode) : null;
-  const activeModelId = (lastWithModel && lastWithModel.meta && lastWithModel.meta.modelId) || state.settings.defaultModelId;
-  const current = resolveModel(state.settings, state.modelSeries, state.protocols, activeModelId);
-  const mode = current ? current.mode : 'sync';
+  // 这个对话此刻有几个请求还在等返回（伪异步下可以同时等多个，见 AIDEV.md §4.12）
+  const waiting = busy ? Object.keys(busy).length : 0;
 
   // ---------- 滚动：进入标签页默认停在最后一条消息 ----------
   // 规则（见 AIDEV.md §4.9）：
@@ -117,7 +113,11 @@ export default function ChatView() {
       <header className={`chat-header ${temporary ? 'has-reuse' : ''}`}>
         <div className="chat-title">
           <span className="chat-title-name">{conv ? conv.name : 'StabStab'}</span>
-          {busy && <span className="busy-badge">等待返回中…</span>}
+          {waiting > 0 && (
+            <span className="busy-badge" title="这个对话里还在等待返回的请求数量（可同时等多个，互不干扰）">
+              等待返回中{waiting > 1 ? ` ×${waiting}` : '…'}
+            </span>
+          )}
         </div>
         <div className="chat-header-right">
           {temporary && (
@@ -125,11 +125,6 @@ export default function ChatView() {
               <button className="ghost-btn small" title="把该提示词追加到输入框末尾" onClick={insertReuse}>插入</button>
               <button className="ghost-btn small" title="把该提示词复制到剪贴板" onClick={copyReuse}>复制</button>
             </div>
-          )}
-          {current && (
-            <span className={`mode-badge ${mode}`} title={`${current.seriesLabel} · ${current.sourceLabel}｜可在 设置 → 高级设置 中切换（仅支持的系列）`}>
-              {mode === 'sync' ? '同步模式' : '异步模式'}
-            </span>
           )}
           <button className="icon-btn" title="一键打开下载目录（保存结果图片的位置）" onClick={openDownloads}><Icon name="folder" size={19} /></button>
           <button className="icon-btn" title="一键打开系统「下载」目录（Windows：下载 / Ubuntu：~/Downloads）" onClick={openSystemDownloads}><Icon name="folderDownloadLine" size={19} /></button>

@@ -2,7 +2,12 @@
 /*
  * API 请求执行器。
  * 每个生成请求独立运行、独立中止（等效于一个独立“线程”），互不阻塞：
- * 多个对话标签可以同时处于“同步等待”状态，各自独立返回结果。
+ * 同一个对话里可以同时有多个「同步等待」中的请求，各自独立返回结果（见 AIDEV.md §4.12）。
+ *
+ * 只有「同步」一种请求模式：提交请求 → 阻塞等待响应 → 下载图片 → 结束。
+ * 唯一的例外是**协议内部**的任务兜底（例如 Grsai 某些节点只回一个任务 id）：
+ * 这时按适配器给出的查询端点轮询到结果为止 —— 它不是用户可切换的「异步模式」，
+ * 没有开关、没有状态徽标，也不参与重启恢复。
  *
  * 通过 sendEvent(payload) 向渲染进程推送事件：
  *   {type:'status'|'result'|'error'|'cancelled', conversationId, messageId, ...}
@@ -44,7 +49,7 @@ async function readJsonSafe(res) {
 /**
  * 启动一次生成。立即返回 {jobId}，结果经 sendEvent 推送。
  * opts: {jobId, conversationId, messageId, protocol, model, apiKey, baseUrl,
- *        mode:'sync'|'async', timeoutSec, prompt, images:[dataUrl], imageNames:[string], params, cacheDir}
+ *        timeoutSec, prompt, images:[dataUrl], imageNames:[string], params, cacheDir}
  *   imageNames：用户这次一起发送的输入图文件名（与 images 顺序一一对应，读不到就是空串），
  *               会被写进结果图的 pic1…picN（见 requestMeta）。
  */
@@ -68,7 +73,6 @@ function start(opts, sendEvent) {
   const job = {
     controller, deadline,
     taskId: null,
-    mode: opts.mode,
     cancelled: false,
     conversationId, messageId,
     protocol: opts.protocol,
@@ -79,7 +83,7 @@ function start(opts, sendEvent) {
 
   const startedAt = Date.now();
   log.info('开始生成请求', {
-    jobId, model: opts.model, protocol: opts.protocol, mode: opts.mode,
+    jobId, model: opts.model, protocol: opts.protocol,
     series: opts.seriesId, source: opts.sourceId,
     images: (opts.images || []).length, hasPrompt: !!(opts.prompt && opts.prompt.trim()),
     timeoutSec: opts.timeoutSec, size: opts.params && opts.params.size,
@@ -113,16 +117,15 @@ function start(opts, sendEvent) {
     try {
       const ctx = {
         apiKey: opts.apiKey, baseUrl: opts.baseUrl, model: opts.model,
-        prompt: opts.prompt, images: opts.images, params: opts.params,
-        mode: opts.mode
+        prompt: opts.prompt, images: opts.images, params: opts.params
       };
 
       // 1) 提交
       const sub = adapter.buildSubmitRequest(ctx);
-      log.info('提交请求', { jobId, url: sub.url, mode: opts.mode });
+      log.info('提交请求', { jobId, url: sub.url });
       const res = await fetchWithTimeout(sub.url, { method: sub.method, headers: sub.headers, body: sub.body }, timeoutMs, controller.signal);
       const json = await readJsonSafe(res);
-      const parsed = adapter.parseSubmit(json, res.status, opts.mode);
+      const parsed = adapter.parseSubmit(json, res.status);
 
       if (parsed.kind === 'error') {
         log.warn('提交返回错误', { jobId, error: parsed.error });
@@ -132,8 +135,9 @@ function start(opts, sendEvent) {
         return await deliverResult(parsed, opts, job, finish, sendEvent);
       }
       if (parsed.kind === 'task') {
+        // 协议内部的兜底：服务端只给了任务 id（当前只有 Grsai 可能走到这里）
         job.taskId = parsed.taskId;
-        log.info('异步任务已提交', { jobId, taskId: job.taskId, status: parsed.taskStatus });
+        log.info('服务端只返回任务 id，按协议内部查询结果', { jobId, taskId: job.taskId, status: parsed.taskStatus });
         sendEvent({ ...base, type: 'status', status: parsed.taskStatus || 'PENDING', taskId: job.taskId });
         return await pollTask(adapter, ctx, job, opts, finish, sendEvent);
       }
@@ -202,7 +206,10 @@ async function deliverResult(parsed, opts, job, finish, sendEvent) {
   return finish({ type: 'result', ok: true, images, texts: parsed.texts || [], usage, requestId: parsed.requestId, taskId: job.taskId });
 }
 
-/** 指数退避轮询异步任务（初始 3s，×1.5，上限 15s），受总超时约束 */
+/**
+ * 协议内部的任务查询（初始 3s，×1.5，上限 15s），受总超时约束。
+ * 只在适配器返回 kind:'task' 时使用（Grsai 某些节点只回任务 id），不是可切换的请求模式。
+ */
 async function pollTask(adapter, ctx, job, opts, finish, sendEvent) {
   const base = { conversationId: job.conversationId, messageId: job.messageId };
   let interval = 3000;
@@ -211,7 +218,7 @@ async function pollTask(adapter, ctx, job, opts, finish, sendEvent) {
     await sleep(interval, job.controller.signal);
     if (job.controller.signal.aborted || job.cancelled) {
       if (!job.cancelled) {
-        return finish({ type: 'error', ok: false, error: { code: 'TIMEOUT_OR_ABORT', message: `异步任务等待超时（${opts.timeoutSec}s）。` }, taskId: job.taskId });
+        return finish({ type: 'error', ok: false, error: { code: 'TIMEOUT_OR_ABORT', message: `等待结果超时（${opts.timeoutSec}s）。` }, taskId: job.taskId });
       }
       return;
     }
@@ -245,9 +252,9 @@ async function pollTask(adapter, ctx, job, opts, finish, sendEvent) {
 }
 
 /**
- * 取消/停止一个任务。
- * - 有 taskId（异步）：调用服务端取消接口（仅 PENDING 生效）+ 停止本地轮询。
- * - 无 taskId（同步）：中止本地等待（远端请求无法撤回，但不再占用界面）。
+ * 取消 / 停止等待一个请求（每个请求独立中止，互不影响）。
+ * - 有 taskId（协议内部任务兜底，如 Grsai）：先调服务端取消接口（若适配器提供）+ 停止本地查询。
+ * - 无 taskId（常规同步请求）：中止本地等待 —— 远端请求撤回不了，但结果不再显示、也不再占用界面。
  */
 async function cancel(jobId, sendEvent) {
   const job = activeJobs.get(jobId);
@@ -268,7 +275,7 @@ async function cancel(jobId, sendEvent) {
         const json = await readJsonSafe(res);
         log.info('已请求取消任务', { taskId: job.taskId, http: res.status, resp: json && (json.message || json.code || '') });
       } else {
-        log.info('该协议无服务端取消接口，仅停止本地轮询', { taskId: job.taskId, protocol: job.protocol });
+        log.info('该协议无服务端取消接口，仅停止本地查询', { taskId: job.taskId, protocol: job.protocol });
       }
     } catch (e) {
       log.warn('取消任务请求失败（仍停止本地等待）', { taskId: job.taskId, error: e && e.message });
@@ -276,58 +283,11 @@ async function cancel(jobId, sendEvent) {
   }
   job.controller.abort();
   activeJobs.delete(jobId);
-  log.info('任务已取消/停止等待', { jobId, taskId: job.taskId, mode: job.mode });
+  log.info('请求已停止等待', { jobId, taskId: job.taskId });
   if (sendEvent) {
-    sendEvent({ ...base, type: 'cancelled', ok: false, taskId: job.taskId, error: { code: 'CANCELED', message: job.taskId ? '任务已取消。' : '已停止等待（结果若返回仍会显示）。' } });
+    sendEvent({ ...base, type: 'cancelled', ok: false, taskId: job.taskId, error: { code: 'CANCELED', message: '已停止等待（这一次请求的结果不再显示）。' } });
   }
   return { ok: true };
-}
-
-/**
- * 恢复一个异步任务的轮询（应用重启后，凭已保存的 taskId 继续）。
- * opts: {jobId, conversationId, messageId, protocol, apiKey, baseUrl, taskId, timeoutSec, cacheDir,
- *        prompt?, pics?}   ← prompt / pics 由主进程从会话记录里取回，落盘时要写进结果图元数据
- */
-function resume(opts, sendEvent) {
-  const adapter = getAdapter(opts.protocol);
-  const base = { conversationId: opts.conversationId, messageId: opts.messageId };
-  if (!adapter || !opts.taskId) {
-    sendEvent({ ...base, type: 'error', ok: false, error: { code: 'RESUME_FAILED', message: '无法恢复任务（缺少协议或 taskId）。' } });
-    return { jobId: opts.jobId };
-  }
-  const controller = new AbortController();
-  const timeoutMs = Math.max(5, opts.timeoutSec || 300) * 1000;
-  const deadline = setTimeout(() => controller.abort(), timeoutMs);
-  const job = {
-    controller, deadline,
-    taskId: opts.taskId,
-    mode: 'async',
-    cancelled: false,
-    conversationId: opts.conversationId,
-    messageId: opts.messageId,
-    protocol: opts.protocol,
-    apiKey: opts.apiKey,
-    baseUrl: opts.baseUrl
-  };
-  activeJobs.set(opts.jobId, job);
-  const startedAt = Date.now();
-  const finish = (evt) => {
-    clearTimeout(job.deadline);
-    activeJobs.delete(opts.jobId);
-    sendEvent({ ...base, ...evt, durationMs: Date.now() - startedAt });
-  };
-  log.info('恢复异步任务轮询', { jobId: opts.jobId, taskId: opts.taskId });
-  (async () => {
-    try {
-      const ctx = { apiKey: opts.apiKey, baseUrl: opts.baseUrl, model: opts.model };
-      await pollTask(adapter, ctx, job, opts, finish, sendEvent);
-    } catch (e) {
-      if (!job.cancelled) {
-        finish({ type: 'error', ok: false, error: { code: 'RESUME_ERROR', message: e && e.message || String(e) }, taskId: opts.taskId });
-      }
-    }
-  })();
-  return { jobId: opts.jobId };
 }
 
 /** 应用退出时中止所有任务 */
@@ -341,8 +301,8 @@ function cancelAll() {
 
 function listActive() {
   return Array.from(activeJobs.entries()).map(([jobId, j]) => ({
-    jobId, taskId: j.taskId, mode: j.mode, conversationId: j.conversationId, messageId: j.messageId
+    jobId, taskId: j.taskId, conversationId: j.conversationId, messageId: j.messageId
   }));
 }
 
-module.exports = { start, resume, cancel, cancelAll, listActive };
+module.exports = { start, cancel, cancelAll, listActive };

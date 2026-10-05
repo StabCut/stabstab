@@ -1,9 +1,12 @@
 'use strict';
 /*
  * 后端逻辑端到端测试（无需 GUI）：
- * 启动一个 mock 服务，驱动真实的 runner 走完 同步/异步/错误/取消 全链路，
+ * 启动一个 mock 服务，驱动真实的 runner 走完 同步 / 错误 / 取消（含同一对话里的并发请求）全链路，
  * 并额外覆盖新增协议（Seedream 官方 / New API / Grsai）与「模型系列」配置读写。
  * 运行：npm run test:api   （或 node scripts/test-api.js）
+ *
+ * 注意：**没有异步模式**（同步/异步开关已删除，见 AIDEV.md §4.12）。
+ * 唯一保留的 kind:'task' 兜底是 Grsai 协议内部的（某些节点只回任务 id），本文件仍覆盖它。
  */
 const http = require('http');
 const fs = require('fs');
@@ -51,7 +54,6 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'stabstab-cfg-'));
 log.init(LOGDIR);
 
 let PORT = 0;
-let taskPollCount = 0;
 let grsaiPollCount = 0;
 const seen = [];                       // 记录收到的请求体，供协议断言
 const IMG_URL = () => `http://127.0.0.1:${PORT}/img.png`;
@@ -74,13 +76,9 @@ const server = http.createServer((req, res) => {
 
     // ---------- DashScope（qwen 系列） ----------
     if (req.method === 'POST' && url.endsWith('/multimodal-generation/generation')) {
-      const asyncMode = req.headers['x-dashscope-async'] === 'enable';
       const model = parsed.model;
       if (model === 'err-model') return send(400, { code: 'InvalidParameter', message: '模拟错误：参数不正确', request_id: 'req-err-1' });
-      if (asyncMode) {
-        const taskId = model === 'err-async' ? 'task_fail' : (model === 'hang-model' ? 'task_hang' : 'task_ok');
-        return send(200, { request_id: 'req-a1', output: { task_id: taskId, task_status: 'PENDING' } });
-      }
+      if (model === 'hang-model') return;   // 永不响应：取消测试用
       // 结果图格式覆盖：提示词元数据要按真实格式写入
       const resultUrl = model === 'jpg-model' ? `${IMG_URL().replace(/\/img\.png$/, '/img.jpg')}`
         : (model === 'webp-model' ? `${IMG_URL().replace(/\/img\.png$/, '/img.webp')}` : IMG_URL());
@@ -90,18 +88,6 @@ const server = http.createServer((req, res) => {
         usage: { output_width: 16, output_height: 16, output_image_count: 2 }
       });
     }
-    if (req.method === 'GET' && url.includes('/tasks/')) {
-      const id = decodeURIComponent(url.split('/tasks/')[1]);
-      if (id === 'task_hang') return send(200, { request_id: 'r', output: { task_id: id, task_status: 'PENDING' } });
-      if (id === 'task_fail') return send(200, { request_id: 'r', output: { task_id: id, task_status: 'FAILED', code: 'DataInspectionFailed', message: '内容可能不合规' } });
-      taskPollCount++;
-      return send(200, {
-        request_id: 'r',
-        output: { task_id: id, task_status: 'SUCCEEDED', choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: [{ image: IMG_URL() }] } }] },
-        usage: { output_width: 16, output_height: 16, image_count: 1 }
-      });
-    }
-    if (req.method === 'POST' && url.includes('/cancel')) return send(200, { request_id: 'r', message: 'ok' });
 
     // ---------- Doubao Seedream 官方（火山方舟） ----------
     if (req.method === 'POST' && url.endsWith('/api/v3/images/generations')) {
@@ -184,13 +170,24 @@ function waitForTerminal(events) {
   });
 }
 
+/** 等某个特定请求（按 messageId 等条件筛选）的终态事件 —— 并发场景下不能只看「第一个终态」 */
+function waitForEvent(events, pred, timeoutMs = 40000) {
+  return new Promise((resolve) => {
+    const iv = setInterval(() => {
+      const hit = events.find(pred);
+      if (hit) { clearInterval(iv); resolve(hit); }
+    }, 20);
+    setTimeout(() => { clearInterval(iv); resolve(null); }, timeoutMs);
+  });
+}
+
 async function runScenario(name, optsPatch) {
   const events = [];
   const opts = {
     jobId: 'job_' + name, conversationId: 'conv1', messageId: 'msg_' + name,
     protocol: 'dashscope-multimodal', model: 'qwen-image-3.0-pro',
     apiKey: 'sk-test', baseUrl: `http://127.0.0.1:${PORT}/api/v1`,
-    mode: 'sync', timeoutSec: 30, prompt: '测试', images: [], params: { size: '2048*2048', n: 1 },
+    timeoutSec: 30, prompt: '测试', images: [], params: { size: '2048*2048', n: 1 },
     cacheDir: CACHE, ...optsPatch
   };
   runner.start(opts, (ev) => events.push(ev));
@@ -222,34 +219,61 @@ async function main() {
     check(term && term.error.code === 'InvalidParameter', '错误码透传');
   }
 
-  console.log('\n[3] 异步成功（submit→poll→SUCCEEDED）');
+  console.log('\n[3] 同步请求不带异步请求头（异步模式已删除）');
   {
-    const { events, term } = await runScenario('async_ok', { mode: 'async' });
-    check(events.some((e) => e.type === 'status' && e.status === 'PENDING'), '出现 PENDING 状态事件');
-    check(term && term.type === 'result' && term.ok === true, '最终 result 成功');
-    check(term && term.images.length === 1, '一张结果图');
+    await runScenario('no_async_header');
+    const req = lastTo('/multimodal-generation/generation');
+    check(!!req && req.headers['x-dashscope-async'] === undefined, '不发 X-DashScope-Async 请求头');
+    check(registry.getAdapter('dashscope-multimodal').supportsAsync === undefined, '适配器不再声明 supportsAsync');
+    check(registry.getAdapter('dashscope-multimodal').buildTaskQuery === undefined, '适配器不再提供任务查询 / 取消端点');
+    check(registry.listProtocols().every((p) => p.supportsAsync === undefined), '协议元信息里没有 supportsAsync（界面无从显示同步/异步）');
   }
 
-  console.log('\n[4] 异步失败（FAILED DataInspectionFailed）');
+  console.log('\n[4] 同一对话里的并发请求互不干扰（伪异步，见 AIDEV.md §4.12）');
   {
-    const { term } = await runScenario('async_fail', { mode: 'async', model: 'err-async' });
-    check(term && term.type === 'error', '返回 error');
-    check(term && term.error.code === 'DataInspectionFailed', '任务失败码透传');
+    // 三个请求用同一个 conversationId，但各自有自己的 messageId：
+    // 一个成功、一个业务错误、一个永不返回 —— 前两个必须各走各的，互不串事件。
+    const events = [];
+    const convId = 'conv_parallel';
+    const mk = (name, patch) => ({
+      jobId: 'job_' + name, conversationId: convId, messageId: 'msg_' + name,
+      protocol: 'dashscope-multimodal', model: 'qwen-image-3.0-pro',
+      apiKey: 'sk-test', baseUrl: `http://127.0.0.1:${PORT}/api/v1`,
+      timeoutSec: 30, prompt: name, images: [], params: { size: '2048*2048' },
+      cacheDir: CACHE, ...patch
+    });
+    runner.start(mk('p_ok'), (ev) => events.push(ev));
+    runner.start(mk('p_err', { model: 'err-model' }), (ev) => events.push(ev));
+    runner.start(mk('p_hang', { model: 'hang-model' }), (ev) => events.push(ev));
+
+    const okEvt = await waitForEvent(events, (e) => e.messageId === 'msg_p_ok' && e.type === 'result');
+    const errEvt = await waitForEvent(events, (e) => e.messageId === 'msg_p_err' && e.type === 'error');
+    check(!!okEvt && okEvt.ok === true && okEvt.images.length === 2, '并发中的成功请求照常拿到结果');
+    check(!!errEvt && errEvt.error.code === 'InvalidParameter', '并发中的失败请求只影响自己');
+    check(events.every((e) => e.conversationId === convId), '事件都带着自己的 conversationId');
+    check(events.filter((e) => e.messageId === 'msg_p_ok').every((e) => e.type !== 'error'), '成功请求没有收到别人的错误事件');
+    check(runner.listActive().filter((j) => j.conversationId === convId).length === 1, '仍在等待的只有那个永不返回的请求');
+
+    // 单独中止它：其它请求（已经结束的）不受影响
+    await runner.cancel('job_p_hang', (ev) => events.push(ev));
+    check(events.some((e) => e.messageId === 'msg_p_hang' && e.type === 'cancelled'), '可以只中止其中一个请求');
+    check(runner.listActive().filter((j) => j.conversationId === convId).length === 0, '中止后没有残留活动任务');
   }
 
-  console.log('\n[5] 异步取消（hang 任务）');
+  console.log('\n[5] 同步请求取消 / 停止等待（永不返回的请求）');
   {
     const events = [];
     const opts = {
       jobId: 'job_cancel', conversationId: 'conv1', messageId: 'msg_cancel',
       protocol: 'dashscope-multimodal', model: 'hang-model',
       apiKey: 'sk-test', baseUrl: `http://127.0.0.1:${PORT}/api/v1`,
-      mode: 'async', timeoutSec: 30, prompt: '', images: [], params: {}, cacheDir: CACHE
+      timeoutSec: 30, prompt: '', images: [], params: {}, cacheDir: CACHE
     };
     runner.start(opts, (ev) => events.push(ev));
     await new Promise((r) => setTimeout(r, 300));
     await runner.cancel('job_cancel', (ev) => events.push(ev));
     check(events.some((e) => e.type === 'cancelled'), '收到 cancelled 事件');
+    check(events.find((e) => e.type === 'cancelled').messageId === 'msg_cancel', '取消事件带着自己的 messageId');
   }
 
   console.log('\n[6] 协议注册表');
@@ -343,7 +367,7 @@ async function main() {
     check(grsaiPollCount > before, '确实调用了 /v1/draw/result');
   }
 
-  console.log('\n[14] 模型系列配置（内置 json / 合并 / 隐藏 / 同步异步开关）');
+  console.log('\n[14] 模型系列配置（内置 json / 合并 / 隐藏；没有同步异步开关）');
   {
     const cfgFile = path.join(TMP, 'model-series.json');
     const cfg = modelSeriesLib.load(cfgFile);
@@ -355,22 +379,27 @@ async function main() {
     check(!!qwen && qwen.sources.length === 1 && qwen.sources[0].protocol === 'dashscope-multimodal', 'qwen 系列只有官方来源');
     check(!!seed && seed.sources.map((s) => s.id).join(',') === 'official,newapi', 'seedream 系列：官方 + New Api');
     check(!!gpt && gpt.sources.map((s) => s.id).join(',') === 'grsai,newapi', 'gpt-image 系列：Grsai + NewApi');
-    check(qwen.requestMode.supported === true && qwen.requestMode.value === 'sync', 'qwen 支持同步/异步，默认同步');
-    check(!seed.requestMode.supported && !gpt.requestMode.supported, '其它系列不支持异步');
+    check(cfg.series.every((s) => s.requestMode === undefined), '内置配置里没有 requestMode（异步模式已删除）');
+    check(cfg.series.every((s) => (s.sources || []).every((src) => src.supportsAsync === undefined)), '来源不再声明 supportsAsync');
 
-    // 用户操作：隐藏 gpt 系列 + 把 qwen 切到异步
+    // 用户操作：隐藏 gpt 系列（并把偷改的协议与老版本的 requestMode 一起提交上来）
     const saved = modelSeriesLib.save(cfgFile, {
       series: cfg.series.map((s) => (s.id === 'qwen'
-        ? { ...s, requestMode: { ...s.requestMode, value: 'async' } }
+        ? { ...s, requestMode: { supported: true, value: 'async' } }
         : (s.id === 'gpt-image' ? { ...s, hidden: true, protocol: 'hacked-protocol' } : s)))
     });
     const reloaded = modelSeriesLib.load(cfgFile);
     const q2 = reloaded.series.find((s) => s.id === 'qwen');
     const g2 = reloaded.series.find((s) => s.id === 'gpt-image');
-    check(q2.requestMode.value === 'async', '同步/异步开关已持久化（存在 json 里）');
+    check(q2.requestMode === undefined, '本地 json 里残留的 requestMode 被丢弃（不可能再切到异步）');
     check(g2.hidden === true, '隐藏状态已持久化');
     check(g2.protocol === 'newapi-images', '内置协议不可被本地 json 篡改');
     check(saved.series.length === 3, '保存不会丢内置系列');
+
+    // applyPatch 只认 hidden，不再接受 requestMode
+    modelSeriesLib.applyPatch(cfgFile, { series: [{ id: 'qwen', requestMode: { value: 'async' }, hidden: false }] });
+    const patched = modelSeriesLib.load(cfgFile).series.find((s) => s.id === 'qwen');
+    check(patched.requestMode === undefined && patched.hidden === false, 'applyPatch 不接受 requestMode，只改 hidden');
   }
 
   console.log('\n[15] 设置迁移（旧结构 → 模型系列结构，且不自动带出任何系列）');
@@ -425,7 +454,7 @@ async function main() {
     check(again.settings.sourceConfig['qwen.official'].apiKey === 'sk-legacy', '密钥仍然在');
   }
 
-  console.log('\n[16] 模型解析（resolveModel：协议 / 密钥 / 同步异步 / 隐藏系列）');
+  console.log('\n[16] 模型解析（resolveModel：协议 / 密钥 / 地址 / 隐藏系列；无 mode）');
   {
     const cfg = modelSeriesLib.load(path.join(TMP, 'model-series.json'));
     const settings = {
@@ -443,12 +472,11 @@ async function main() {
     const q = modelSeriesLib.resolveModel(settings, cfg, 'm_q');
     check(q.protocol === 'dashscope-multimodal' && q.apiKey === 'sk-qwen', 'qwen 模型：协议 + 密钥正确');
     check(q.baseUrl === 'https://dashscope.aliyuncs.com/api/v1', '未覆盖时使用 json 里的默认地址');
-    check(q.mode === 'async' && q.supportsAsync === true, 'qwen 切到异步后按异步执行');
+    check(q.mode === undefined && q.supportsAsync === undefined, 'resolveModel 不再返回 mode / supportsAsync（只有同步）');
 
     const g = modelSeriesLib.resolveModel(settings, cfg, 'm_g');
     check(g.protocol === 'grsai-image', 'gpt-image 模型：绑定到 Grsai 协议');
     check(g.baseUrl === 'http://127.0.0.1:9/custom', '自定义地址覆盖内置默认');
-    check(g.mode === 'sync' && g.supportsAsync === false, '不支持异步的系列强制同步');
 
     const s = modelSeriesLib.resolveModel(settings, cfg, 'm_s');
     check(s.protocol === 'newapi-images' && s.baseUrl === 'https://toprouter.sealoshzh.site/v1', 'seedream·New Api 来源解析正确');
