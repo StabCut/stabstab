@@ -11,6 +11,9 @@
  *        · nameAuto === false（用户手动改过名）→ 不再自动改；
  *        · 会话里已经有一条带文字的用户消息 → 这不是首条文字，不再自动改。
  *
+ * 4. 手动「生成重命名」（侧栏标签菜单 → 生成重命名，见 regenerateTitle）：
+ *      用户明确要求重算 → 不受上面 2 / 3 的守卫限制，结果直接覆盖当前标签名；失败则保留原名。
+ *
  * 真正的 HTTP 请求与密钥都在主进程（window.stab.generateTitle，见 electron/preload.js）；
  * 本文件只负责「什么时候触发」与「拿不到标题时怎么回退」。
  */
@@ -89,4 +92,62 @@ export async function maybeAutoTitle({ dispatch, state, conv, text, log = () => 
 
   dispatch({ type: 'CONV_RENAME_AUTO', id: conv.id, name, expectName });
   return name;
+}
+
+/** 手动「生成重命名」送给模型的文字上限（多轮对话只取开头一段，主进程还会再按 4000 字截一次） */
+export const MANUAL_INPUT_CHARS = 2000;
+
+/**
+ * 收集一个会话里可用于重新命名的文字：按时间顺序拼接**全部用户消息**的文字
+ * （纯图片消息没有文字，跳过；没有任何文字时返回空串）。
+ * @param conv 会话对象
+ * @param max  字符上限（按码点计，避免把 emoji 截成半个）
+ */
+export function conversationText(conv, max = MANUAL_INPUT_CHARS) {
+  const parts = ((conv && conv.messages) || [])
+    .filter((m) => m && m.role === 'user')
+    .map((m) => String(m.text || '').trim())
+    .filter(Boolean);
+  const cps = Array.from(parts.join('\n'));
+  return cps.length > max ? cps.slice(0, max).join('') : cps.join('');
+}
+
+/**
+ * 手动「生成重命名」：立刻用重命名模型（设置 → 重命名模型）重算一次标签名。
+ * 与自动命名（maybeAutoTitle）的区别：
+ *   · 不受「只认首条文字」与 nameAuto 守卫限制 —— 用户点按钮就是要重算，结果直接覆盖；
+ *   · 送给模型的是这个会话里全部用户文字（不是只有首条），更适合「不满意 / 自动命名失效」时重来；
+ *   · **失败不改名**：模型没给出标题时保留现有标签名，只回错误让调用方提示（不做截取回退）。
+ * @returns {Promise<{ok:true,name:string}|{ok:false,code:string,message:string}>} 永不抛异常
+ */
+export async function regenerateTitle({ dispatch, state, conv, log = () => {} }) {
+  const list = (state.conversations && state.conversations.conversations) || [];
+  const live = list.find((c) => conv && c.id === conv.id) || conv;
+  const text = conversationText(live);
+  if (!text) {
+    return { ok: false, code: 'EMPTY_INPUT', message: '这个对话还没有文字内容，暂时无法生成命名。' };
+  }
+  if (!hasRenameKey(state.settings)) {
+    return { ok: false, code: 'NO_API_KEY', message: '尚未配置重命名模型的 API Key（设置 → 重命名模型）。' };
+  }
+
+  let r = null;
+  try {
+    r = await window.stab.generateTitle(text);
+  } catch (e) {
+    log('warn', '生成重命名调用异常', { error: e && e.message });
+    return { ok: false, code: 'REQUEST_ERROR', message: String((e && e.message) || e) };
+  }
+  if (!r || !r.ok || !r.name) {
+    log('warn', '生成重命名未拿到标题（保留原标签名）', { code: r && r.code, message: r && r.message });
+    return {
+      ok: false,
+      code: (r && r.code) || 'REQUEST_ERROR',
+      message: (r && r.message) || '模型没有返回可用标题。'
+    };
+  }
+
+  dispatch({ type: 'CONV_RENAME_AI', id: live.id, name: r.name });
+  log('info', '生成重命名已更新标签名', { convId: live.id, name: r.name, chars: text.length });
+  return { ok: true, name: r.name };
 }

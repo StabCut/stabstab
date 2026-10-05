@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useApp, useToast, conversationDot, dropIndexFor } from '../lib/store.jsx';
+import { regenerateTitle } from '../lib/title.js';
 import { useSearch } from '../lib/searchState.jsx';
 import Icon from './Icon.jsx';
 import ConfirmDialog from './ConfirmDialog.jsx';
@@ -29,9 +30,11 @@ function ConvDot({ kind }) {
  */
 function ConversationItem({ conv, isActive, drag, search }) {
   const { state, dispatch } = useApp();
+  const toast = useToast();
   const [menuOpen, setMenuOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(conv.name);
+  const [generating, setGenerating] = useState(false);   // 「生成重命名」请求中（菜单里显示生成中…）
   const menuRef = useRef(null);
   const inputRef = useRef(null);
   // 黄=后台还在生成 · 绿=后台成功 · 红=后台失败；点开这个标签即消费掉（见 store.jsx#conversationDot）
@@ -62,6 +65,33 @@ function ConversationItem({ conv, isActive, drag, search }) {
     const name = draft.trim();
     if (name) dispatch({ type: 'CONV_RENAME', id: conv.id, name });
     setRenaming(false);
+  };
+
+  /**
+   * 手动「生成重命名」：立刻用重命名模型把这标签的名字重算一次（不受自动命名守卫限制）。
+   * 适合不满意当前自动命名、或自动命名当时失效（没配 Key / 超时）的情况；失败只提示，不改名。
+   */
+  const generateName = async () => {
+    if (generating) return;
+    setGenerating(true);
+    let r;
+    try {
+      r = await regenerateTitle({
+        dispatch,
+        state,
+        conv,
+        // 渲染进程日志 → 主进程日志文件（网页预览下没有 window.stab，直接跳过）
+        log: (level, message, extra) => {
+          if (window.stab && window.stab.log) window.stab.log(level, message, extra);
+        }
+      });
+    } catch (e) {
+      r = { ok: false, message: String((e && e.message) || e) };
+    }
+    setGenerating(false);
+    setMenuOpen(false);
+    if (r.ok) toast(`已重新生成命名：「${r.name}」`, 'info');
+    else toast('生成重命名失败：' + r.message, 'error');
   };
 
   return (
@@ -109,6 +139,14 @@ function ConversationItem({ conv, isActive, drag, search }) {
               onClick={() => { setDraft(conv.name); setRenaming(true); setMenuOpen(false); }}
             >
               <Icon name="pencil" size={15} /> 重命名
+            </button>
+            <button
+              className="pop-item"
+              disabled={generating}
+              title="用「重命名模型」重新生成一次标签名（不改动聊天记录）"
+              onClick={generateName}
+            >
+              <Icon name="reset" size={15} className={generating ? 'spin' : ''} /> {generating ? '生成中…' : '生成重命名'}
             </button>
             <button
               className="pop-item danger"

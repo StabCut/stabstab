@@ -45,6 +45,7 @@ settings.json（用户数据：添加了哪些系列、系列里有哪些模型�
 - 每个会话**不携带上下文**（上下文长度恒为 0）：每次请求只包含当前这一条输入。
 - **标签自动命名（重命名模型）**：首条文字 → DeepSeek Responses API（默认 `deepseek-flash` 非思考模式）
   精简成 5~6 字中文标题；未配置 Key 或调用失败时截取首条文字。模板/温度/Top-P 在 `rename-model.json`。
+  标签「⋯」菜单里还有**生成重命名**：手动再调一次重命名模型重算标签名（不满意自动命名 / 当时失效时用，见 §4.4）。
 - **模型系列 → API 来源 → 协议适配器**：内置 3 个系列（Qwen / Doubao Seedream / GPT Image），
   模型 id 由用户填写；每个「系列·来源」独立保存 API Key 与 API 地址。
 - **只有同步模式 + 同对话并行等待（伪异步）**：请求提交后阻塞等待图片返回；**等待期间输入框不锁定**，
@@ -105,7 +106,7 @@ stabstab/
 │   ├── main.jsx                       # 入口 + 全局错误捕获上报
 │   ├── App.jsx                        # 根组件：bootstrap、API 事件路由、主题
 │   ├── components/
-│   │   ├── Sidebar.jsx                # 左侧：Logo、新建、会话列表（含后台状态圆点，见 §4.8；拖动排序见 §4.11）、重命名/删除、底部操作
+│   │   ├── Sidebar.jsx                # 左侧：Logo、新建、会话列表（含后台状态圆点，见 §4.8；拖动排序见 §4.11）、菜单重命名/生成重命名/删除（见 §4.4）、底部操作
 │   │   ├── ChatView.jsx               # 主区：头部（插入·复制临时按钮）、消息列表（进入标签贴底，见 §4.9）、空态、输入框
 │   │   ├── UserMessage.jsx            # 用户气泡：文本/图片、底部「模型名 + 时间」（见 §4.14）、新对话发送·当前对话发送（普通点击 = 再发一遍；按住 Ctrl / Shift = 只复制到输入框，见 §4.13 / §4.13.1）、编辑重发、编辑气泡补图（粘贴/拖入/＋，见 §4.7.1）、复制、删除
 │   │   ├── AssistantMessage.jsx       # 助手气泡：结果图/错误/等待卡片（各自带「停止等待」，见 §4.12）
@@ -122,7 +123,7 @@ stabstab/
 │       ├── promptReuse.jsx            # ★ 解析分区显隐状态机（图片接收区域是一组元素：输入框 + 编辑气泡）+ 元数据解析 + 待复用提示词（临时状态）
 │       ├── models.js                  # ★ 模型系列/模型解析（界面侧，与主进程同口径）+ 尺寸/比例纯函数（sizeLabel / ratioText / sizeRatioOf）
 │       ├── shortcuts.js               # ★ 全局快捷键（界面侧）：动作文案 + 键盘事件→accelerator + 显示写法 + 保存前重复提示（与主进程同口径，见 §4.17）
-│       ├── title.js                   # ★ 会话标签自动命名（首条文字 → 重命名模型 → 回退截取）
+│       ├── title.js                   # ★ 会话标签自动命名（首条文字 → 重命名模型 → 回退截取）+ 手动「生成重命名」
 │       ├── send.js                    # 发送/重发公共逻辑（无上下文、消息配对、压缩、参数过滤、重发取哪套设置）
 │       ├── composerSelection.js        # ★ 输入区「当前模型 + 当前参数」的实时镜像（编辑重发据此发请求，见 §4.7）
 │       ├── composerDraft.js            # ★ 气泡内容 → 输入区草稿的过路通道：按住 Ctrl / Shift 点气泡按钮时按会话排队待落草稿（见 §4.13.1）
@@ -372,7 +373,25 @@ text           ← 文件名 + 提示词（纯文本框粘贴用；不含 pic �
         （手动 CONV_RENAME 也会把 nameAuto 置 false —— 用户的改名永远优先，迟到的模型结果不会覆盖）
 ```
 
-**不变量**：命名请求与图片生成并行、不阻塞；`conversations.json` 只存 `name/nameAuto`，不含任何 Key；命名失败静默回退，不弹错误。
+**手动「生成重命名」**（侧栏标签「⋯」菜单 → 生成重命名，夹在「重命名」与「删除」之间）走的是另一个入口，专治
+「不满意自动命名」与「当时自动命名失效（没配 Key / 超时 / 首条只有图片）」：
+
+```
+点「生成重命名」（Sidebar.jsx#generateName）
+   ├─ lib/title.js#regenerateTitle：取**这个会话里全部用户消息的文字**（conversationText，去空行、上限 2000 字）
+   │     ├─ 没有任何文字（如纯图片对话）→ 回 EMPTY_INPUT，不改名
+   │     ├─ settings.renameModel.apiKey 没配 → 回 NO_API_KEY，不改名（提示去设置页填）
+   │     └─ window.stab.generateTitle(text) → 同一个主进程入口 / 同一份 rename-model.json 配置
+   │           ├─ 成功 → dispatch CONV_RENAME_AI {id,name}
+   │           └─ 失败 / 超时 → **保留现有标签名**（不做 fallbackTitle 截取回退），回错误让侧栏弹提示
+   └─ reducer：CONV_RENAME_AI 直接覆盖 name（无 nameAuto / expectName 守卫），写后 nameAuto = false
+```
+
+**与自动命名的三点区别**：① 输入是「全部用户文字」而非只有首条；② 不受 `nameAuto` 与「只认首条文字」守卫限制
+（用户明确要求重算）；③ 失败**不改名**（自动命名失败会截取首条文字兜底，手动重算失败保持原样，另外弹一条错误提示）。
+
+**不变量**：命名请求与图片生成并行、不阻塞；`conversations.json` 只存 `name/nameAuto`，不含任何 Key；自动命名失败静默回退，不弹错误。
+
 
 ### 4.6 逐标签草稿（输入区文字 + 待发送图片，仅内存）
 
@@ -1152,8 +1171,8 @@ ss-export/
     界面不得再显示任何「同步模式／异步模式」徽标或选项（见 §4.12）。唯一保留的 `kind:'task'` 是 Grsai 协议内部的
     结果查询兜底（服务端只回任务 id 时），它不是可切换的模式，也不参与重启恢复。
 13. **钥匙不进会话**：`conversations.json` 只记 `meta.modelId/seriesId/sourceId`，绝不写入 API Key。
-14. **标签命名只认首条文字**：自动命名只在「会话里还没有带文字的用户消息」时触发一次；`nameAuto === false`（用户手动改过名）时永不覆盖，见 §4.4。
-15. **重命名模型走 Responses API**：`POST {baseUrl}/responses`（`input` + `instructions` + `reasoning.effort='none'` + `text.format=json_object`），**不是** chat/completions；默认地址 / 默认模型 / 提示模板 / 温度 / Top-P 一律来自 `rename-model.json`（主进程解析，渲染进程只传首条文字）。
+14. **标签命名只认首条文字**：**自动**命名只在「会话里还没有带文字的用户消息」时触发一次；`nameAuto === false`（用户手动改过名）时永不覆盖，见 §4.4。手动「生成重命名」（`CONV_RENAME_AI`）是用户显式动作，不受这两条守卫限制。
+15. **重命名模型走 Responses API**：`POST {baseUrl}/responses`（`input` + `instructions` + `reasoning.effort='none'` + `text.format=json_object`），**不是** chat/completions；默认地址 / 默认模型 / 提示模板 / 温度 / Top-P 一律来自 `rename-model.json`（主进程解析，渲染进程只传待命名的文字）。
 16. **提示词元数据只「插入分块」**：写元数据不得解码 / 重新编码像素，不得改变分辨率与可见画面，不得覆盖已有元数据；GIF/BMP/TIFF 明确返回 `FORMAT_UNSUPPORTED`（不静默转换）。重写本软件自己的记录（改提示词 / 补 picN）时**替换**旧分块，不允许同一份记录叠积，但判据必须保守（`isManagedPngText` 只认 `iTXt keyword=stabstab` 与「纯文本 iTXt prompt」，`tEXt` / `zTXt` 与别家 JSON 一律保留；`isOwnXmpSegment` / `isOwnXmpChunk` 要求 XMP 里出现 `stabstab:Prompt` 或 `StabStab`），绝不能把别的工具（如 ComfyUI）写的元数据删掉。
 17. **元数据失败不许丢图**：`imageutil.withPromptMeta` / `exportImage.applyPromptToBuffer` 失败时都必须返回原字节并继续写盘；生成结果图与用户导出的图片永远优先保证存在。
 18. **提示词与结果图一一对应**：`opts.prompt` 随每个 job 独立传递（`runner.deliverResult` → `downloadImage(..., {prompt, pics})`），并发生成时不得把别的 job 的提示词写进本批图片。
@@ -1475,6 +1494,7 @@ node_modules\.bin\electron dev-data\qa\search-dom-test.js  # 搜索面板真实�
 | 改「模型设置」页结构 | `src/components/SettingsModal.jsx`（系列卡片 / 模型行 / 来源级 API Key 与地址） |
 | 改标题生成提示模板 / 温度 / Top-P / 默认地址 | `electron/assets/rename-model.json`（随包默认）或数据目录的 `rename-model.json`（可手工编辑，重启生效；设置页滑动条也写它） |
 | 改标签命名时机与回退 | `src/lib/title.js#maybeAutoTitle/fallbackTitle` + `src/lib/send.js`（触发点）+ `src/lib/store.jsx` 的 `CONV_RENAME_AUTO` 守卫 |
+| 改手动「生成重命名」（标签菜单） | `src/lib/title.js#regenerateTitle/conversationText`（收全部用户文字 + 失败不改名）+ `src/lib/store.jsx` 的 `CONV_RENAME_AI` + `src/components/Sidebar.jsx#generateName`（菜单项 / 生成中状态 / toast，见 §4.4） |
 | 改「同对话多个请求并行等待」（伪异步） | `src/lib/store.jsx` 的 `busy`（`convId -> {[jobId]}`）+ `BUSY_SET/BUSY_CLEAR` + `waitingJobs` + `src/lib/send.js`（每次发送只登记自己的 jobId）+ `src/components/Composer.jsx`（`waiting` / `stopAllWaiting` / `canSend`）+ `src/components/AssistantMessage.jsx#stopWaiting`（见 §4.12） |
 | 加/改用户气泡上的重发按钮 | `src/components/UserMessage.jsx#resendBubble` + `src/lib/send.js#sendBubbleAgain/sendBubbleToNewConversation` + `src/lib/store.jsx#makeConversation`/`CONV_ADD` + 图标 `assets/icons/{chat-plus,send}.svg`（见 §4.13） |
 | 改侧栏圆点（黄/绿/红、点开消费） | `src/lib/store.jsx#conversationDot/isGenerating/dotActionForEvent`（判定口径）+ `src/components/Sidebar.jsx#ConvDot` + `src/styles/app.css` 的 `.conv-dot` 修饰类 + `src/App.jsx` 的事件路由（见 §4.8） |

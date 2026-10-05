@@ -156,6 +156,9 @@ export function reducer(state, action) {
         if (action.expectName !== undefined && c.name !== action.expectName) return c;  // 名字已被别人改过
         return { ...c, name: action.name, nameAuto: false, updatedAt: Date.now() };
       });
+    case 'CONV_RENAME_AI':
+      // 手动「生成重命名」（侧栏菜单）：用户明确要求用重命名模型重算 → 不受 nameAuto 守卫限制，直接覆盖
+      return updateConv(state, action.id, (c) => ({ ...c, name: action.name, nameAuto: false, updatedAt: Date.now() }));
     case 'CONV_DELETE': {
       const rest = state.conversations.conversations.filter((c) => c.id !== action.id);
       let activeId = state.conversations.activeId;
