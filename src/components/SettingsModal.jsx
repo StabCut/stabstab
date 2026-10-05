@@ -9,17 +9,29 @@ const TABS = [
   { id: 'model', label: '模型设置' },
   { id: 'rename', label: '重命名模型' },
   { id: 'basic', label: '基础设置' },
-  { id: 'advanced', label: '高级设置' }
+  { id: 'advanced', label: '高级设置' },
+  { id: 'data', label: '数据管理' }
 ];
+
+/** 导入失败的错误码 → 界面文案（主进程两道校验各有自己的码，见 electron/src/dataTransfer.js） */
+const IMPORT_ERROR_LABEL = {
+  BAD_NAME: '包名不符合格式',
+  BAD_STRUCTURE: '包内目录不符合协议',
+  BAD_VERSION: '导出包版本过新',
+  BAD_ZIP: '压缩包损坏或无法解压',
+  COPY_FAILED: '图片写入失败',
+  SAVE_FAILED: '数据写入失败',
+  BAD_DEST: '数据目录不可用'
+};
 
 const clone = (v) => JSON.parse(JSON.stringify(v));
 
 export default function SettingsModal({ initialTab = 'model' }) {
-  const { state, dispatch } = useApp();
+  const { state, dispatch, flushSave } = useApp();
   const toast = useToast();
   const [tab, setTab] = useState(initialTab);
   const [draft, setDraft] = useState(() => clone(state.settings));
-  // 系列配置草稿（可写字段：hidden / requestMode.value）
+  // 系列配置草稿（可写字段：hidden —— 从「模型设置」列表移除；请求模式只有同步一种，没有开关）
   const [draftSeries, setDraftSeries] = useState(() => clone(state.modelSeries || { series: [] }));
   // 重命名模型配置草稿（可写字段：temperature / topP / 提示模板等，存数据目录的 rename-model.json）
   const [draftRename, setDraftRename] = useState(() => (
@@ -28,6 +40,9 @@ export default function SettingsModal({ initialTab = 'model' }) {
   const [showKeys, setShowKeys] = useState({});      // { '<seriesId>.<sourceId>': true }
   const [showRenameKey, setShowRenameKey] = useState(false);
   const [pickSeriesId, setPickSeriesId] = useState('');
+  // ---- 数据管理（配置 + 聊天记录 导出 / 导入）----
+  const [transferBusy, setTransferBusy] = useState('');       // '' | 'export' | 'import'
+  const [importResult, setImportResult] = useState(null);     // {source, parts, notes, media}
 
   const set = (patch) => setDraft((d) => ({ ...d, ...patch }));
 
@@ -154,6 +169,72 @@ export default function SettingsModal({ initialTab = 'model' }) {
   const num = (v, def) => (Number.isFinite(Number(v)) ? Number(v) : def);
   const renameTemp = num(draftRename.temperature, renameDef.temperature);
   const renameTopP = num(draftRename.topP, renameDef.topP);
+
+  // ---------- 数据管理：导出 / 导入（配置 + 聊天记录） ----------
+  /**
+   * 导出：先 flushSave（渲染进程是数据编辑主体，主进程内存里必须是最新的），
+   * 再由主进程弹「另存为」→ 打包成 `ss-YYYYMMDD-HHmm.zip`。
+   */
+  const doExport = async () => {
+    if (transferBusy) return;
+    setTransferBusy('export');
+    try {
+      await flushSave();
+      const r = await window.stab.exportData();
+      if (r.canceled) return;
+      if (!r.ok) { toast(`导出失败：${r.message || '未知错误'}`, 'error', { timeout: 8000 }); return; }
+      const bits = [`${r.conversations} 个对话`, `${r.messages} 条消息`, `${r.images} 张图片`];
+      if (r.missing) bits.push(`${r.missing} 张图片文件已不存在（未包含）`);
+      if (r.renamedFrom) bits.push(`文件名已按协议改为 ${String(r.path).split(/[\\/]/).pop()}`);
+      toast(`已导出：${bits.join(' · ')}`, 'info', { path: r.path, timeout: 9000 });
+      window.stab.log('info', '导出配置与聊天记录', { path: r.path, conversations: r.conversations, images: r.images });
+    } catch (e) {
+      toast('导出失败：' + e.message, 'error');
+    } finally {
+      setTransferBusy('');
+    }
+  };
+
+  /**
+   * 导入：主进程做两道校验（包名 → 包内目录协议）+ 智能合并 + 图片叠加；
+   * 成功后用返回的四份数据整体替换本地状态，并把弹窗里的草稿同步成导入后的值
+   * （避免之后点「保存」把导入的设置又盖回去）。
+   */
+  const doImport = async () => {
+    if (transferBusy) return;
+    setTransferBusy('import');
+    try {
+      await flushSave();
+      const r = await window.stab.importData();
+      if (r.canceled) return;
+      if (!r.ok) {
+        const label = IMPORT_ERROR_LABEL[r.code] || '导入失败';
+        toast(`${label}：${r.message || '未知错误'}`, 'error', { timeout: 10000 });
+        window.stab.log('warn', '导入被拒绝', { code: r.code, message: r.message });
+        return;
+      }
+      dispatch({ type: 'DATA_IMPORT', state: r.state });
+      setDraft(clone(r.state.settings));
+      setDraftSeries(clone(r.state.modelSeries));
+      setDraftRename(clone(r.state.renameConfig));
+      const s = r.summary || {};
+      const med = r.media || { copied: 0, skipped: 0 };
+      const bits = [
+        `对话 +${s.conversations || 0}${s.skippedConversations ? `（跳过重复 ${s.skippedConversations}）` : ''}`,
+        `消息 +${s.messages || 0}`,
+        `模型 +${s.addedModels || 0}${s.ignoredModels ? `（忽略 ${s.ignoredModels}）` : ''}`,
+        s.addedSeries ? `系列 +${s.addedSeries}` : '',
+        `图片 +${med.copied}${med.skipped ? `（已存在 ${med.skipped}）` : ''}`
+      ].filter(Boolean);
+      setImportResult({ source: r.source, parts: bits, notes: r.notes || [] });
+      toast(`导入完成（${r.source}）：${bits.join(' · ')}`, 'info', { timeout: 9000 });
+      window.stab.log('info', '导入配置与聊天记录完成', { source: r.source, summary: s, media: med, notes: r.notes });
+    } catch (e) {
+      toast('导入失败：' + e.message, 'error', { timeout: 9000 });
+    } finally {
+      setTransferBusy('');
+    }
+  };
 
   // ---------- 保存 ----------
   const save = () => {
@@ -592,51 +673,85 @@ export default function SettingsModal({ initialTab = 'model' }) {
                   </p>
                 </div>
 
-                {modeSeries.length === 0 && (
-                  <div className="empty-hint">当前没有任何模型系列支持同步/异步切换。</div>
+                <div className="empty-hint">
+                  请求模式固定为「同步」：提交后阻塞等待图片返回，没有同步/异步开关。
+                  等待返回期间仍可继续发送（输入框不再锁定）—— 同一个对话可以同时等 2 个以上互相独立的请求，
+                  也可用用户气泡上的「新对话发送 / 当前对话发送」把同一条内容再发一遍，或单独中止某一次等待。
+                </div>
+              </div>
+            )}
+
+            {/* ---------- 数据管理（配置 + 聊天记录 导出 / 导入） ---------- */}
+            {tab === 'data' && (
+              <div className="settings-section">
+                <div className="settings-tip">
+                  导出把「设置 + 模型系列 + 重命名模型 + 全部聊天记录」以及聊天记录里用到的图片打成
+                  <b>一个 zip</b>；导入时把它叠加到当前数据上（不会清空现有数据）。
+                  导出包里含各「系列·来源」的 API Key，请妥善保管。
+                </div>
+
+                <div className="field">
+                  <label>导出</label>
+                  <div className="input-group">
+                    <button className="ghost-btn" disabled={!!transferBusy} onClick={doExport}>
+                      <Icon name="download" size={15} />
+                      {transferBusy === 'export' ? '导出中…' : '导出配置与聊天记录…'}
+                    </button>
+                  </div>
+                  <p className="field-hint">
+                    导出包名固定为 <code>ss-YYYYMMDD-HHmm.zip</code>（如 <code>ss-20260213-1530.zip</code>，
+                    精确到分钟）——这个名字是导入时的第一道校验，请勿改名。
+                    图片只包含「聊天记录里实际引用到」的结果图（<code>cache/</code>）与输入图（<code>uploads/</code>），
+                    已被清理的图片会跳过并在提示里说明。导出体积取决于这些图片的大小。
+                  </p>
+                </div>
+
+                <div className="field">
+                  <label>导入</label>
+                  <div className="input-group">
+                    <button className="ghost-btn" disabled={!!transferBusy} onClick={doImport}>
+                      <Icon name="folderDownloadLine" size={15} />
+                      {transferBusy === 'import' ? '导入中…' : '选择导出包导入…'}
+                    </button>
+                  </div>
+                  <p className="field-hint">
+                    先校验<b>包名</b>（必须是 <code>ss-日期-时间.zip</code>），再解压到程序缓存目录并校验
+                    <b>包内目录协议</b>（<code>ss-export/</code> 下有 manifest 与四份 json，图片平铺在
+                    <code>cache/</code>、<code>uploads/</code>）—— 任一条不满足会分别报错并原样保留当前数据。
+                  </p>
+                  <p className="field-hint">
+                    合并规则：图片按文件名查重后直接叠加（目录 / 文件不存在则创建）；
+                    <b>设置</b>按导入的值更新（主题、超时、压缩、保存命名、默认模型等，
+                    默认保存路径仅在本机存在时采用），模型按「同 id / 同系列同来源同名」查重后追加，
+                    当前没有的系列会自动新增；本机已填的 API Key / 地址不被覆盖（只补空缺）。
+                    <b>聊天记录</b>按 id 查重后追加在列表最上面（标签名一起带过来）。
+                  </p>
+                </div>
+
+                {importResult && (
+                  <div className="import-result">
+                    <div className="import-result-head">
+                      <Icon name="folderDownloadLine" size={15} />
+                      已导入 <code>{importResult.source}</code>
+                    </div>
+                    <ul className="import-result-list">
+                      {importResult.parts.map((p) => <li key={p}>{p}</li>)}
+                    </ul>
+                    {importResult.notes.length > 0 && (
+                      <ul className="import-result-notes">
+                        {importResult.notes.map((n, i) => <li key={i}>{n}</li>)}
+                      </ul>
+                    )}
+                  </div>
                 )}
 
-                {modeSeries.map((s) => {
-                  const value = (s.requestMode && s.requestMode.value) || 'sync';
-                  const setMode = (v) => setDraftSeries((cur) => ({
-                    ...cur,
-                    series: cur.series.map((x) => (x.id === s.id ? { ...x, requestMode: { ...x.requestMode, value: v } } : x))
-                  }));
-                  return (
-                    <div className="field" key={s.id}>
-                      <label>请求模式 · {s.label}</label>
-                      <label className="radio-card">
-                        <input type="radio" name={`req-mode-${s.id}`} checked={value === 'sync'} onChange={() => setMode('sync')} />
-                        <div>
-                          <div className="radio-title">同步模式（默认）</div>
-                          <div className="radio-desc">
-                            当前对话需等待 API 返回后才能再次发送（发送按钮置灰，超时后恢复）。
-                            多个对话标签各自独立等待、互不阻塞；其它标签返回结果时左侧显示黄点提醒。
-                          </div>
-                        </div>
-                      </label>
-                      <label className="radio-card">
-                        <input type="radio" name={`req-mode-${s.id}`} checked={value === 'async'} onChange={() => setMode('async')} />
-                        <div>
-                          <div className="radio-title">异步模式（Task API）</div>
-                          <div className="radio-desc">
-                            请求头携带 X-DashScope-Async: enable，提交后获得 task_id，后台按指数退避轮询
-                            （3 秒起、×1.5、上限 15 秒）直至成功 / 失败 / 超时。等待期间可继续发送；
-                            PENDING 状态的任务可取消。应用重启后自动恢复轮询。
-                          </div>
-                        </div>
-                      </label>
-                      <p className="field-hint">
-                        该配置只对「{s.label}」生效（保存在 <code>model-series.json</code>），两种模式均遵循「单次请求超时时间」。
-                      </p>
-                    </div>
-                  );
-                })}
-
-                <div className="empty-hint">
-                  其它模型系列（{seriesList.filter((s) => !(s.requestMode && s.requestMode.supported)).map((s) => s.label).join('、') || '无'}）
-                  目前只支持同步模式：单次请求阻塞等待图片返回，不涉及任务轮询。
-                </div>
+                {state.paths && (
+                  <p className="field-hint">
+                    当前数据目录：<code>{state.paths.root}</code>
+                    （{state.paths.kind === 'portable' ? '便携版' : (state.paths.kind === 'user' ? '安装版（用户数据目录）' : '开发模式')}）
+                    <button className="link-btn" onClick={() => window.stab.openPath(state.paths.root)}>打开</button>
+                  </p>
+                )}
               </div>
             )}
           </div>

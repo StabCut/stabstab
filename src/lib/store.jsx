@@ -78,6 +78,16 @@ export function reducer(state, action) {
     }
     case 'SET_PROTOCOLS':
       return { ...state, protocols: action.protocols };
+    case 'DATA_IMPORT':
+      // 导入「配置 + 聊天记录」成功后整体替换四份数据（合并由主进程完成，见 electron/src/dataTransfer.js）。
+      // 逐标签草稿（state.drafts）与正在等待的请求（state.busy）都不动：既有会话没被替换，只有新增。
+      return {
+        ...state,
+        settings: action.state.settings || state.settings,
+        modelSeries: action.state.modelSeries || state.modelSeries,
+        renameConfig: action.state.renameConfig || state.renameConfig,
+        conversations: action.state.conversations || state.conversations
+      };
     case 'SETTINGS_UPDATE':
       return {
         ...state,
@@ -296,17 +306,22 @@ export function AppProvider({ children }) {
   const stateRef = useRef(state);
   stateRef.current = state;
 
+  /**
+   * 立即整包落盘（防抖计时器到点、关闭窗口、以及**导出前的 flush** 都走它）。
+   * 返回 Promise 便于 `await flushSave()` 之后再触发主进程动作（导出 / 导入要知道磁盘与内存已是最新）。
+   */
   const flushSave = useCallback(() => {
     const s = stateRef.current;
-    if (!s.ready || !s.settings) return;
+    if (!s.ready || !s.settings) return Promise.resolve();
     if (window.stab && window.stab.saveState) {
-      window.stab.saveState({
+      return window.stab.saveState({
         settings: s.settings,
         conversations: s.conversations,
         modelSeries: s.modelSeries,
         renameConfig: s.renameConfig
       }).catch(() => {});
     }
+    return Promise.resolve();
   }, []);
 
   // 变更防抖落盘

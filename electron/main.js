@@ -23,6 +23,7 @@ const promptMeta = require('./src/promptmeta');
 const exportImage = require('./src/exportImage');
 const conversationMeta = require('./src/conversationMeta');
 const clipboardPayload = require('./src/clipboardPayload');
+const dataTransfer = require('./src/dataTransfer');
 
 const isDev = !app.isPackaged;
 const APP_NAME = 'StabStab';
@@ -648,6 +649,102 @@ function registerIpc() {
   ipcMain.handle('result:download', (_e, file) => saveImageToDefaultDir('result', file));
   ipcMain.handle('result:copy-image', (_e, file) => copyImageToClipboard('result', file));
   ipcMain.handle('attachments:copy-image', (_e, file) => copyImageToClipboard('upload', file));
+
+  // ---- 配置 + 聊天记录：导出 / 导入（见 electron/src/dataTransfer.js） ----
+  // 导出：设置 + 会话 + 模型系列 + 重命名模型配置 + 被会话引用到的图片，zip 名字固定协议
+  //       `ss-YYYYMMDD-HHmm.zip`（精确到分钟）。渲染进程先 flushSave，保证导出的是最新数据。
+  ipcMain.handle('data:export', async () => {
+    const now = new Date();
+    const defaultDir = systemDownloadsDir();
+    try { fs.mkdirSync(defaultDir, { recursive: true }); } catch (e) { /* 建不出来就交给对话框 */ }
+    const opts = {
+      title: '导出配置与聊天记录',
+      buttonLabel: '导出',
+      defaultPath: path.join(defaultDir, dataTransfer.zipNameFor(now)),
+      filters: [{ name: 'StabStab 导出包', extensions: ['zip'] }]
+    };
+    const ret = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts);
+    if (ret.canceled || !ret.filePath) return { ok: true, canceled: true };
+
+    // 包名是导入时的第一道校验，所以这里强制回到协议名（用户在对话框里改了名也能被导入）
+    const wanted = path.basename(ret.filePath);
+    let dest = ret.filePath;
+    let renamedFrom = '';
+    if (dataTransfer.parseZipName(wanted).ok) {
+      dest = ret.filePath;
+    } else if (dataTransfer.parseZipName(`${wanted}.zip`).ok) {
+      dest = `${ret.filePath}.zip`;               // 用户在对话框里漏了扩展名
+    } else {
+      dest = path.join(path.dirname(ret.filePath), dataTransfer.zipNameFor(now));
+      renamedFrom = wanted;
+    }
+
+    const r = await dataTransfer.exportData({
+      destPath: dest,
+      settings,
+      conversations,
+      modelSeries,
+      renameConfig,
+      paths: PATHS,
+      appVersion: app.getVersion(),
+      now
+    });
+    return { ...r, renamedFrom };
+  });
+
+  // 导入：包名协议 → 解压到缓存目录 → 包内目录协议 → 智能合并 → 叠加图片 → 落盘
+  // 两道校验各自有自己的错误码（BAD_NAME / BAD_STRUCTURE），渲染进程分别提示。
+  ipcMain.handle('data:import', async () => {
+    const opts = {
+      title: '导入配置与聊天记录',
+      buttonLabel: '导入',
+      properties: ['openFile'],
+      filters: [
+        { name: 'StabStab 导出包 (ss-*.zip)', extensions: ['zip'] },
+        { name: '所有文件', extensions: ['*'] }
+      ]
+    };
+    const ret = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
+    if (ret.canceled || !ret.filePaths.length) return { ok: true, canceled: true };
+
+    const r = await dataTransfer.importData({
+      zipPath: ret.filePaths[0],
+      paths: PATHS,                                   // 解压到 <data>/cache/ss-import-*（导入结束即清理）
+      current: { settings, modelSeries, renameConfig, conversations },
+      dirExists: (p) => {
+        try { return fs.statSync(p).isDirectory(); } catch (e) { return false; }
+      }
+    });
+    if (!r.ok) return r;                              // {ok:false, code, message}
+
+    // 落盘 + 更新内存：四份数据一起换（写失败就整体报错，内存保持原样）
+    try {
+      const nextSeries = modelSeriesLib.save(PATHS.modelSeries, r.merged.modelSeries);
+      const nextRename = renameModel.save(PATHS.renameModel, r.merged.renameConfig);
+      const nextSettings = r.merged.settings;
+      store.saveSettings(PATHS.settings, nextSettings);
+      store.saveConversations(PATHS.conversations, r.merged.conversations);
+      settings = nextSettings;
+      modelSeries = nextSeries;
+      renameConfig = nextRename;
+      conversations = r.merged.conversations;
+      nativeTheme.themeSource = settings.theme === 'system' ? 'system' : (settings.theme === 'dark' ? 'dark' : 'light');
+    } catch (e) {
+      log.error('导入失败：数据落盘出错', { error: e.message });
+      return { ok: false, code: 'SAVE_FAILED', message: `导入数据写入失败：${e.message}` };
+    }
+
+    return {
+      ok: true,
+      source: path.basename(ret.filePaths[0]),
+      manifest: r.manifest,
+      media: r.media,
+      summary: r.merged.summary,
+      notes: r.merged.notes,
+      // 渲染进程据此整体替换本地状态（随后由既有的防抖落盘保持一致）
+      state: { settings, modelSeries, renameConfig, conversations }
+    };
+  });
 
   // ---- 对话框 / Shell ----
   ipcMain.handle('dialog:pick-images', async () => {

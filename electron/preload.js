@@ -47,6 +47,11 @@ contextBridge.exposeInMainWorld('stab', {
   copyImage: (file) => ipcRenderer.invoke('result:copy-image', file),     // 复制到剪贴板
   copyUploadImage: (file) => ipcRenderer.invoke('attachments:copy-image', file), // 复制输入图到剪贴板
 
+  // ---- 配置 + 聊天记录：导出 / 导入（zip 打包 + 智能合并，见 electron/src/dataTransfer.js）----
+  // exportData() → {ok, canceled?} | {ok:true, path, bytes, counts…}；导入成功回 {ok:true, state, summary, notes}
+  exportData: () => ipcRenderer.invoke('data:export'),
+  importData: () => ipcRenderer.invoke('data:import'),
+
   // ---- 对话框 / Shell ----
   pickImages: () => ipcRenderer.invoke('dialog:pick-images'),
   pickFolder: (defaultPath) => ipcRenderer.invoke('dialog:pick-folder', defaultPath),

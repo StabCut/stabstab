@@ -910,6 +910,322 @@ async function main() {
       '补写前后的差异确实来自新增的 pic 项');
   }
 
+  console.log('\n[23] zip 读写（无依赖打包 / 解包，含 ZIP64 与损坏检测）');
+  {
+    const zipLib = require(path.join(ROOT, 'electron/src/zip'));
+    const srcDir = path.join(TMP, 'zip-src');
+    fs.mkdirSync(srcDir, { recursive: true });
+    const big = Buffer.alloc(300000);
+    for (let i = 0; i < big.length; i++) big[i] = (i * 2654435761) % 251;
+    fs.writeFileSync(path.join(srcDir, '大图 结果.bin'), big);
+    const text = JSON.stringify({ 中文: '内容 🎨', 说明: '这段文本要足够长，deflate 才会比原样更小'.repeat(20), 行: '第二行' });
+    const zipPath = path.join(TMP, 'zip-basic.zip');
+
+    const w = await zipLib.writeZip(zipPath, [
+      { name: 'ss-export/manifest.json', data: text },
+      { name: 'ss-export/cache/大图 结果.bin', file: path.join(srcDir, '大图 结果.bin') },
+      { name: 'ss-export/empty.txt', data: '' }
+    ], { now: new Date(2026, 1, 13, 15, 30, 0) });
+    check(w.entries === 3 && w.bytes > 0, 'writeZip 写入 3 个条目');
+    const list = await zipLib.listZip(zipPath);
+    check(list.length === 3 && list.map((e) => e.rel).join('|') === 'ss-export/manifest.json|ss-export/cache/大图 结果.bin|ss-export/empty.txt',
+      'listZip 按中央目录列出条目（UTF-8 中文名 + 空格正确）');
+    check(list[0].method === zipLib.METHOD_DEFLATE && list[1].method === zipLib.METHOD_STORE,
+      '文本走 DEFLATE、已压缩的大文件走 STORE');
+    check((await zipLib.readEntryText(zipPath, 'ss-export/manifest.json')) === text, '文本条目往返一致');
+    const outDir = path.join(TMP, 'zip-out');
+    const ex = await zipLib.extractAll(zipPath, outDir);
+    check(ex.files.length === 3, 'extractAll 解出全部条目');
+    check(fs.readFileSync(path.join(outDir, 'ss-export/cache/大图 结果.bin')).equals(big), '大文件字节完全一致（STORE + CRC 校验）');
+    check(fs.readFileSync(path.join(outDir, 'ss-export/empty.txt')).length === 0, '空条目解出空文件');
+
+    // ZIP64（强制分支：本地头 / 中央目录 / 结尾记录都走 64 位字段）
+    const z64 = path.join(TMP, 'zip-64.zip');
+    await zipLib.writeZip(z64, [{ name: 'a.txt', data: 'zip64 内容' }, { name: 'b.bin', file: path.join(srcDir, '大图 结果.bin') }], { forceZip64: true });
+    const l64 = await zipLib.listZip(z64);
+    check(l64.length === 2 && l64[1].size === big.length, 'ZIP64 包能被自己读回（条目大小走 64 位扩展字段）');
+    const out64 = path.join(TMP, 'zip-out64');
+    await zipLib.extractAll(z64, out64);
+    check(fs.readFileSync(path.join(out64, 'b.bin')).equals(big) && fs.readFileSync(path.join(out64, 'a.txt'), 'utf8') === 'zip64 内容',
+      'ZIP64 包解压内容正确');
+
+    // 条目名安全（目录穿越 / 盘符 / 反斜杠归一）
+    check(zipLib.normalizeEntryName('cache\\a.png') === 'cache/a.png', '反斜杠条目名（Windows 工具产生）归一为 /');
+    let badName = false;
+    try { zipLib.normalizeEntryName('../evil.txt'); } catch (e) { badName = e.code === 'BAD_NAME'; }
+    check(badName, '拒绝向上跳目录的条目名');
+    let badDrive = false;
+    try { zipLib.normalizeEntryName('C:\\Windows\\x.txt'); } catch (e) { badDrive = e.code === 'BAD_NAME'; }
+    check(badDrive, '拒绝绝对路径 / 盘符条目名');
+
+    // 损坏检测：改掉一个数据字节 → CRC 校验必须失败
+    const broken = path.join(TMP, 'zip-broken.zip');
+    const buf = fs.readFileSync(zipPath);
+    const first = await zipLib.listZip(zipPath);
+    const target = first[1];
+    const dataStart = target.localOffset + 30 + Buffer.from(target.name, 'utf8').length;
+    buf[dataStart + 10] ^= 0xff;
+    fs.writeFileSync(broken, buf);
+    let crcCode = '';
+    try { await zipLib.extractAll(broken, path.join(TMP, 'zip-broken-out')); } catch (e) { crcCode = e.code; }
+    check(crcCode === 'CRC_MISMATCH', '包体被改坏时解压报 CRC_MISMATCH（不产生脏数据）');
+
+    // 不是 zip 的文件
+    const notZip = path.join(TMP, 'not-zip.zip');
+    fs.writeFileSync(notZip, '这根本不是 zip');
+    let nzCode = '';
+    try { await zipLib.listZip(notZip); } catch (e) { nzCode = e.code; }
+    check(nzCode === 'BAD_ZIP', '非 zip 文件报 BAD_ZIP');
+  }
+
+  console.log('\n[24] 配置 + 聊天记录：导出 / 导入（包名协议 + 目录协议 + 智能合并）');
+  {
+    const zipLib = require(path.join(ROOT, 'electron/src/zip'));
+    const dt = require(path.join(ROOT, 'electron/src/dataTransfer'));
+    const seed = JSON.parse(fs.readFileSync(modelSeriesLib.SEED_FILE, 'utf8'));
+
+    // ---- 包名协议 ----
+    const at = new Date(2026, 1, 13, 15, 30, 5);
+    check(dt.zipNameFor(at) === 'ss-20260213-1530.zip', '导出包名 = ss-YYYYMMDD-HHmm.zip（精确到分钟）');
+    check(dt.parseZipName('ss-20260213-1530.zip').ok === true, '合法包名通过校验');
+    check(dt.parseZipName('SS-20260213-1530.ZIP').ok === true, '包名校验不区分大小写');
+    for (const n of ['backup.zip', 'ss-20260213-1530-1.zip', 'ss-2026-02-13.zip', 'ss-20261399-1530.zip', 'ss-20260213-1530.tar.gz', 'ss-20260213-9999.zip']) {
+      check(dt.parseZipName(n).ok === false, `非法包名被拒：${n}`);
+    }
+
+    // ---- 导出 ----
+    const srcCache = path.join(TMP, 'dt-cache');
+    const srcUploads = path.join(TMP, 'dt-uploads');
+    fs.mkdirSync(srcCache, { recursive: true });
+    fs.mkdirSync(srcUploads, { recursive: true });
+    fs.writeFileSync(path.join(srcCache, 'result_1.png'), PNG);
+    fs.writeFileSync(path.join(srcUploads, 'up_1.png'), PNG);
+    fs.writeFileSync(path.join(srcCache, 'result_unused.png'), PNG);   // 没被任何会话引用 → 不打包
+
+    const convs = {
+      version: 1,
+      tabCounter: 7,
+      activeId: 'c1',
+      conversations: [
+        {
+          id: 'c1', name: '一只猫', nameAuto: false, createdAt: 1000, updatedAt: 2000, dot: 'success',
+          messages: [
+            {
+              id: 'u1', role: 'user', text: '一只猫', createdAt: 1000,
+              images: [{ file: 'up_1.png', name: 'up_1.png', srcName: '猫.png', mime: 'image/png' }],
+              params: { size: 'auto' },
+              model: { id: 'm_import_1', name: 'qwen-image-3.0-pro', seriesId: 'qwen', sourceId: 'official', protocol: 'dashscope-multimodal' }
+            },
+            { id: 'a1', role: 'assistant', parentId: 'u1', status: 'success', images: [{ file: 'result_1.png', width: 16, height: 16 }], meta: { modelId: 'm_import_1', seriesId: 'qwen' } },
+            { id: 'a2', role: 'assistant', parentId: 'u1', status: 'running', images: [], meta: { modelId: 'm_import_1' } }
+          ]
+        }
+      ]
+    };
+    const settingsA = {
+      theme: 'dark',
+      defaultSavePath: path.join(TMP, '不存在的保存目录'),
+      requestTimeoutSec: 120,
+      compressEnabled: false,
+      compressMaxMB: 4,
+      saveNamePromptChars: 9,
+      modelGroups: [
+        { seriesId: 'qwen', models: [{ id: 'm_import_1', name: 'qwen-image-3.0-pro', sourceId: 'official' }, { id: 'm_new_1', name: 'qwen-image-max', sourceId: 'official' }] },
+        { seriesId: 'my-series', models: [{ id: 'm_custom_1', name: 'my-model-v1', sourceId: 'only' }] }
+      ],
+      sourceConfig: {
+        'qwen.official': { apiKey: 'sk-import', baseUrl: 'https://import.example.com' },
+        'gpt-image.grsai': { apiKey: 'sk-grsai', baseUrl: '' }
+      },
+      defaultModelId: 'm_new_1',
+      renameModel: { apiKey: 'sk-rename', baseUrl: '', modelId: 'deepseek-chat' }
+    };
+    const seriesA = {
+      version: 1,
+      series: [
+        ...seed.series.map((s) => ({ ...s, hidden: s.id === 'qwen' })),
+        {
+          id: 'my-series', label: '我的自定义系列', protocol: 'newapi-images', builtin: false, hidden: false,
+          sources: [{ id: 'only', label: '唯一来源', protocol: 'newapi-images', baseUrl: 'https://my.example.com/v1' }]
+        }
+      ]
+    };
+    const renameA = { version: 1, baseUrl: 'https://api.deepseek.com', modelId: 'deepseek-flash', temperature: 0.9, topP: 0.3, promptTemplate: '导入的模板：{$$}' };
+
+    const zipPath = path.join(TMP, dt.zipNameFor(at));
+    const exp = await dt.exportData({
+      destPath: zipPath, settings: settingsA, conversations: convs, modelSeries: seriesA, renameConfig: renameA,
+      paths: { cache: srcCache, uploads: srcUploads }, appVersion: '1.0.0', now: at
+    });
+    check(exp.ok === true, '导出成功');
+    check(exp.images === 2 && exp.missing === 0, '只打包会话引用到的图片（未引用的 result_unused.png 不打包）');
+    check(exp.conversations === 1 && exp.messages === 3, '导出计数：会话数 / 消息数');
+    const names = (await zipLib.listZip(zipPath)).map((e) => e.rel);
+    check(['ss-export/manifest.json', 'ss-export/settings.json', 'ss-export/conversations.json', 'ss-export/model-series.json', 'ss-export/rename-model.json']
+      .every((n) => names.includes(n)), '包内四份 json + manifest 齐全');
+    check(names.includes('ss-export/cache/result_1.png') && names.includes('ss-export/uploads/up_1.png'), '图片落在 cache/ 与 uploads/ 下');
+    check(names.includes('ss-export/cache/result_unused.png') === false, '未被引用的缓存图不进包');
+    const manifest = JSON.parse(await zipLib.readEntryText(zipPath, 'ss-export/manifest.json'));
+    check(manifest.format === dt.FORMAT && manifest.version === dt.FORMAT_VERSION, 'manifest 记录格式与版本');
+    check(manifest.counts.conversations === 1 && manifest.counts.images === 2, 'manifest 记录计数');
+
+    // ---- 包名校验先于解压 ----
+    const badNamePath = path.join(TMP, 'backup.zip');
+    fs.copyFileSync(zipPath, badNamePath);
+    const badName = await dt.importData({ zipPath: badNamePath, paths: { cache: path.join(TMP, 'dt-w1') }, current: {} });
+    check(badName.ok === false && badName.code === 'BAD_NAME', '包名不符合格式 → BAD_NAME（在解压之前）');
+
+    // ---- 目录协议校验 ----
+    const structZip = path.join(TMP, dt.zipNameFor(new Date(2026, 1, 14, 10, 0)));
+    await zipLib.writeZip(structZip, [
+      { name: 'ss-export/manifest.json', data: JSON.stringify({ format: dt.FORMAT, version: 1 }) },
+      { name: 'ss-export/settings.json', data: '{}' },
+      { name: 'ss-export/evil.txt', data: '协议外条目' }
+    ]);
+    const badStruct = await dt.importData({ zipPath: structZip, paths: { cache: path.join(TMP, 'dt-w2') }, current: {} });
+    check(badStruct.ok === false && badStruct.code === 'BAD_STRUCTURE', '包内出现协议外条目 → BAD_STRUCTURE');
+
+    const noManifest = path.join(TMP, dt.zipNameFor(new Date(2026, 1, 14, 10, 1)));
+    await zipLib.writeZip(noManifest, [{ name: 'ss-export/settings.json', data: '{}' }]);
+    const nm = await dt.importData({ zipPath: noManifest, paths: { cache: path.join(TMP, 'dt-w3') }, current: {} });
+    check(nm.ok === false && nm.code === 'BAD_STRUCTURE', '缺少 manifest.json → BAD_STRUCTURE');
+
+    const subDir = path.join(TMP, dt.zipNameFor(new Date(2026, 1, 14, 10, 2)));
+    await zipLib.writeZip(subDir, [
+      { name: 'ss-export/manifest.json', data: JSON.stringify({ format: dt.FORMAT, version: 1 }) },
+      { name: 'ss-export/conversations.json', data: '{"conversations":[]}' },
+      { name: 'ss-export/cache/sub/x.png', data: PNG }
+    ]);
+    const sd = await dt.importData({ zipPath: subDir, paths: { cache: path.join(TMP, 'dt-w4') }, current: {} });
+    check(sd.ok === false && sd.code === 'BAD_STRUCTURE', '媒体目录里出现子目录 → BAD_STRUCTURE');
+
+    const newer = path.join(TMP, dt.zipNameFor(new Date(2026, 1, 14, 10, 3)));
+    await zipLib.writeZip(newer, [
+      { name: 'ss-export/manifest.json', data: JSON.stringify({ format: dt.FORMAT, version: dt.FORMAT_VERSION + 1 }) },
+      { name: 'ss-export/settings.json', data: '{}' }
+    ]);
+    const nv = await dt.importData({ zipPath: newer, paths: { cache: path.join(TMP, 'dt-w5') }, current: {} });
+    check(nv.ok === false && nv.code === 'BAD_VERSION', '包格式版本比程序新 → BAD_VERSION');
+
+    const garbage = path.join(TMP, dt.zipNameFor(new Date(2026, 1, 14, 10, 4)));
+    fs.writeFileSync(garbage, '这不是 zip');
+    const gz = await dt.importData({ zipPath: garbage, paths: { cache: path.join(TMP, 'dt-w6') }, current: {} });
+    check(gz.ok === false && gz.code === 'BAD_ZIP', '不是 zip 的包 → BAD_ZIP');
+
+    // ---- 智能合并 ----
+    const current = {
+      settings: {
+        theme: 'light',
+        defaultSavePath: path.join(TMP, 'local-downloads'),
+        requestTimeoutSec: 300,
+        compressEnabled: true,
+        compressMaxMB: 10,
+        saveNamePromptChars: 5,
+        modelGroups: [
+          { seriesId: 'qwen', models: [{ id: 'm_q1', name: 'qwen-image-3.0-pro', sourceId: 'official' }, { id: 'm_local', name: 'local-model', sourceId: 'official' }] }
+        ],
+        sourceConfig: { 'qwen.official': { apiKey: 'sk-local', baseUrl: 'https://local.example.com' } },
+        defaultModelId: 'm_q1',
+        renameModel: { apiKey: '', baseUrl: '', modelId: '' }
+      },
+      modelSeries: { version: 1, series: seed.series.map((s) => ({ ...s, hidden: s.id === 'doubao-seedream' })) },
+      renameConfig: { version: 1, temperature: 0.5, topP: 0.5, promptTemplate: '本机模板' },
+      conversations: {
+        version: 1, tabCounter: 2, activeId: 'c_local',
+        conversations: [{ id: 'c_local', name: '本机对话', messages: [{ id: 'u_local', role: 'user', text: '本机', createdAt: 10 }] }]
+      }
+    };
+    const target = { cache: path.join(TMP, 'dt-target-cache'), uploads: path.join(TMP, 'dt-target-uploads') };
+    const imp = await dt.importData({ zipPath, paths: target, current, dirExists: () => false });
+    check(imp.ok === true, '导入成功（包名 + 目录协议都通过）');
+    if (imp.ok) {
+      const m = imp.merged;
+      // 设置：选项类按导入改动
+      check(m.settings.theme === 'dark' && m.settings.compressEnabled === false && m.settings.compressMaxMB === 4
+        && m.settings.saveNamePromptChars === 9 && m.settings.requestTimeoutSec === 120, '选项类设置按导入的值改动（主题 / 压缩 / 命名 / 超时）');
+      check(m.settings.defaultSavePath === current.settings.defaultSavePath, '默认保存路径在本机不存在 → 保留当前值');
+      check(m.settings.defaultModelId === 'm_new_1', '导入的默认模型在合并后存在 → 采用它');
+      // 模型：查重 + 追加 + 自动新增系列
+      const qwen = m.settings.modelGroups.find((g) => g.seriesId === 'qwen');
+      check(qwen.models.map((x) => x.id).join('|') === 'm_q1|m_local|m_new_1', '同系列新模型追加在末尾（已有模型保持原样）');
+      check(qwen.models.some((x) => x.id === 'm_new_1' && x.name === 'qwen-image-max'), '新模型带着名字被追加');
+      check(m.summary.ignoredModels === 1, '同系列同来源同名（不同 id）的模型被查重忽略');
+      check(!!m.settings.modelGroups.find((g) => g.seriesId === 'my-series'), '当前没有的模型系列自动新增分组');
+      check(m.modelSeries.series.some((s) => s.id === 'my-series' && s.custom === true), '自定义系列定义一起带过来');
+      check(m.modelSeries.series.find((s) => s.id === 'doubao-seedream').hidden === true, '合并后依旧没有模型的系列保持隐藏（hidden 不被导入改掉）');
+      check(m.modelSeries.series.find((s) => s.id === 'my-series').hidden === false, '自动新增的系列是可见的（hidden=false）');
+      // 密钥：只补空缺
+      check(m.settings.sourceConfig['qwen.official'].apiKey === 'sk-local', '本机已有的 API Key 不被导入覆盖');
+      check(m.settings.sourceConfig['qwen.official'].baseUrl === 'https://local.example.com', '本机已有的 API 地址不被导入覆盖');
+      check(m.settings.sourceConfig['gpt-image.grsai'].apiKey === 'sk-grsai', '本机空缺的「系列·来源」密钥由导入补上');
+      // renameModel
+      check(m.settings.renameModel.apiKey === 'sk-rename' && m.settings.renameModel.modelId === 'deepseek-chat', '重命名模型的非空字段按导入覆盖');
+      check(m.renameConfig.temperature === 0.9 && m.renameConfig.topP === 0.3 && m.renameConfig.promptTemplate === '导入的模板：{$$}', 'rename-model.json 按导入的值改动');
+      // 会话：追加在最上面 + id 映射 + 中断标记
+      const list = m.conversations.conversations;
+      check(list[0].id === 'c1' && list[1].id === 'c_local', '导入的聊天记录追加在当前列表最新位置（最上面）');
+      check(list[0].name === '一只猫' && list[0].dot === null, '标签名一起带过来，圆点终态清空');
+      check(m.summary.remappedModels === 3, '导入会话里的模型引用按 id 映射改指本机同款模型');
+      check(list[0].messages[0].model.id === 'm_q1', '用户消息的模型 id 被改写为本机模型 id');
+      check(list[0].messages[1].meta.modelId === 'm_q1', '助手消息的 meta.modelId 被改写为本机模型 id');
+      check(list[0].messages[2].status === 'error' && list[0].messages[2].error.code === 'INTERRUPTED', '导入时仍 pending/running 的请求标记为被中断');
+      check(m.conversations.activeId === 'c_local' && m.conversations.tabCounter === 7, 'activeId 不变，tabCounter 取两者最大值');
+      // 图片叠加
+      check(imp.media.copied === 2 && fs.readFileSync(path.join(target.cache, 'result_1.png')).equals(PNG), '图片叠加到目标数据目录（不存在则创建）');
+      check(fs.existsSync(path.join(target.uploads, 'up_1.png')), '输入图叠加到 uploads/');
+
+      // 再导入同一个包：会话按 id 查重、图片按文件名查重
+      const imp2 = await dt.importData({ zipPath, paths: target, current: { ...current, ...m }, dirExists: () => false });
+      check(imp2.ok === true && imp2.merged.summary.conversations === 0 && imp2.merged.summary.skippedConversations === 1, '重复导入：会话按 id 查重后不再追加');
+      check(imp2.merged.summary.ignoredModels === 3 && imp2.merged.summary.addedModels === 0, '重复导入：模型不再重复追加（全部按 id / 同名查重忽略）');
+      check(imp2.media.copied === 0 && imp2.media.skipped === 2, '重复导入：同名图片文件直接忽略（查重）');
+    }
+
+    // ---- 纯函数：合并规则可直接断言 ----
+    const g = dt.mergeModelGroups(
+      [{ seriesId: 'qwen', models: [{ id: 'a', name: 'M1', sourceId: 'official' }] }],
+      [
+        { seriesId: 'qwen', models: [{ id: 'a', name: 'M1', sourceId: 'official' }, { id: 'b', name: 'm1', sourceId: 'official' }, { id: 'c', name: 'M2', sourceId: 'official' }] },
+        { seriesId: '没这个系列', models: [{ id: 'd', name: 'M3', sourceId: 'official' }] }
+      ],
+      { series: [{ id: 'qwen', protocol: 'dashscope-multimodal', sources: [{ id: 'official', protocol: 'dashscope-multimodal' }] }] }
+    );
+    check(g.groups[0].models.length === 2 && g.addedModels === 1 && g.ignoredModels === 2, 'mergeModelGroups：同 id 忽略、同系列同来源同名忽略、其余追加');
+    check(g.idRemap.get('b') === 'a', 'mergeModelGroups：同名模型的 id 映射到本机 id');
+    check(g.skippedSeries.join() === '没这个系列' && g.groups.length === 1, 'mergeModelGroups：无法识别的系列被跳过（不新建分组）');
+
+    const sc = dt.mergeSourceConfig({ 'a.b': { apiKey: 'k1', baseUrl: '' } }, { 'a.b': { apiKey: 'k2', baseUrl: 'u2' }, 'c.d': { apiKey: 'k3', baseUrl: '' } });
+    check(sc.config['a.b'].apiKey === 'k1' && sc.config['a.b'].baseUrl === 'u2', 'mergeSourceConfig：已有 Key 保留、空缺的地址补上');
+    check(sc.filled === 2 && sc.kept === 0, 'mergeSourceConfig：统计补空缺 / 保留的组数');
+
+    const mc = dt.mergeConversations(
+      { tabCounter: 1, activeId: 'x', conversations: [{ id: 'x', messages: [] }] },
+      { tabCounter: 5, conversations: [{ id: 'y', messages: [{ id: 'm', role: 'assistant', status: 'running' }] }, { id: 'x', messages: [] }] },
+      new Map()
+    );
+    check(mc.added === 1 && mc.skipped === 1 && mc.conversations.conversations[0].id === 'y', 'mergeConversations：新会话插到最上面、同 id 跳过');
+    check(mc.conversations.tabCounter === 5 && mc.conversations.activeId === 'x', 'mergeConversations：tabCounter 取最大、activeId 保持有效值');
+
+    const hiddenMerge = dt.mergeImport({
+      current: {
+        settings: { ...store.DEFAULT_SETTINGS, modelGroups: [] },
+        modelSeries: {
+          version: 1,
+          series: [{ id: 'hidden-series', label: '隐藏系列', protocol: 'newapi-images', hidden: true, sources: [{ id: 'only', protocol: 'newapi-images' }] }]
+        },
+        renameConfig: {},
+        conversations: { conversations: [] }
+      },
+      imported: {
+        settings: { modelGroups: [{ seriesId: 'hidden-series', models: [{ id: 'mm1', name: 'x-model', sourceId: 'only' }] }] },
+        modelSeries: { series: [] },
+        conversations: { conversations: [] }
+      }
+    });
+    check(hiddenMerge.modelSeries.series[0].hidden === false && hiddenMerge.settings.modelGroups[0].models.length === 1,
+      '导入的模型属于本机已隐藏的系列时：自动新增分组并把该系列从隐藏里放出来');
+  }
+
   console.log(`\n========== 结果: ${pass} 通过, ${fail} 失败 ==========`);
   server.close();
   runner.cancelAll();
