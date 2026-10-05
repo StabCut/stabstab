@@ -95,7 +95,7 @@ export function reducer(state, action) {
         nameAuto: true,           // true = 名字仍可由自动命名流程替换
         createdAt: Date.now(),
         updatedAt: Date.now(),
-        unread: false,
+        dot: null,                // 侧栏圆点终态：null | 'success' | 'error'（'running' 由 conversationDot 推导）
         messages: []
       };
       return {
@@ -140,9 +140,9 @@ export function reducer(state, action) {
         conversations: { ...state.conversations, activeId: null, conversations: [] }
       };
     case 'CONV_ACTIVATE': {
+      // 点开标签 = 圆点被消费（绿/红终态随点击消失，切走再切回来不会复活；黄点由推导得出，见 conversationDot）
       if (state.conversations.activeId === action.id) {
-        // 仍然清空黄点
-        return updateConv(state, action.id, (c) => ({ ...c, unread: false }));
+        return updateConv(state, action.id, (c) => (c.dot ? { ...c, dot: null } : c));
       }
       return clearReuse({
         ...state,
@@ -150,13 +150,14 @@ export function reducer(state, action) {
           ...state.conversations,
           activeId: action.id,
           conversations: state.conversations.conversations.map((c) =>
-            c.id === action.id ? { ...c, unread: false } : c
+            c.id === action.id ? { ...c, dot: null } : c
           )
         }
       });
     }
-    case 'CONV_MARK_UNREAD':
-      return updateConv(state, action.id, (c) => ({ ...c, unread: true }));
+    case 'CONV_DOT_SET':
+      // 后台（非当前标签）的生成落了终态：成功 → 绿点，失败 → 红点；点开该标签即消费
+      return updateConv(state, action.id, (c) => ({ ...c, dot: action.dot || null }));
 
     // ---- 消息 ----
     case 'MSG_ADD':
@@ -241,6 +242,50 @@ export function reducer(state, action) {
     default:
       return state;
   }
+}
+
+/**
+ * 这个会话此刻是否还在生成（= 结果还没回来）。两个口径都要看：
+ *   · busy[convId]                —— 同步模式「等待返回中」的本地标记（BUSY_SET / BUSY_CLEAR）
+ *   · 助手消息 status=pending/running —— 异步任务、重启后恢复的异步轮询没有 busy，只有消息状态
+ * 纯函数，导出便于 QA 脚本直接断言（见 AIDEV.md §4.8）。
+ */
+export function isGenerating(state, conv) {
+  if (!conv) return false;
+  if (state.busy && state.busy[conv.id]) return true;
+  return (conv.messages || []).some(
+    (m) => m.role === 'assistant' && (m.status === 'pending' || m.status === 'running')
+  );
+}
+
+/**
+ * 侧栏标签上的圆点（复用同一个 .conv-dot 组件的三种状态）：
+ *   'running' 黄 = 后台还在等这个标签的结果（生成中切走 / 异步后台轮询 / 重启后恢复的任务）
+ *   'success' 绿 = 后台生成成功      'error' 红 = 后台生成失败      null = 不显示
+ *
+ * - **只在非当前标签上显示**：正看着的会话不打扰；点开标签即把终态清空（reducer 的 CONV_ACTIVATE），
+ *   所以绿/红点被消费后切走再切回来不会复活。
+ * - 'running' 是**推导**出来的（见 isGenerating），不额外记录「谁在跑」—— 切换标签、异步轮询、
+ *   重启恢复三条路径天然一致；正在生成优先于上一次的终态（又跑起来了就回到黄色）。
+ * - 终态点由 App.jsx 在结果/失败事件里写入（CONV_DOT_SET），仅当事件到达时会话不是当前标签。
+ */
+export function conversationDot(state, conv) {
+  if (!conv || state.conversations.activeId === conv.id) return null;
+  if (isGenerating(state, conv)) return 'running';
+  return conv.dot || null;
+}
+
+/**
+ * API 事件 → 侧栏圆点动作（终态点只在这个条件下写入）：
+ *   · 只有 result / error 落终态（status 只是「还在跑」，cancelled 是用户主动停止，都不给点）；
+ *   · 事件到达时会话**不是当前标签**（正看着的会话不打扰）；
+ *   · 其余事件返回 null（不改圆点）。
+ * App.jsx 把返回的动作直接 dispatch；纯函数，导出便于 QA 断言（见 AIDEV.md §4.8）。
+ */
+export function dotActionForEvent(ev, activeId) {
+  if (!ev || (ev.type !== 'result' && ev.type !== 'error')) return null;
+  if (!ev.conversationId || ev.conversationId === activeId) return null;
+  return { type: 'CONV_DOT_SET', id: ev.conversationId, dot: ev.type === 'result' ? 'success' : 'error' };
 }
 
 const AppCtx = createContext(null);

@@ -1,14 +1,32 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { useApp, useToast } from '../lib/store.jsx';
+import { useApp, useToast, conversationDot } from '../lib/store.jsx';
 import Icon from './Icon.jsx';
 
+/** 圆点文案：黄 = 后台还在等结果 · 绿 = 后台生成成功 · 红 = 后台生成失败 */
+const DOT_TITLE = {
+  running: '后台生成中，等待结果…',
+  success: '后台生成成功',
+  error: '后台生成失败'
+};
+
+/**
+ * 会话标签上的状态圆点（三种状态复用同一个组件 / 同一段样式：绿、红只是 .conv-dot 的颜色修饰类）。
+ * kind = conversationDot(...)：'running' | 'success' | 'error' | null（null = 不渲染）。
+ */
+function ConvDot({ kind }) {
+  if (!kind) return null;
+  return <span className={`conv-dot ${kind}`} title={DOT_TITLE[kind] || ''} />;
+}
+
 function ConversationItem({ conv, isActive }) {
-  const { dispatch } = useApp();
+  const { state, dispatch } = useApp();
   const [menuOpen, setMenuOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(conv.name);
   const menuRef = useRef(null);
   const inputRef = useRef(null);
+  // 黄=后台还在生成 · 绿=后台成功 · 红=后台失败；点开这个标签即消费掉（见 store.jsx#conversationDot）
+  const dot = conversationDot(state, conv);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -38,7 +56,7 @@ function ConversationItem({ conv, isActive }) {
       onClick={() => dispatch({ type: 'CONV_ACTIVATE', id: conv.id })}
       title={conv.name}
     >
-      {conv.unread && <span className="conv-dot" title="有新结果" />}
+      <ConvDot kind={dot} />
       {renaming ? (
         <input
           ref={inputRef}

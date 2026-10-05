@@ -271,7 +271,10 @@ function normalizeConversationsOnStartup() {
   pendingResumes = [];
   if (!conversations || !Array.isArray(conversations.conversations)) return;
   for (const conv of conversations.conversations) {
-    conv.unread = false; // 重启后清空黄点（结果已在会话中可见）
+    // 重启后清空侧栏圆点（结果已在会话中可见）：旧数据里的 unread 布尔字段就地删除，
+    // 现在由 dot 三态（success/error）+ 渲染进程推导的 running 表达。
+    if ('unread' in conv) delete conv.unread;
+    conv.dot = null;
     for (const msg of (conv.messages || [])) {
       if (msg.role !== 'assistant') continue;
       if (['pending', 'running', 'polling'].includes(msg.status)) {

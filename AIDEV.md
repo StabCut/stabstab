@@ -90,7 +90,7 @@ stabstab/
 │   ├── main.jsx                       # 入口 + 全局错误捕获上报
 │   ├── App.jsx                        # 根组件：bootstrap、API 事件路由、主题
 │   ├── components/
-│   │   ├── Sidebar.jsx                # 左侧：Logo、新建、会话列表、重命名/删除、底部操作
+│   │   ├── Sidebar.jsx                # 左侧：Logo、新建、会话列表（含后台状态圆点，见 §4.8）、重命名/删除、底部操作
 │   │   ├── ChatView.jsx               # 主区：头部（插入·复制临时按钮）、消息列表、空态、输入框
 │   │   ├── UserMessage.jsx            # 用户气泡：文本/图片、编辑重发、复制、删除
 │   │   ├── AssistantMessage.jsx       # 助手气泡：结果图/错误/异步状态卡片/取消
@@ -217,9 +217,10 @@ for f in electron/src/*.js electron/src/api/*.js; do node --check "$f"; done
              │  重启后 resume：prompt / pics 由主进程从会话记录里取回（见 §4.5）
 [渲染进程] App.jsx onApiEvent 路由：
    ├─ status → MSG_UPDATE {status:'running', taskStatus, taskId}
-   ├─ result → MSG_UPDATE {status:'success', images, usage...} + BUSY_CLEAR + 非当前会话则 CONV_MARK_UNREAD(黄点)
-   ├─ error  → MSG_UPDATE {status:'error', error} + BUSY_CLEAR
-   └─ cancelled → MSG_UPDATE {status:'cancelled'} + BUSY_CLEAR
+   ├─ result → MSG_UPDATE {status:'success', images, usage...} + BUSY_CLEAR + 非当前会话则 CONV_DOT_SET(success 绿点)
+   ├─ error  → MSG_UPDATE {status:'error', error} + BUSY_CLEAR + 非当前会话则 CONV_DOT_SET(error 红点)
+   └─ cancelled → MSG_UPDATE {status:'cancelled'} + BUSY_CLEAR        （取消不算失败，不给圆点）
+   圆点动作由 store.jsx#dotActionForEvent(ev, activeId) 统一判定（见 §4.8）
 ```
 
 **事件载荷统一结构**：`{conversationId, messageId, type, ok, images?, error?, taskId?, status?, usage?, durationMs?, ...}`。
@@ -390,6 +391,40 @@ text           ← 文件名 + 提示词（纯文本框粘贴用；不含 pic �
   所以会话里留下的永远是「实际发出去了什么」，不是「打算发什么」。
 - 回归脚本：`dev-data/qa/resend-target-test.js`（本地脚本，dev-data 已 gitignore，跑法见文件头）。
 
+### 4.8 侧栏圆点：后台生成状态（黄 / 绿 / 红，点开即消费）
+
+一个会话在**别的标签上跑着**的时候，左侧标签用**同一个圆点组件**（`Sidebar.jsx#ConvDot` + `.conv-dot`，
+只是颜色修饰类不同）表示三种后台状态：
+
+| 圆点 | class | 含义 | 什么时候亮 |
+|------|-------|------|-----------|
+| 黄 | `.conv-dot.running` | 后台仍在等这个标签的结果 | 该会话**正在生成**且**不是当前标签** |
+| 绿 | `.conv-dot.success` | 后台生成成功 | 结果事件到达时会话不是当前标签（`CONV_DOT_SET`） |
+| 红 | `.conv-dot.error` | 后台生成失败 | 失败事件到达时会话不是当前标签（`CONV_DOT_SET`） |
+
+```
+[store.jsx] conversationDot(state, conv)       ← 侧栏渲染时调用（纯函数）
+   ├─ 是当前标签 → null（正看着的会话不打扰；点开标签 = 圆点被消费）
+   ├─ isGenerating(state, conv) → 'running'    ← 黄点是**推导**出来的，不额外记「谁在跑」
+   └─ conv.dot || null                         ← 终态点（绿/红）由事件写入并落盘
+isGenerating = busy[convId] 存在（同步等待标记）
+             ∨ 助手消息 status ∈ {pending, running}（异步任务 / 重启后恢复的轮询没有 busy）
+[App.jsx] dotActionForEvent(ev, activeId)      ← 事件 → 圆点动作的唯一实现
+   · 只有 result（→success）/ error（→error）给点，且事件到达时会话不是当前标签
+   · status（还在跑）、cancelled（用户主动停止）都不给点
+[reducer] CONV_ACTIVATE → 把该会话 dot 清空（消费）；CONV_DOT_SET → 写终态
+```
+
+- **黄点为什么是推导的**：切换标签、异步后台轮询、重启后恢复的异步任务三条路径都不需要「谁在跑」的
+  额外账本 —— 只要还在生成就自然亮黄点；`busy` 只管同步模式，异步只看消息状态。
+- **消费语义**：点开标签即 `dot = null`（绿/红终态从此不再出现，切走再切回来也不复活）；
+  黄点属于「当前状态」，切走时该黄还会再亮 —— 这是「还在等结果」的正确表达。
+- **优先级**：正在生成优先于上一次的终态 —— 同一标签又发了一条，圆点从绿/红回到黄。
+- **持久化**：`conversations[].dot` 只有 `null | 'success' | 'error'`（`'running'` 不落盘）；
+  主进程启动时 `normalizeConversationsOnStartup` 把 `dot` 清空（结果已在会话里可见），
+  并删除旧版本遗留的布尔字段 `unread`。
+- 与「输入区草稿」「待复用提示词」互不相干：圆点只描述后台的生成状态。
+
 ---
 
 ## 5. 持久化数据结构（Schema）
@@ -506,7 +541,9 @@ text           ← 文件名 + 提示词（纯文本框粘贴用；不含 pic �
       "id": "c_xxx", "name": "1", "nameAuto": true,
       // name  = 空对话是序号（"1"）；出现首条文字后自动命名（见 §4.4）
       // nameAuto = true 表示名字还可被自动命名替换；用户手动改名后为 false（自动命名不再覆盖）
-      "createdAt": 0, "updatedAt": 0, "unread": false,
+      "createdAt": 0, "updatedAt": 0, "dot": null,
+      // dot = 侧栏圆点的终态：null | 'success'（绿）| 'error'（红）；黄点 'running' 由渲染进程推导、不落盘（见 §4.8）
+      //       启动时由主进程清空，旧版本遗留的布尔字段 unread 会被删掉
       "messages": [
         { // 用户消息
           "id": "m_u", "role": "user",
@@ -609,6 +646,11 @@ text           ← 文件名 + 提示词（纯文本框粘贴用；不含 pic �
     `PORTABLE_EXECUTABLE_DIR` 或 exe 同级的 `stabstab-portable.txt` 标记。旧数据迁移（`migrateLegacyData`）**只拷不删**源目录，
     已有配置时不得再迁（不能覆盖新数据），中断要能靠 `.migration.json` 续搬；安装器侧的抢救只准放在 `customInit`
     （`customInstall` 太晚，旧卸载器已经删过目录了），目标目录必须与 `paths.js` 算出来的一致，见 §5.6。
+26. **侧栏圆点三态只有一个实现**：黄/绿/红都走 `Sidebar.jsx#ConvDot` + `.conv-dot` 的三个修饰类；
+    显示与否由 `store.jsx#conversationDot` 判定（**只有非当前标签**才显示；`'running'` 由 `isGenerating`
+    推导，**不得**另立一份「谁在跑」的账本），终态点只由 `dotActionForEvent` 写入（result → 绿、error → 红；
+    `status` / `cancelled` 不给点）；点开标签即消费（`CONV_ACTIVATE` 清 `dot`，切走再切回来不复活）；
+    正在生成优先于上一次的终态。`conversations[].dot` 只存 `'success' | 'error' | null`，`'running'` 不落盘，见 §4.8。
 
 ---
 
@@ -804,6 +846,7 @@ node dev-data/qa/meta-decode-check.js   # 元数据写入后仍可被真实解�
 | 改「模型设置」页结构 | `src/components/SettingsModal.jsx`（系列卡片 / 模型行 / 来源级 API Key 与地址） |
 | 改标题生成提示模板 / 温度 / Top-P / 默认地址 | `electron/assets/rename-model.json`（随包默认）或数据目录的 `rename-model.json`（可手工编辑，重启生效；设置页滑动条也写它） |
 | 改标签命名时机与回退 | `src/lib/title.js#maybeAutoTitle/fallbackTitle` + `src/lib/send.js`（触发点）+ `src/lib/store.jsx` 的 `CONV_RENAME_AUTO` 守卫 |
+| 改侧栏圆点（黄/绿/红、点开消费） | `src/lib/store.jsx#conversationDot/isGenerating/dotActionForEvent`（判定口径）+ `src/components/Sidebar.jsx#ConvDot` + `src/styles/app.css` 的 `.conv-dot` 修饰类 + `src/App.jsx` 的事件路由（见 §4.8） |
 | 改重命名模型的协议/解析 | `electron/src/renameModel.js#generateTitle/sanitizeTitle/extractText/pickTitle`（Responses API，非 chat/completions） |
 | 改模型解析规则 | `electron/src/modelSeries.js#resolveModel` **与** `src/lib/models.js#resolveModel`（两处同口径） |
 | 改会话/消息数据结构 | `lib/store.jsx` 的 reducer + `lib/send.js` 构造器 + 主进程 `normalizeConversationsOnStartup` |

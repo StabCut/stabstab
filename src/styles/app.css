@@ -4,6 +4,7 @@
   --accent-hover: #6d61e0;
   --coral: #f4845f;
   --gold: #f7c948;
+  --green: #35c46a;
   --teal: #5ec8b7;
   --danger: #e5484d;
   --radius: 10px;
@@ -165,10 +166,15 @@ button { cursor: pointer; }
 .conv-name {
   flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px;
 }
+/* 侧栏会话圆点（三种状态共用这一段：形状 + 颜色修饰类）：
+   .running 黄 = 后台还在等结果 · .success 绿 = 后台生成成功 · .error 红 = 后台生成失败。
+   点开该标签即被消费消失（dot 由 store.jsx#conversationDot 推导 / reducer 清空）。 */
 .conv-dot {
   width: 8px; height: 8px; border-radius: 50%; background: var(--gold); flex-shrink: 0;
   box-shadow: 0 0 6px rgba(247, 201, 72, 0.8);
 }
+.conv-dot.success { background: var(--green); box-shadow: 0 0 6px rgba(53, 196, 106, 0.8); }
+.conv-dot.error { background: var(--danger); box-shadow: 0 0 6px rgba(229, 72, 77, 0.8); }
 .conv-rename-input {
   flex: 1; background: var(--bg-input); border: 1px solid var(--accent);
   border-radius: 6px; padding: 3px 8px; outline: none;

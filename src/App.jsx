@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { AppProvider, useApp } from './lib/store.jsx';
+import { AppProvider, useApp, dotActionForEvent } from './lib/store.jsx';
 import { PromptReuseProvider } from './lib/promptReuse.jsx';
 import Sidebar from './components/Sidebar.jsx';
 import ChatView from './components/ChatView.jsx';
@@ -36,10 +36,6 @@ function Shell() {
           }
         });
         dispatch({ type: 'BUSY_CLEAR', convId, jobId: msgId });
-        const activeId = stateRef.current.conversations.activeId;
-        if (convId !== activeId) {
-          dispatch({ type: 'CONV_MARK_UNREAD', id: convId });
-        }
       } else if (ev.type === 'error') {
         dispatch({
           type: 'MSG_UPDATE', convId, msgId,
@@ -53,6 +49,9 @@ function Shell() {
         });
         dispatch({ type: 'BUSY_CLEAR', convId, jobId: msgId });
       }
+      // 后台（非当前标签）的生成落了终态 → 侧栏圆点：成功绿、失败红（取消不给点）；点开该标签即消费
+      const dotAction = dotActionForEvent(ev, stateRef.current.conversations.activeId);
+      if (dotAction) dispatch(dotAction);
     });
     return off;
   }, [dispatch, stateRef]);
