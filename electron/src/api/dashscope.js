@@ -133,8 +133,17 @@ module.exports = {
   label: 'DashScope 多模态生成（千问图像）',
   defaultBaseUrl: DEFAULT_BASE_URL,
   defaultModel: 'qwen-image-3.0-pro',
-  // 需求给定的 size 列表（+ 自动）
-  sizeOptions: ['auto', '2688*1536', '2368*1728', '2048*2048', '1728*2368', '1536*2688'],
+  // 候选尺寸（仅当来源没有自己的 sizeOptions 时才作为兜底）：
+  // 官方「常见比例推荐分辨率」（1:1 / 3:2 / 2:3 / 4:3 / 3:4 / 16:9 / 9:16 / 21:9）+ 旧候选，见 model-series.json
+  sizeOptions: [
+    'auto',
+    '1024*1024', '1536*1536', '2048*2048',
+    '1280*960', '960*1280',
+    '1152*768', '1536*1024', '768*1152', '1024*1536',
+    '1280*720', '1920*1080', '720*1280', '1080*1920',
+    '1344*576',
+    '2688*1536', '2368*1728', '1728*2368', '1536*2688'
+  ],
   paramSchema: {
     n: { type: 'int', min: 1, max: 6, default: 1, label: '生成张数 n' },
     negative_prompt: { type: 'string', default: '', label: '反向提示词' },

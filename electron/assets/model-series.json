@@ -6,6 +6,7 @@
     "series[].sources[]  —— 该系列支持的 API 来源（设置页下拉框的可选项，与协议适配器一一绑定）",
     "sources[].baseUrl   —— 该来源的默认 API 地址：设置页自动填充 / 「恢复默认」用",
     "sources[].sizeOptions —— 该来源可选的输出尺寸/比例（设置页与输入区共用）",
+    "sizeOptions 合并规则 —— 内置默认 ∪ 数据目录副本里追加的项（内置顺序在前，只能增不能删）：升级后新增的常用尺寸对老用户立刻可见，用户手工加进副本的尺寸也不会被丢掉（见 electron/src/modelSeries.js）",
     "hidden               —— true = 用户已从「模型设置」列表移除（可随时重新添加）",
     "请求模式：全部系列一律「同步」——单次请求阻塞等待图片返回；没有同步/异步开关（见 AIDEV.md §4.12）"
   ],
@@ -25,8 +26,28 @@
           "protocol": "dashscope-multimodal",
           "baseUrl": "https://dashscope.aliyuncs.com/api/v1",
           "apiKeyUrl": "https://bailian.console.aliyun.com/",
-          "hint": "同步：POST /services/aigc/multimodal-generation/generation，Authorization: Bearer <DASHSCOPE_API_KEY>。尺寸形如 2688*1536，最多 3 张输入图。",
-          "sizeOptions": ["auto", "2688*1536", "2368*1728", "2048*2048", "1728*2368", "1536*2688"]
+          "hint": "同步：POST /services/aigc/multimodal-generation/generation，Authorization: Bearer <DASHSCOPE_API_KEY>。尺寸形如 2688*1536，最多 3 张输入图。常用比例档位取自官方「常见比例推荐分辨率」（总像素 512*512 ~ 2048*2048）。",
+          "sizeOptions": [
+            "auto",
+            "1024*1024",
+            "1536*1536",
+            "2048*2048",
+            "1280*960",
+            "960*1280",
+            "1152*768",
+            "1536*1024",
+            "768*1152",
+            "1024*1536",
+            "1280*720",
+            "1920*1080",
+            "720*1280",
+            "1080*1920",
+            "1344*576",
+            "2688*1536",
+            "2368*1728",
+            "1728*2368",
+            "1536*2688"
+          ]
         }
       ]
     },
@@ -46,7 +67,28 @@
           "baseUrl": "https://ark.cn-beijing.volces.com/api/v3",
           "apiKeyUrl": "https://ark.volcengine.com/region:cn-beijing/apikey",
           "hint": "同步：POST {baseUrl}/images/generations，Authorization: Bearer <ARK_API_KEY>；size 可用 1K/2K/4K 或 2048x2048 这类像素值；有输入图时用 image 字段（URL 或 data:base64）。",
-          "sizeOptions": ["auto", "1K", "2K", "4K", "1024x1024", "2048x2048", "1536x1024", "1024x1536", "1280x720", "720x1280"]
+          "sizeOptions": [
+            "auto",
+            "1K",
+            "2K",
+            "4K",
+            "1024x1024",
+            "1536x1536",
+            "2048x2048",
+            "1024x768",
+            "1536x1152",
+            "768x1024",
+            "1152x1536",
+            "1152x768",
+            "1536x1024",
+            "768x1152",
+            "1024x1536",
+            "1280x720",
+            "1920x1080",
+            "720x1280",
+            "1080x1920",
+            "3024x1296"
+          ]
         },
         {
           "id": "newapi",
@@ -54,7 +96,27 @@
           "protocol": "newapi-images",
           "baseUrl": "https://toprouter.sealoshzh.site/v1",
           "hint": "同步：OpenAI 兼容 POST {baseUrl}/images/generations，body {model,prompt,size,n,response_format}；Bearer 令牌在「令牌」页面生成。",
-          "sizeOptions": ["auto", "1024x1024", "1536x1024", "1024x1536", "2048x2048", "1792x1024", "1024x1792"]
+          "sizeOptions": [
+            "auto",
+            "1024x1024",
+            "1536x1536",
+            "2048x2048",
+            "1024x768",
+            "1536x1152",
+            "768x1024",
+            "1152x1536",
+            "1152x768",
+            "1536x1024",
+            "768x1152",
+            "1024x1536",
+            "1280x720",
+            "1920x1080",
+            "720x1280",
+            "1080x1920",
+            "3024x1296",
+            "1792x1024",
+            "1024x1792"
+          ]
         }
       ]
     },

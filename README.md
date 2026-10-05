@@ -168,7 +168,7 @@ stabstab-data/
   Windows 安装包还会在删旧目录之前先抢一份（迁移过程打印在安装界面的「详细信息」里）。
 - 左侧标签栏底部提供「一键打开缓存目录」按钮；**直接删除 `cache/` 目录可清理空间，不影响下次运行**（历史消息中的结果图会显示为“图片已清理”占位）。
 - 对话区右上角「同步模式」右侧有两个目录按钮：文件夹图标打开数据目录下的 `downloads/`（开发模式即项目内 `dev-data/downloads/`）；其右侧「下载」图标打开**系统「下载」目录**（Windows = 用户目录 `Downloads`，Ubuntu 24.04 = `~/Downloads`）。
-- `model-series.json` 可手工编辑（例如把某系列的默认 API 地址换成你自己的中转地址），重启后生效；删除该文件会从程序内置配置重新生成一份。
+- `model-series.json` 可手工编辑（例如把某系列的默认 API 地址换成你自己的中转地址），重启后生效；删除该文件会从程序内置配置重新生成一份。其中 `sources[].sizeOptions`（尺寸候选）取「程序内置 ∪ 你手工追加」的**并集**：升级后新增的常用尺寸会立刻出现，你自己加的尺寸也不会丢；反过来，**在副本里删掉某个内置尺寸不生效**（只能增不能删）。
 - `rename-model.json` 同样可手工编辑（标题生成提示模板 / 温度 / Top-P / 默认 API 地址 / 默认模型 id），重启后生效；设置页「重命名模型」里的滑动条与模板框写的就是这个文件。
 - **配置 + 聊天记录导出 / 导入**（设置 → 数据管理）：导出把设置、模型系列、重命名模型配置与全部聊天记录（含聊天记录里引用到的图片）打成一个 zip，
   包名固定为 `ss-YYYYMMDD-HHmm.zip`（精确到分钟，如 `ss-20260213-1530.zip`）；导入时先校验包名、解压到程序缓存目录后再校验包内目录协议，
@@ -190,7 +190,8 @@ stabstab-data/
 - **图片输入**：粘贴（支持常见格式）、拖入输入框、点「+」多选；多图最多 3 张；允许纯图片、纯文字、文字+图片。编辑历史消息时同样可以粘贴 / 拖入 / 「+」补图（拖放接收区域就是那条用户气泡）。
 - **图片预览**：点击任意输入图 / 结果图放大预览，滚轮缩放、拖动查看细节、ESC 关闭、左右切换。
 - **发送前图片压缩**：设置 → 基础设置 中开启，单图超过阈值（默认 10MB）自动压缩，多图分别检测。
-- **size 参数**：按模型自动给出候选 —— Qwen：`自动 / 2688*1536 / 2368*1728 / 2048*2048 / 1728*2368 / 1536*2688`；Seedream 官方：`1K / 2K / 4K / 2048x2048` 等；Grsai：`16:9 / 9:16 / 1:1` 等比例或像素值；New API：`1024x1024` 等。
+- **size 参数**：按模型自动给出候选，下拉项末尾带上比例（如 `尺寸：2688×1536 · 7:4`），选中后右侧实时显示**比例**与一个按比例真实绘制的**方框示例**（无确定比例的 `自动 / 1K / 2K / 4K` 显示 `-`）。Qwen 共 19 档（官方推荐比例 1:1 / 3:2 / 2:3 / 4:3 / 3:4 / 16:9 / 9:16 / 21:9 + 旧候选）；Seedream 官方 20 档、New API 19 档（`1K/2K/4K` 预设 + 常用比例像素档）；Grsai / New API（GPT Image）沿用比例或像素值。
+- **自定义尺寸 + 比例模式**：尺寸下拉最后一项「自定义…」可手填宽高；中间那个 `×` 是个小按钮，点一下变成 `:` 进入**比例模式** —— 后面多出两个比例输入框（中间是 `:`），改「宽」或「高」的任意一边，另一边按比例自动填入（按当前宽度改比例也一样）。两种模式都实时显示比例与方框示意图（宽或高为 0 时显示 `-`，不会出现除 0）。
 - **高级参数**：随协议自动变化（Qwen：n、反向提示词、水印、提示词改写、随机种子；Seedream 官方：水印、输出格式；New API：n、quality、style；Grsai：无额外参数）。
 - **同步模式（默认）**：当前对话需等待 API 返回才能继续发送（发送按钮置灰、超时恢复），多标签各自独立等待；其它标签返回结果时显示黄点，点开即消。
 - **异步模式**：**只有 Qwen 系列支持**（`X-DashScope-Async` 提交 → 轮询 task，指数退避 3s→×1.5→上限 15s），状态卡片 + 取消按钮（仅 PENDING 可取消），应用重启后自动恢复轮询；其它系列固定同步。
@@ -234,14 +235,14 @@ stabstab-data/
 - 异步：同一端点 + 请求头 `X-DashScope-Async: enable`，返回 `output.task_id`；轮询 `GET {base}/tasks/{task_id}`；取消 `POST {base}/tasks/{task_id}/cancel`
 - 输入 `messages[].content` 为 `[{image: url|base64}, ...{text}]`，图片 1–3 张，格式 JPG/JPEG/PNG/BMP/TIFF/WEBP/GIF，单张 ≤ 10MB
 - 图片 base64 格式：`data:<mime>;base64,<data>`
-- 参数：`n`（1–6）、`negative_prompt`、`watermark`、`prompt_extend`、`seed`、`size`（宽*高）
+- 参数：`n`（1–6）、`negative_prompt`、`watermark`、`prompt_extend`、`seed`、`size`（宽*高；常用档位取自官方「常见比例推荐分辨率」，见 `model-series.json`）
 - 响应：`output.choices[].message.content[].image`（旧版万相为 `output.results[].url`）
 
 **Doubao Seedream 系列 · 官方（火山方舟 Ark）** —— 参考「seedream系列api.md」（该文档给的是文本对话示例 `/responses`，生图实际用 `/images/generations`）：
 
 - `POST https://ark.cn-beijing.volces.com/api/v3/images/generations`，请求头 `Authorization: Bearer <ARK_API_KEY>`
 - 请求体：`{model, prompt, size, image, response_format:"url", watermark, output_format}`
-- `size` 支持 `1K/2K/4K` 或 `2048x2048` 像素值（两种模式不可混用）；有输入图时用 `image`（URL 或 `data:base64`，多图传数组）
+- `size` 支持 `1K/2K/4K` 或 `2048x2048` 像素值（两种模式不可混用）；常用像素档见 `model-series.json`；有输入图时用 `image`（URL 或 `data:base64`，多图传数组）
 - 响应：`data[].url`，`usage.generated_images`；同一来源**仅同步**（单次请求阻塞等待返回）
 
 **Doubao Seedream 系列 · New API / GPT Image 系列 · NewApi** —— 参考「gpt-image系列.md」的 New Api 部分：

@@ -108,12 +108,65 @@ export function modelsOfSeries(settings, seriesId) {
   return (g && g.models) || [];
 }
 
-/** 尺寸下拉的展示文案：auto / 2688×1536 / 16:9 / 2K */
+/** 尺寸下拉的展示文案：auto / 2688×1536 · 7:4 / 16:9 / 2K（像素尺寸后面带上比例，见 §4.10） */
 export function sizeLabel(s) {
   if (s === 'auto') return '尺寸：自动（模型推荐）';
   const m = /^(\d+)\s*[*x×]\s*(\d+)$/i.exec(String(s));
-  if (m) return `尺寸：${m[1]}×${m[2]}`;
+  if (m) return `尺寸：${m[1]}×${m[2]} · ${ratioText(parseInt(m[1], 10), parseInt(m[2], 10))}`;
+  // 比例串（16:9）本身就是比例；1K / 2K / 4K 这类档位的比例由模型决定，都不再追加
   return `尺寸：${s}`;
+}
+
+/* ---------------- 比例（尺寸选择器右侧的「比例 + 方框示例」） ----------------
+ * 比例 = 宽 / 高：像素尺寸能算出确切比例，比例串本身就是比例，
+ * auto / 1K / 2K / 4K 这类档位没有确定比例 → 一律显示 '-'（方框位置也显示 '-'）。
+ */
+
+function gcd(a, b) {
+  let x = Math.abs(Math.round(a));
+  let y = Math.abs(Math.round(b));
+  while (y) { const t = x % y; x = y; y = t; }
+  return x || 1;
+}
+
+/**
+ * 两个正数 → 比例文案。
+ * 先按最大公约数约分成最简整数比（2048×1152 → 16:9）；任一边超过两位数时改显示小数比（1000×333 → 3.00:1）。
+ * 任一边 ≤ 0 / 非数字（除 0 问题）→ '-'。
+ */
+export function ratioText(w, h) {
+  const W = Number(w);
+  const H = Number(h);
+  if (!Number.isFinite(W) || !Number.isFinite(H) || W <= 0 || H <= 0) return '-';
+  const g = gcd(W, H);
+  const a = Math.round(W) / g;
+  const b = Math.round(H) / g;
+  if (a <= 99 && b <= 99) return `${a}:${b}`;
+  return `${(W / H).toFixed(2)}:1`;
+}
+
+/**
+ * 从一个尺寸值里取出「已知的比例」（供方框示例按比例真实绘制）。
+ *   像素尺寸（2688*1536 / 1024x768）→ {w,h}
+ *   比例串（16:9 / 4:3）            → {w,h}
+ *   auto / 1K / 2K / 4K            → null（比例由模型决定）
+ * @returns {{w:number,h:number}|null}
+ */
+export function sizeRatioOf(value) {
+  const d = parseSizeDims(value);
+  if (d) return { w: d.w, h: d.h };
+  const m = /^(\d{1,3})\s*[:：]\s*(\d{1,3})$/.exec(String(value === undefined || value === null ? '' : value).trim());
+  if (!m) return null;
+  const w = parseInt(m[1], 10);
+  const h = parseInt(m[2], 10);
+  if (!w || !h) return null;
+  return { w, h };
+}
+
+/** 尺寸值的比例文案（取不到比例时为 '-'） */
+export function ratioLabel(value) {
+  const r = sizeRatioOf(value);
+  return r ? ratioText(r.w, r.h) : '-';
 }
 
 /* ---------------- 自定义尺寸（尺寸选择器末尾的「自定义」） ----------------

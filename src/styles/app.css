@@ -414,8 +414,8 @@ button { cursor: pointer; }
 /* 输入区右侧的「等待中 ×N」：这个对话里还有几个请求在等返回（等待期间仍可继续发送） */
 .wait-hint { font-size: 12px; color: var(--text-dim); }
 
-/* ---- 尺寸选择器末尾的「自定义」：两个数字输入框，中间的 × 固定不可编辑 ---- */
-.size-custom { display: inline-flex; align-items: center; gap: 4px; }
+/* ---- 尺寸选择器末尾的「自定义」：两个数字输入框 + 中间那个可点的乘号 ---- */
+.size-custom { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .size-custom-input {
   width: 62px; background: var(--bg-input); border: 1px solid var(--border); color: var(--text);
   border-radius: 8px; padding: 5px 6px; text-align: center; outline: none;
@@ -425,6 +425,31 @@ button { cursor: pointer; }
 .size-custom-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .size-custom-input[type='number'] { -moz-appearance: textfield; appearance: textfield; }
 .size-custom-sep { color: var(--text-dim); font-size: 13px; user-select: none; }
+
+/* 中间的小按钮：× ⇄ :（点一下进 / 出比例模式，见 SizePicker.jsx#toggleRatioMode） */
+.size-mode-btn {
+  background: var(--bg-input); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text-dim); cursor: pointer; line-height: 1;
+  padding: 5px 7px; min-width: 24px; font-size: 13px; font-family: inherit;
+}
+.size-mode-btn:hover { border-color: var(--accent); color: var(--accent); }
+.size-mode-btn[aria-pressed='true'] {
+  border-color: var(--accent); color: var(--accent); background: rgba(91, 79, 214, 0.14);
+}
+
+/* 比例模式下多出来的两个数字（中间是 :） */
+.size-ratio-inputs { display: inline-flex; align-items: center; gap: 4px; }
+.size-ratio-tag { color: var(--text-dim); font-size: 12px; user-select: none; }
+.size-ratio-input { width: 52px; }
+
+/* 比例 + 方框示例：候选值与自定义尺寸后面都跟着一份（方框按比例真实绘制；取不到比例时显示 -） */
+.size-ratio { display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: 12px; user-select: none; }
+.size-ratio-text { font-variant-numeric: tabular-nums; min-width: 28px; text-align: right; }
+.size-ratio-box {
+  display: inline-block; box-sizing: border-box; flex: none;
+  border: 1.5px solid var(--text-dim); border-radius: 2px;
+}
+.size-ratio-box.none { border: none; font-size: 13px; line-height: 1; }
 
 .params-wrap { position: relative; }
 .params-panel {

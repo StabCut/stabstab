@@ -101,7 +101,7 @@ stabstab/
 │   │   ├── UserMessage.jsx            # 用户气泡：文本/图片、底部「模型名 + 时间」（见 §4.14）、新对话发送·当前对话发送（见 §4.13）、编辑重发、编辑气泡补图（粘贴/拖入/＋，见 §4.7.1）、复制、删除
 │   │   ├── AssistantMessage.jsx       # 助手气泡：结果图/错误/等待卡片（各自带「停止等待」，见 §4.12）
 │   │   ├── Composer.jsx               # 输入框：粘贴/拖入/多选、size/高级参数、发送（等待中也能发）/停止等待、附加提示词解析、逐标签草稿搬运
-│   │   ├── SizePicker.jsx             # ★ 尺寸选择器：候选尺寸（sizeOptions）+ 末尾「自定义…」（两个数字 + 固定 ×，见 §4.10）
+│   │   ├── SizePicker.jsx             # ★ 尺寸选择器：候选尺寸（sizeOptions）+ 末尾「自定义…」（两个数字 + 可点的 ×⇄: + 比例与方框示例，见 §4.10）
 │   │   ├── PromptDrop.jsx             # ★ 全窗口左右解析分区（曲线分隔）+ 「图片提示词」查看弹窗
 │   │   ├── SettingsModal.jsx          # 设置：模型 / 重命名模型 / 基础 / 高级 / 数据管理 五页
 │   │   ├── Lightbox.jsx               # 全屏图片预览：滚轮缩放/拖动/ESC
@@ -109,7 +109,7 @@ stabstab/
 │   └── lib/
 │       ├── store.jsx                  # React Context + reducer 全局状态 + 防抖落盘（含逐标签草稿 drafts，仅内存）
 │       ├── promptReuse.jsx            # ★ 解析分区显隐状态机（图片接收区域是一组元素：输入框 + 编辑气泡）+ 元数据解析 + 待复用提示词（临时状态）
-│       ├── models.js                  # ★ 模型系列/模型解析（界面侧，与主进程同口径）
+│       ├── models.js                  # ★ 模型系列/模型解析（界面侧，与主进程同口径）+ 尺寸/比例纯函数（sizeLabel / ratioText / sizeRatioOf）
 │       ├── title.js                   # ★ 会话标签自动命名（首条文字 → 重命名模型 → 回退截取）
 │       ├── send.js                    # 发送/重发公共逻辑（无上下文、消息配对、压缩、参数过滤、重发取哪套设置）
 │       ├── composerSelection.js        # ★ 输入区「当前模型 + 当前参数」的实时镜像（编辑重发据此发请求，见 §4.7）
@@ -495,29 +495,47 @@ isGenerating = waitingJobs(state, convId) 非空（busy 里有任意 jobId）
 - 瞬时滚动（不用 `scroll-behavior: smooth`）：切标签是「定位」而不是「播放动画」。
 - 与 `.chat-scroll` 无关的滚动（输入框 `textarea` 自己的贴底、灯箱、解析弹窗）各管各的，不要混用。
 
-### 4.10 尺寸选择器的「自定义」（输入区工具条与编辑气泡共用）
+### 4.10 尺寸选择器：「自定义」+ 比例模式（输入区工具条与编辑气泡共用）
 
 候选尺寸来自来源配置（`model-series.json` 的 `sources[].sizeOptions`）。两个尺寸选择器（输入区、编辑气泡）
-**末尾都多一项「尺寸：自定义…」**：选中后右边出现两个数字输入框，**中间的乘号是固定的**，用户只填两个数字。
+**末尾都多一项「尺寸：自定义…」**：选中后右边出现两个数字输入框，**中间的乘号是一个小按钮**，用户只填两个数字。
 实现只有一处：`src/components/SizePicker.jsx`（Composer / UserMessage 都复用它）。
 
 ```
 [SizePicker] 受控组件：value = 真正发出去的尺寸字符串，onChange(next)
+   ├─ 候选值：下拉项文案末尾带上比例（models.js#sizeLabel，如「尺寸：2688×1536 · 7:4」；
+   │    比例串 16:9 本身就是比例、1K/2K/4K 没有确定比例 → 都不追加）
    ├─ 自定义态记在**本地 state**，不能只看「value 在不在候选列表里」——
    │    用户填的数字正好等于某个候选值（例如 2048×2048）时，两个输入框必须继续留着
    ├─ 选中「自定义」：沿用上次填过的数字（第一次 1024×1024 打底）并**立即生效**，不必再点别处
    ├─ 每敲一个数字就回调，但**两个数字都有效才拼值**（清空输入框不会把尺寸发成空）
    ├─ 符号由协议决定（models.js#sizeSeparator）：DashScope(Qwen) = `宽*高`，Seedream / New API / Grsai = `宽x高`
-   └─ 界面上一律显示 `×`（与 sizeLabel 一致），用户看不到协议差异
-[models.js] CUSTOM_SIZE / parseSizeDims / sizeSeparator / normalizeSize / isValidSize（纯函数，UI 与 send.js 共用）
+   │    界面上一律显示 `×` / `:`，用户看不到协议差异
+   └─ 两种模式右边都跟着一份「比例 + 方框示例」（SizeRatioPreview）：
+        · 比例 = 宽 / 高 的最简整数比（gcd 约分；任一边超过两位数 → 小数比如 3.00:1）
+        · 方框按比例**真实绘制**（长边固定 26/18px，短边按比例缩）
+        · 取不到比例（auto / 1K / 2K / 4K，或宽/高有一个为 0 —— 除 0 保护）→ 比例与方框都显示 `-`
+[比例模式] 点中间那个按钮：`×` ⇄ `:`（.size-mode-btn，aria-pressed 表示当前模式）
+   ├─ 进入时用**当前宽高的最简比**预填比例输入框（2048×1152 → 16:9；小数比退回宽高原样）
+   ├─ 比例输入框 = 两个数字 + 中间的 `:`（.size-ratio-input），此时方框按比例走
+   ├─ 改「宽」或「高」的任意一边 → 另一边按比例四舍五入自动填入并回调
+   │    （counterpart：h = round(w × rh / rw)，w = round(h × rw / rh)）
+   ├─ 改比例 → **宽度不动**，按新比例重算高度（宽度还没填就只更新比例与方框）
+   └─ 退出：再点一下按钮，或从下拉里选回任意候选值（选候选会把比例模式一并复位）
+[models.js] CUSTOM_SIZE / parseSizeDims / sizeSeparator / normalizeSize / isValidSize / ratioText / sizeRatioOf / ratioLabel（纯函数，UI 与 send.js 共用）
 [Composer] 尺寸校正 effect：候选值原样保留；像素值只规范化符号；其余回落第一个候选（收敛后返回同一对象，不震荡）
 [send.js] resolveResendTarget：sizeOverride 与输入区尺寸都按同一套「候选 ∨ 像素值」判定，再按当前模型协议规范化
 ```
 
 - **为什么符号要按协议**：`size` 是原样透传给适配器的（`runner.js` → `body.size` / `parameters.size`），
   DashScope 要 `2688*1536`，Seedream / New API / Grsai 按文档写 `2048x2048`；界面显示统一用 `×`。
-- 主进程**不校验**尺寸是否在候选列表里，所以自定义尺寸不需要改任何适配器。
-- 回归脚本：`dev-data/qa/size-picker-test/`（Electron 隐藏窗口 + 真实 DOM 跑交互断言，并按排版截图；跑法见文件头）。
+- **比例与方框只是界面提示**：不参与发给 API 的值（发的仍是 `宽*高` / `宽x高` 或比例串本身）。
+  主进程也**不校验**尺寸是否在候选列表里，所以自定义尺寸 / 比例模式不需要改任何适配器。
+- **候选尺寸清单**：Qwen 官方 19 项（官方「常见比例推荐分辨率」1:1 / 3:2 / 2:3 / 4:3 / 3:4 / 16:9 / 9:16 / 21:9 + 旧候选），
+  Seedream 官方 20 项、New API 19 项（1K/2K/4K 预设 + 常用比例像素档）。改清单只改 `electron/assets/model-series.json`；
+  **升级可见性**靠 `modelSeries.js#mergeSizeOptions`（内置 ∪ 本地追加，见 §5.2）——不要把 sizeOptions 改回「本地覆盖内置」。
+- 回归脚本：`dev-data/qa/size-picker-test/`（Electron 隐藏窗口 + 真实 DOM 跑交互断言：候选文案比例、
+  方框真实尺寸、除 0 显示 `-`、比例模式双向联动、Qwen 的 `*` 拼接，并按排版截图；跑法见文件头）。
 
 ### 4.11 侧栏会话拖动排序（顺序 = 数组顺序）
 
@@ -670,9 +688,13 @@ isGenerating = waitingJobs(state, convId) 非空（busy 里有任意 jobId）
 ### 5.2 `model-series.json`（内置模型系列定义）
 
 `electron/assets/model-series.json` 随包发布（只读）；首次启动复制一份到 `<dataRoot>/model-series.json`（可写）。
-合并规则：**系列/来源的成员与协议以程序内置为准**；本地副本可覆盖文案与默认值（label / description / hint / baseUrl / sizeOptions / apiKeyUrl），
+合并规则：**系列/来源的成员与协议以程序内置为准**；本地副本可覆盖文案与默认值（label / description / hint / baseUrl / apiKeyUrl），
 并保存用户的 `hidden`（移除系列）；本地副本里的非内置系列原样保留。
 **老版本数据里的 `requestMode` 与 `sources[].supportsAsync` 会被 `mergeSeries` 丢弃**（同步/异步开关已删除）。
+
+**`sizeOptions` 是个例外：取「内置 ∪ 本地副本」的并集**（`mergeSizeOptions`，内置顺序在前、本地追加的项接在后面）。
+原因是那份副本是**首次启动时落地的整份配置**：若按「本地覆盖内置」处理，升级后内置新增的候选尺寸会被老副本原样压住、
+用户永远看不到新尺寸。代价：在副本里手工**删掉**某个内置尺寸不生效（只能增不能删，`model-series.json` 的 `_readme` 也写了这一条）。
 
 ```jsonc
 {
@@ -883,8 +905,10 @@ ss-export/
 2. **jobId === assistant 消息 id**：`runner` 的 `activeJobs` 以 `messageId` 为键；取消、停止等待都依赖此约定。
 3. **user↔assistant 配对**：assistant 消息的 `parentId` 指向其用户消息；「编辑重发」通过 `MSG_EDIT_PREPARE` 删除 `parentId===userMsgId` 的旧回复。
 4. **图片 base64 格式**：`data:<mime>;base64,<data>`（各协议统一用这个格式接收输入图）。
-5. **size 参数**：`'auto'` 表示**不发送** size 字段（交给模型推荐）；qwen 用 `宽*高`（如 `2688*1536`），Seedream 官方支持 `1K/2K/4K` 或 `2048x2048`，Grsai 支持比例（如 `16:9`）。候选列表来自来源配置（`model-series.json` 的 `sources[].sizeOptions`）；
-   候选之外**允许用户自定义像素尺寸**（尺寸选择器末尾的「自定义」，见 §4.10）——分隔符按协议：DashScope `*`，其余 `x`（`models.js#sizeSeparator` / `normalizeSize`），主进程原样透传、不校验。
+5. **size 参数**：`'auto'` 表示**不发送** size 字段（交给模型推荐）；qwen 用 `宽*高`（如 `2688*1536`），Seedream 官方支持 `1K/2K/4K` 或 `2048x2048`，Grsai 支持比例（如 `16:9`）。候选列表来自来源配置（`model-series.json` 的 `sources[].sizeOptions`，
+   **内置与数据目录副本取并集**——见 §5.2，别改回「本地覆盖内置」）；
+   候选之外**允许用户自定义像素尺寸**（尺寸选择器末尾的「自定义」+ 比例模式，见 §4.10）——分隔符按协议：DashScope `*`，其余 `x`（`models.js#sizeSeparator` / `normalizeSize`），主进程原样透传、不校验。
+   界面上显示的比例与方框示例**只是提示**，不进 `params.size`（发出的仍是 `宽*高` / `宽x高` 或比例串本身）。
 6. **协议适配器接口**：新增协议必须实现 registry 中约定的方法（见 §7），否则 `runner.start` 直接报 `NO_ADAPTER`。
 7. **appfile 协议**：URL 结构 `appfile://<cache|uploads>/<文件名>`；主进程 handler 用 `path.basename` 防目录穿越。
 8. **Vite `base:'./'`**：打包后经 `file://` 加载，资源必须相对路径，否则白屏。
@@ -966,7 +990,7 @@ module.exports = {
   defaultModel: '模型默认名',
   supportsImageInput: true,      // 是否支持输入图（图生图）；false 时界面可据此提示
   modelPlaceholder: '例如：xxx',  // 模型 id 输入框的灰色提示
-  sizeOptions: ['auto', '2688*1536', ...],   // 前端 size 下拉的兜底候选（来源 json 里的 sizeOptions 优先）
+  sizeOptions: ['auto', '2688*1536', ...],   // 前端 size 下拉的兜底候选（来源 json 里的 sizeOptions 优先；改候选清单改 model-series.json）
   paramSchema: { n: {...}, negative_prompt: {...}, ... }, // 前端参数面板元信息（决定发什么参数）
   buildSubmitRequest(ctx) -> {url, method, headers, body},
   parseSubmit(json, httpStatus) -> {kind:'result',images,texts,usage,requestId} | {kind:'task',taskId,taskStatus} | {kind:'error',error:{code,message,requestId}},
@@ -1162,7 +1186,8 @@ node_modules\.bin\electron dev-data\qa\conv-reorder-test\main.js  # …再用真
 | 接入新模型/协议 | `electron/src/api/` 新建适配器 + `registry.js` 注册 + **`electron/assets/model-series.json` 挂到某个系列的 sources** |
 | 调整某个系列/来源 | `electron/assets/model-series.json`（label / 来源 / baseUrl / sizeOptions / hint）；用户级覆盖在 `settings.json` 与数据目录的 `model-series.json` |
 | 加一个 API 参数到输入区 | 对应适配器的 `paramSchema` + `buildBody`；参数面板与 `buildParams` 都是 schema 驱动，无需改 UI |
-| 改 size 列表 | `electron/assets/model-series.json` 的 `sources[].sizeOptions`（或适配器的 `sizeOptions` 兜底） |
+| 改 size 列表 | `electron/assets/model-series.json` 的 `sources[].sizeOptions`（或适配器的 `sizeOptions` 兜底）；老用户的数据目录副本靠 `mergeSizeOptions` 的并集自动看到新项（只能增不能删，见 §5.2） |
+| 改比例 / 方框示例、比例模式 | `src/components/SizePicker.jsx`（`SizeRatioPreview` / `toggleRatioMode` / `counterpart`）+ `src/lib/models.js` 的 `ratioText` / `sizeRatioOf` / `sizeLabel`；回归 `dev-data/qa/size-picker-test/` |
 | 改「模型设置」页结构 | `src/components/SettingsModal.jsx`（系列卡片 / 模型行 / 来源级 API Key 与地址） |
 | 改标题生成提示模板 / 温度 / Top-P / 默认地址 | `electron/assets/rename-model.json`（随包默认）或数据目录的 `rename-model.json`（可手工编辑，重启生效；设置页滑动条也写它） |
 | 改标签命名时机与回退 | `src/lib/title.js#maybeAutoTitle/fallbackTitle` + `src/lib/send.js`（触发点）+ `src/lib/store.jsx` 的 `CONV_RENAME_AUTO` 守卫 |

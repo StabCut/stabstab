@@ -9,7 +9,9 @@
  *
  * 合并策略（升级安全）：
  *   - 系列/来源的「成员」与「协议」永远以程序内置为准（内置协议才能被适配器执行）；
- *   - 文案与默认值（label/description/modelPlaceholder/hint/baseUrl/sizeOptions/apiKeyUrl）本地副本可覆盖；
+ *   - 文案与默认值（label/description/modelPlaceholder/hint/baseUrl/apiKeyUrl）本地副本可覆盖；
+ *   - **sizeOptions 取并集**：内置默认在前、本地副本追加的项在后（只能增不能删）——
+ *     否则首次启动落地的那份副本会把内置新增的尺寸永久压住，「升级后新尺寸看不见」；
  *   - 本地副本里非内置 id 的系列原样保留（builtin:false）；
  *   - 只有「同步」一种请求模式：老版本数据里的 requestMode / supportsAsync 一律丢弃（见 AIDEV.md §4.12）。
  */
@@ -20,7 +22,7 @@ const log = require('./logger');
 const SEED_FILE = path.join(__dirname, '..', 'assets', 'model-series.json');
 
 const SERIES_OVERRIDABLE = ['label', 'description', 'modelPlaceholder', 'hidden'];
-const SOURCE_OVERRIDABLE = ['label', 'baseUrl', 'hint', 'apiKeyUrl', 'sizeOptions'];
+const SOURCE_OVERRIDABLE = ['label', 'baseUrl', 'hint', 'apiKeyUrl'];
 
 function readJson(file) {
   try {
@@ -42,6 +44,23 @@ function writeJsonAtomic(file, data) {
 
 const clone = (v) => JSON.parse(JSON.stringify(v));
 
+/**
+ * sizeOptions 的合并：内置默认在前，本地副本里多出来的项按原顺序追加。
+ * 并集（而不是「本地覆盖内置」）是为了让升级新增的常用尺寸对老用户立刻可见 ——
+ * 数据目录副本是首次启动时落地的一整份配置，它若把 sizeOptions 原样带回来就会压住内置新增项。
+ * 代价：在副本里手工**删掉**某个内置尺寸不会生效（只能增不能删，见 model-series.json 的 _readme）。
+ */
+function mergeSizeOptions(seedOpts, curOpts) {
+  const seed = Array.isArray(seedOpts) ? seedOpts : null;
+  const cur = Array.isArray(curOpts) ? curOpts : null;
+  if (!seed && !cur) return undefined;
+  if (!seed) return clone(cur);
+  if (!cur) return clone(seed);
+  const out = clone(seed);
+  for (const o of cur) if (!out.includes(o)) out.push(o);
+  return out;
+}
+
 /** 系列级字段合并（内置成员为准，本地可覆盖文案与开关） */
 function mergeSeries(seed, cur) {
   const out = clone(seed);
@@ -59,6 +78,8 @@ function mergeSeries(seed, cur) {
       for (const k of SOURCE_OVERRIDABLE) {
         if (c[k] !== undefined) m[k] = clone(c[k]);
       }
+      const so = mergeSizeOptions(s.sizeOptions, c.sizeOptions);
+      if (so) m.sizeOptions = so; else delete m.sizeOptions;
       return m;
     });
     const seen = new Set(merged.map((s) => s.id));

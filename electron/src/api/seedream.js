@@ -77,7 +77,20 @@ module.exports = {
   defaultModel: 'doubao-seedream-4-0-250828',
   supportsImageInput: true,
   modelPlaceholder: '例如：doubao-seedream-4-0-250828',
-  sizeOptions: ['auto', '1K', '2K', '4K', '1024x1024', '2048x2048', '1536x1024', '1024x1536', '1280x720', '720x1280'],
+  // 候选尺寸（仅当来源没有自己的 sizeOptions 时才作为兜底）：
+  // 1K/2K/4K 预设 + 常用比例像素档（见 electron/assets/model-series.json）
+  sizeOptions: [
+    'auto',
+    '1K', '2K', '4K',
+    '1024x1024', '1536x1536', '2048x2048',
+    '1024x768', '1536x1152',
+    '768x1024', '1152x1536',
+    '1152x768', '1536x1024',
+    '768x1152', '1024x1536',
+    '1280x720', '1920x1080',
+    '720x1280', '1080x1920',
+    '3024x1296'
+  ],
   paramSchema: {
     watermark: { type: 'bool', default: false, label: '水印' },
     output_format: { type: 'enum', default: '', options: ['', 'png', 'jpeg'], label: '输出格式（部分模型支持）' }
