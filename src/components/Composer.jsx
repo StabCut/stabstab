@@ -9,7 +9,8 @@ import { setComposerSelection } from '../lib/composerSelection.js';
 import Icon from './Icon.jsx';
 import SizePicker from './SizePicker.jsx';
 
-const MAX_IMAGES = 3; // API 规则：最多 3 张输入图片
+// API 规则：最多 3 张输入图片（输入区的待发送图片与编辑气泡补图共用这一个上限）
+export const MAX_IMAGES = 3;
 
 /** 「插入」时的追加拼接：输入框非空时用换行分隔，避免粘连也不重复加空行 */
 export function appendPromptText(prev, prompt) {

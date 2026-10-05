@@ -2,12 +2,13 @@
  * 顶部提示词解析拖放区 + 底部「插入／复制」临时按钮的全局状态
  * ==========================================================
  * 两类临时 UI 都挂在主内容区顶部工具栏，互斥关系如下：
- *   - 拖动图片且鼠标位于「应用内、底部输入框接收区域之外」→ 显示左右解析拖放区（遮蔽正常工具栏）
- *   - 鼠标进入底部输入框完整接收区域 / 离开应用 → 立即恢复正常工具栏
+ *   - 拖动图片且鼠标位于「应用内、图片接收区域之外」→ 显示左右解析拖放区（遮蔽正常工具栏）
+ *   - 鼠标进入任一接收区域（底部输入框 / 正在编辑的用户气泡）/ 离开应用 → 立即恢复正常工具栏
  *   - 正常工具栏下，若存在未失效的待复用提示词，则在对话区右上角按钮组里显示「插入／复制」
  *
  * 显示状态由「鼠标当前所在位置」实时决定（见 useAppFileDrag 的 dragover 处理），
- * 不是只按图片首次进入窗口判断一次；底部输入框区域的判定优先于全局拖入判定。
+ * 不是只按图片首次进入窗口判断一次；接收区域的判定优先于全局拖入判定。
+ * 接收区域是一组元素（registerComposerEl / registerReceiver 都往同一个集合里注册）。
  *
  * 待复用提示词与两个按钮作为同一组临时状态（temporary）管理：清理时一起清空，
  * 不会出现「按钮没了但失效数据还在」。异步解析用「版本号 + 会话标识」双保险，
@@ -106,12 +107,17 @@ export function topUiPhase(p) {
 }
 
 /**
- * 应用级拖入追踪：判断「当前鼠标是否在底部输入框接收区域内」，
- * 供顶部解析拖放区实时切换显隐。Composer 自己仍按原有 onDragEnter/Leave 处理接收反馈。
+ * 应用级拖入追踪：判断「当前鼠标是否在某个图片接收区域内」，
+ * 供顶部解析拖放区实时切换显隐。各接收区域自己仍按原有 onDragEnter/Leave 处理接收反馈。
  *
- * @param {() => HTMLElement|null} getComposerEl 返回底部输入框的完整接收容器
+ * 「接收区域」是一组元素（不是只有一个底部输入框）：
+ *   - `Composer` 的 `.composer`（底部输入框，见 components/Composer.jsx）
+ *   - 正在编辑的用户气泡 `.edit-bubble`（悬停时可粘贴 / 拖入补图，见 components/UserMessage.jsx）
+ * 指针落在其中任意一个之内就隐藏左右解析区，松手时那份文件交给该区域自己处理。
+ *
+ * @param {() => HTMLElement[]} getReceivers 返回当前全部图片接收区域元素
  */
-export function useAppFileDrag(getComposerEl) {
+export function useAppFileDrag(getReceivers) {
   const [topZonesVisible, setTopZonesVisible] = useState(false);
   const visibleRef = useRef(false);
   const lastStampRef = useRef(0);
@@ -131,22 +137,25 @@ export function useAppFileDrag(getComposerEl) {
       return types.indexOf('Files') >= 0;
     };
 
-    /** 鼠标当前是否落在底部输入框完整接收区域内（含其内部子元素） */
-    const pointerInComposer = (e) => {
+    /** 鼠标当前是否落在任一图片接收区域内（含其内部子元素） */
+    const pointerInReceiver = (e) => {
       if (!e || typeof e.clientX !== 'number') return false;
-      const el = typeof getComposerEl === 'function' ? getComposerEl() : null;
-      if (!el) return false;
-      const r = el.getBoundingClientRect();
-      if (!r.width || !r.height) return false;
-      return e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+      const list = typeof getReceivers === 'function' ? (getReceivers() || []) : [];
+      for (const el of list) {
+        if (!el || typeof el.getBoundingClientRect !== 'function') continue;
+        const r = el.getBoundingClientRect();
+        if (!r.width || !r.height) continue;
+        if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) return true;
+      }
+      return false;
     };
 
     const onDragOver = (e) => {
       if (!isFileDrag(e)) { draggingRef.current = false; update(false); return; }
       draggingRef.current = true;
       lastStampRef.current = Date.now();
-      // 每次移动都按实时指针位置判断：进入输入框区域立即恢复工具栏，移出立即重新显示
-      update(topUiPhase({ dragging: true, overComposer: pointerInComposer(e) }) === 'zones');
+      // 每次移动都按实时指针位置判断：进入接收区域立即恢复工具栏，移出立即重新显示
+      update(topUiPhase({ dragging: true, overComposer: pointerInReceiver(e) }) === 'zones');
     };
 
     const onDragLeave = (e) => {
@@ -181,7 +190,7 @@ export function useAppFileDrag(getComposerEl) {
       window.removeEventListener('blur', finish);
       clearInterval(idle);
     };
-  }, [getComposerEl, update]);
+  }, [getReceivers, update]);
 
   return { topZonesVisible };
 }
@@ -190,11 +199,33 @@ export function PromptReuseProvider({ children }) {
   const { state, dispatch } = useApp();
   const [modal, setModal] = useState(null);           // { text } —— 纯展示，不参与清理规则
   const composerRef = useRef(null);
+  // 全部「图片接收区域」元素（底部输入框 + 正在编辑的用户气泡）：指针落在其中就隐藏解析区
+  const receiversRef = useRef([]);
   const requestRef = useRef(0);
 
-  const registerComposerEl = useCallback((el) => { composerRef.current = el || null; }, []);
-  const getComposerEl = useCallback(() => composerRef.current, []);
-  const { topZonesVisible } = useAppFileDrag(getComposerEl);
+  const addReceiver = useCallback((el) => {
+    if (!el || receiversRef.current.includes(el)) return;
+    receiversRef.current = [...receiversRef.current, el];
+  }, []);
+  const removeReceiver = useCallback((el) => {
+    receiversRef.current = receiversRef.current.filter((x) => x !== el);
+  }, []);
+
+  const registerComposerEl = useCallback((el) => {
+    if (composerRef.current && composerRef.current !== el) removeReceiver(composerRef.current);
+    composerRef.current = el || null;
+    addReceiver(el);
+  }, [addReceiver, removeReceiver]);
+  /**
+   * 额外接收区域（编辑中的用户气泡）：ref 回调返回清理函数，卸载 / 退出编辑时自动摘除。
+   * 与 registerComposerEl 同一份集合 —— 解析区的显隐只认「指针在不在集合里」。
+   */
+  const registerReceiver = useCallback((el) => {
+    addReceiver(el);
+    return () => removeReceiver(el);
+  }, [addReceiver, removeReceiver]);
+  const getReceivers = useCallback(() => receiversRef.current, []);
+  const { topZonesVisible } = useAppFileDrag(getReceivers);
 
   /**
    * 每次解析分配一个版本号（自增，不依赖时间戳，避免同毫秒碰撞）。
@@ -232,12 +263,13 @@ export function PromptReuseProvider({ children }) {
     modal,
     composerRef,
     registerComposerEl,
+    registerReceiver,
     clearTemporary,
     setReusePrompt,
     showPromptModal,
     closePromptModal: () => setModal(null),
     nextRequestId
-  }), [temporary, topZonesVisible, modal, registerComposerEl, clearTemporary, setReusePrompt, showPromptModal, nextRequestId]);
+  }), [temporary, topZonesVisible, modal, registerComposerEl, registerReceiver, clearTemporary, setReusePrompt, showPromptModal, nextRequestId]);
 
   return <PromptCtx.Provider value={value}>{children}</PromptCtx.Provider>;
 }

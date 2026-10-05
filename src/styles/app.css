@@ -366,21 +366,31 @@ button { cursor: pointer; }
   position: relative;
 }
 .composer.drag-over { border-color: var(--accent); }
-.composer.drag-over .drop-mask {
+/* 拖入蒙版：底部输入区与「编辑中的用户气泡」共用同一套观感（接收区域各自的 .drag-over 点亮） */
+.composer.drag-over .drop-mask,
+.edit-bubble.drag-over .drop-mask {
   position: absolute; inset: 0; border-radius: 14px; z-index: 5;
   background: rgba(91, 79, 214, 0.10); color: var(--accent);
   display: flex; align-items: center; justify-content: center; font-weight: 600;
   pointer-events: none; border: 2px dashed var(--accent);
 }
 .drop-mask { display: none; }
-.composer.drag-over .drop-mask { display: flex; }
+.composer.drag-over .drop-mask,
+.edit-bubble.drag-over .drop-mask { display: flex; }
 
 .disabled-composer { align-items: center; }
 .composer-hint { color: var(--text-dim); padding: 8px; }
 
-.attach-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.attach-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .attach-item { position: relative; width: 74px; height: 74px; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); }
 .attach-item img { width: 100%; height: 100%; object-fit: cover; }
+/* 编辑气泡里的「＋」：与缩略图同高，表示还能继续粘贴 / 拖入 / 多选补图 */
+.attach-add {
+  width: 74px; height: 74px; flex: none; border-radius: 8px;
+  border: 1px dashed var(--border); background: var(--bg-input); color: var(--text-dim);
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+}
+.attach-add:hover { border-color: var(--accent); color: var(--accent); border-style: solid; }
 .attach-remove {
   position: absolute; top: 2px; right: 2px; width: 20px; height: 20px;
   border-radius: 50%; border: none; background: rgba(15, 16, 24, 0.72); color: #fff;
@@ -438,6 +448,8 @@ button { cursor: pointer; }
 .msg.editing { justify-content: flex-end; }
 .edit-bubble { width: 560px; max-width: 86%; display: flex; flex-direction: column; gap: 8px;
   background: var(--bg-panel); color: var(--text); border: 1px solid var(--accent); }
+/* 图片拖到这条气泡上（接收区域 = 用户气泡本身）：再加一圈外描边，明确「松手就加到这条消息」 */
+.edit-bubble.drag-over { box-shadow: 0 0 0 2px var(--accent); }
 .edit-textarea { background: var(--bg-input); border-radius: 8px; padding: 8px; width: 100%; }
 .edit-size-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .edit-size-row select { background: var(--bg-input); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; }

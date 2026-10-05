@@ -98,7 +98,7 @@ stabstab/
 │   ├── components/
 │   │   ├── Sidebar.jsx                # 左侧：Logo、新建、会话列表（含后台状态圆点，见 §4.8；拖动排序见 §4.11）、重命名/删除、底部操作
 │   │   ├── ChatView.jsx               # 主区：头部（插入·复制临时按钮）、消息列表（进入标签贴底，见 §4.9）、空态、输入框
-│   │   ├── UserMessage.jsx            # 用户气泡：文本/图片、底部「模型名 + 时间」（见 §4.14）、新对话发送·当前对话发送（见 §4.13）、编辑重发、复制、删除
+│   │   ├── UserMessage.jsx            # 用户气泡：文本/图片、底部「模型名 + 时间」（见 §4.14）、新对话发送·当前对话发送（见 §4.13）、编辑重发、编辑气泡补图（粘贴/拖入/＋，见 §4.7.1）、复制、删除
 │   │   ├── AssistantMessage.jsx       # 助手气泡：结果图/错误/等待卡片（各自带「停止等待」，见 §4.12）
 │   │   ├── Composer.jsx               # 输入框：粘贴/拖入/多选、size/高级参数、发送（等待中也能发）/停止等待、附加提示词解析、逐标签草稿搬运
 │   │   ├── SizePicker.jsx             # ★ 尺寸选择器：候选尺寸（sizeOptions）+ 末尾「自定义…」（两个数字 + 固定 ×，见 §4.10）
@@ -108,7 +108,7 @@ stabstab/
 │   │   └── Toasts.jsx                 # 轻提示
 │   └── lib/
 │       ├── store.jsx                  # React Context + reducer 全局状态 + 防抖落盘（含逐标签草稿 drafts，仅内存）
-│       ├── promptReuse.jsx            # ★ 解析分区显隐状态机 + 元数据解析 + 待复用提示词（临时状态）
+│       ├── promptReuse.jsx            # ★ 解析分区显隐状态机（图片接收区域是一组元素：输入框 + 编辑气泡）+ 元数据解析 + 待复用提示词（临时状态）
 │       ├── models.js                  # ★ 模型系列/模型解析（界面侧，与主进程同口径）
 │       ├── title.js                   # ★ 会话标签自动命名（首条文字 → 重命名模型 → 回退截取）
 │       ├── send.js                    # 发送/重发公共逻辑（无上下文、消息配对、压缩、参数过滤、重发取哪套设置）
@@ -151,6 +151,7 @@ for f in electron/src/*.js electron/src/api/*.js; do node --check "$f"; done
 # 本地回归（dev-data 已 gitignore，脚本头有各自跑法）
 #   dev-data/qa/resend-target-test.js     编辑重发取哪套设置（含自定义尺寸）
 #   dev-data/qa/size-picker-test/         尺寸选择器「自定义」的交互 + 排版截图（Electron 隐藏窗口）
+#   dev-data/qa/edit-attach-test/         编辑气泡补图（粘贴 / 拖入 / ＋ / 上限 / 重发带图）
 #   dev-data/qa/paths-test.js             数据目录解析与迁移
 ```
 
@@ -319,9 +320,12 @@ text           ← 文件名 + 提示词（纯文本框粘贴用；不含 pic �
 
 **两类临时 UI（全窗口解析分区 / 插入·复制按钮）与底部输入框的关系**（实现见 `src/lib/promptReuse.jsx` + `src/components/PromptDrop.jsx`）：
 
-- 拖动图片期间，`dragover`（window，capture）按**鼠标当前坐标**判断是否落在 `.composer` 的
-  `getBoundingClientRect()` 内 → 在应用非输入框区域**把整个窗口一分为二**显示左右解析区
-  （`topUiPhase()` 纯函数），进入输入框区域立即恢复原界面；`drop`/`dragend`/窗口失焦/`dragover` 静默 800ms 都会收起。
+- 拖动图片期间，`dragover`（window，capture）按**鼠标当前坐标**判断是否落在任一「图片接收区域」内
+  → 在应用非接收区域**把整个窗口一分为二**显示左右解析区
+  （`topUiPhase()` 纯函数），进入接收区域立即恢复原界面；`drop`/`dragend`/窗口失焦/`dragover` 静默 800ms 都会收起。
+- **接收区域是一组元素**（`promptReuse.jsx` 里的 `receiversRef`，`registerComposerEl` 与 `registerReceiver` 都往同一个集合里注册）：
+  底部输入框 `.composer` + **正在编辑的用户气泡 `.edit-bubble`**（见 §4.7 的「编辑气泡补图」）。
+  指针落在其中任意一个之内就隐藏解析区、松手时那份文件丢给该区域自己处理 —— 否则解析区会把拖到气泡上的图片吃掉。
 - 左右解析区的视觉：一层**半透明蒙版**（`--drop-mask-bg` + `backdrop-filter`，原界面仍可见、只是压暗），
   蒙版边缘一圈 **圆角矩形虚线**，中间是同色同风格的 **S 形虚线**（`ZoneCurve`：同一条贝塞尔曲线的上下两段，
   SVG 拉伸铺满窗口高度，`vector-effect: non-scaling-stroke` 保证描边不随拉伸变粗）；左半区 = 解析并复制、右半区 = 解析并查看，
@@ -405,6 +409,29 @@ text           ← 文件名 + 提示词（纯文本框粘贴用；不含 pic �
 - **消息记录跟着改写**：`MSG_EDIT_PREPARE` 把用户消息的 `params` / `model` 更新为本次实际使用的值，
   所以会话里留下的永远是「实际发出去了什么」，不是「打算发什么」。
 - 回归脚本：`dev-data/qa/resend-target-test.js`（本地脚本，dev-data 已 gitignore，跑法见文件头）。
+
+### 4.7.1 编辑气泡补图（粘贴 / 拖入 / 「＋」多选）
+
+编辑气泡里除了原来的**移除**图片，还能**增加**图片 —— 三条入口与底部输入区完全同源，
+只改这一条消息**本地**的 `kept` 列表，点「确定并重新发送」时才真正落盘（`resendEdited` → `attachmentsOfMessage` 读回 dataUrl）。
+
+```
+[UserMessage] 编辑态（.edit-bubble）
+   ├─ 粘贴：onPaste 只挂在编辑 textarea 上 → **光标必须在编辑框里**才会触发（纯文字粘贴走默认行为）
+   ├─ 拖入：接收区域 = 这条**用户气泡**（.edit-bubble 自己 onDragEnter/Over/Leave/Drop）
+   │     └─ 同时把该元素注册进 promptReuse 的「接收区域」集合（registerReceiver）
+   │           → 指针在气泡上时不显示左右解析区，松手的那份文件交给气泡（见 §4.5）
+   └─ 「＋」：window.stab.pickImages() 多选（与输入区同一个主进程对话框）
+        └─ 三条入口最终都走 addKeptFiles(files, named) → window.stab.saveAttachment → kept
+```
+
+- **上限共用**：`Composer.MAX_IMAGES`（= 3）—— 与输入区同一个常量，凑满 3 张后「＋」自动隐藏、再拖入/粘贴会被拒绝；
+  本地 `setKept` 里再 `slice(0, MAX_IMAGES)` 兜一次（连续两次拖入时 `room` 是按上一拍算的）。
+- **picN 的真实名规则不变**（见 §4.5）：拖入 / 「＋」多选拿得到磁盘文件名 → 记真名；系统剪贴板粘贴 → 记空串但位置保留。
+- **只改本地**：删除 / 新增都只动 `kept`，取消编辑即全部丢弃，不会写进 `conversations.json`。
+- **拖文字不误触**：`isFileDrag(e)` 只认 `dataTransfer.types` 含 `Files`，在气泡里拖选中的文字不会弹出补图蒙版。
+- 回归脚本：`dev-data/qa/edit-attach-test/`（真实 `<App/>` + 真实 DOM 事件：粘贴 / 拖入 / 上限 / 移除 / ＋，
+  并断言拖到气泡上时解析区不弹出、重发请求里的 `images` 与 `imageNames`；跑法见 `main.js` 文件头）。
 
 ### 4.8 侧栏圆点：后台生成状态（黄 / 绿 / 红，点开即消费）
 
