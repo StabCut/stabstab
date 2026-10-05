@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useLayoutEffect, useRef } from 'react';
 import { useApp, useActiveConversation, useToast } from '../lib/store.jsx';
 import { PROMPT_MESSAGES } from '../lib/promptReuse.jsx';
 import { resolveModel } from '../lib/models.js';
@@ -32,6 +32,56 @@ export default function ChatView() {
   const activeModelId = (lastWithModel && lastWithModel.meta && lastWithModel.meta.modelId) || state.settings.defaultModelId;
   const current = resolveModel(state.settings, state.modelSeries, state.protocols, activeModelId);
   const mode = current ? current.mode : 'sync';
+
+  // ---------- 滚动：进入标签页默认停在最后一条消息 ----------
+  // 规则（见 AIDEV.md §4.9）：
+  //   · 进入一个标签（或该标签新增了消息 = 自己刚发出去）→ 瞬时跳到最底部，不用往上翻；
+  //   · 之后内容长高（结果图加载完成 / 文字换行）继续贴底，但**用户自己往回滚过**就不再拽他；
+  //   · 只有本来就贴着底部时才自动跟随，读历史时来的新结果不会把视线拉走。
+  const scrollRef = useRef(null);
+  const contentRef = useRef(null);      // .message-list：内容真实高度变化靠它观察
+  const pinnedRef = useRef(true);       // 是否贴着底部（用户主动往上翻 → false）
+  const prevConvRef = useRef(undefined);
+  const prevCountRef = useRef(0);
+  const prevTailRef = useRef(null);     // 末尾消息 {id, createdAt}：编辑重发会「删旧回复 + 加新回复」
+  const convId = conv ? conv.id : null;
+  const msgCount = conv ? conv.messages.length : 0;
+  const tail = msgCount ? conv.messages[msgCount - 1] : null;
+  const tailId = tail ? tail.id : null;
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const entered = prevConvRef.current !== convId;         // 切换 / 新建标签
+    const appended = msgCount > prevCountRef.current;       // 这条标签里又多了消息（自己刚发出）
+    // 末尾换成了一条**更新的**消息：编辑重发的「删旧回复 + 加新回复」在同一拍里完成，
+    // 条数可能不变，但末尾 id / 时间变了（删掉末尾消息时新末尾更旧，不算）。
+    const tailIsNew = !!tail && !!prevTailRef.current && tail.id !== prevTailRef.current.id
+      && (tail.createdAt || 0) >= (prevTailRef.current.createdAt || 0);
+    prevConvRef.current = convId;
+    prevCountRef.current = msgCount;
+    prevTailRef.current = tail ? { id: tail.id, createdAt: tail.createdAt || 0 } : null;
+    if (!entered && !appended && !tailIsNew) return;
+    pinnedRef.current = true;
+    el.scrollTop = el.scrollHeight;                         // 瞬时（layout 阶段）跳到底，切换标签不闪烁
+  }, [convId, msgCount, tailId]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    const content = contentRef.current;
+    if (!el || !content || typeof ResizeObserver === 'undefined') return;
+    const stick = () => { if (pinnedRef.current) el.scrollTop = el.scrollHeight; };
+    const ro = new ResizeObserver(stick);                   // 图片加载完成等导致的内容变高
+    ro.observe(content);
+    return () => ro.disconnect();
+  }, [convId, msgCount, tailId]);
+
+  // 贴底判定：距底部 48px 以内算「在底下」，用户往上翻则停止自动跟随
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 48;
+  };
 
   // 右上角文件夹按钮：打开数据目录下的 downloads（开发模式即 dev-data/downloads），
   // 与左下角标签栏底部「打开缓存目录」按钮区分开。
@@ -86,11 +136,11 @@ export default function ChatView() {
         </div>
       </header>
 
-      <div className="chat-scroll">
+      <div className="chat-scroll" ref={scrollRef} onScroll={onScroll}>
         {(!conv || conv.messages.length === 0) ? (
           <EmptyState />
         ) : (
-          <div className="message-list">
+          <div className="message-list" ref={contentRef}>
             {conv.messages.map((m) =>
               m.role === 'user'
                 ? <UserMessage key={m.id} conv={conv} msg={m} />

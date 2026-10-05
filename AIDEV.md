@@ -91,7 +91,7 @@ stabstab/
 │   ├── App.jsx                        # 根组件：bootstrap、API 事件路由、主题
 │   ├── components/
 │   │   ├── Sidebar.jsx                # 左侧：Logo、新建、会话列表（含后台状态圆点，见 §4.8）、重命名/删除、底部操作
-│   │   ├── ChatView.jsx               # 主区：头部（插入·复制临时按钮）、消息列表、空态、输入框
+│   │   ├── ChatView.jsx               # 主区：头部（插入·复制临时按钮）、消息列表（进入标签贴底，见 §4.9）、空态、输入框
 │   │   ├── UserMessage.jsx            # 用户气泡：文本/图片、编辑重发、复制、删除
 │   │   ├── AssistantMessage.jsx       # 助手气泡：结果图/错误/异步状态卡片/取消
 │   │   ├── Composer.jsx               # 输入框：粘贴/拖入/多选、size/高级参数、发送/停止、附加提示词解析、逐标签草稿搬运
@@ -425,6 +425,32 @@ isGenerating = busy[convId] 存在（同步等待标记）
   并删除旧版本遗留的布尔字段 `unread`。
 - 与「输入区草稿」「待复用提示词」互不相干：圆点只描述后台的生成状态。
 
+### 4.9 聊天区滚动：进入标签页默认停在最后一条消息
+
+`ChatView.jsx` 的 `.chat-scroll`（唯一滚动容器，`.message-list` 是内容）自带跟随策略 ——
+点进一个历史较长的标签时直接落在**最后一条消息**上，不用自己往下翻：
+
+```
+[ChatView] useLayoutEffect [convId, msgCount, tailId]
+   ├─ entered  = 上一次的 activeId ≠ 当前 convId（切换 / 新建标签）
+   ├─ appended = msgCount 变多（自己刚发出）
+   ├─ tailIsNew = 末尾换成了一条**更新的**消息（编辑重发「删旧回复 + 加新回复」在同一拍完成，条数常常不变；
+   │              删掉末尾消息时新末尾更旧 → 不算，不会莫名把人拉到下面）
+   └─ 满足任一条 → pinned = true，scrollTop = scrollHeight（**瞬时**，layout 阶段，切换不闪一下顶部）
+[ChatView] ResizeObserver(.message-list)
+   └─ 内容变高（结果图加载完成、文字换行）时：pinned 为真才再贴底
+[ChatView] onScroll
+   └─ pinned = 距底部 ≤ 48px（用户往回滚 → false，读历史时新结果不会把视线拽走；滚回底部自动恢复跟随）
+```
+
+- **为什么不能只写一次 `scrollTop = scrollHeight`**：结果图是 `max-width/height: 340px` 的自适应 `<img>`，
+  进入标签那一刻图片还没解码，内容比最终高度矮 → 一次性的贴底会被后面的图片撑开而失效，
+  所以要有 `ResizeObserver` 持续贴底（只对「本来就在底部」的用户生效）。
+- 结果**只**在「进入标签」「消息条数变多」「末尾换成更新的消息（编辑重发）」三种时点强制贴底；
+  同一标签里结果消息从 running 变 success 不改条数也不改末尾 id，因此正在读历史时不会被拉下去（这正是 pinned 的用途）。
+- 瞬时滚动（不用 `scroll-behavior: smooth`）：切标签是「定位」而不是「播放动画」。
+- 与 `.chat-scroll` 无关的滚动（输入框 `textarea` 自己的贴底、灯箱、解析弹窗）各管各的，不要混用。
+
 ---
 
 ## 5. 持久化数据结构（Schema）
@@ -651,6 +677,10 @@ isGenerating = busy[convId] 存在（同步等待标记）
     推导，**不得**另立一份「谁在跑」的账本），终态点只由 `dotActionForEvent` 写入（result → 绿、error → 红；
     `status` / `cancelled` 不给点）；点开标签即消费（`CONV_ACTIVATE` 清 `dot`，切走再切回来不复活）；
     正在生成优先于上一次的终态。`conversations[].dot` 只存 `'success' | 'error' | null`，`'running'` 不落盘，见 §4.8。
+27. **聊天区进标签即贴底**：进入标签 / 该标签新增消息（条数变多，或末尾换成更新的消息 = 编辑重发）时，
+    必须在 layout 阶段把 `.chat-scroll` **瞬时**滚到最后一条消息（禁止平滑动画，否则切标签会先闪一下顶部）；
+    结果图是自适应尺寸、进入那一刻还没解码，所以**不得**只在挂载时贴一次 —— 内容变高要用 `ResizeObserver` 续贴；
+    但用户**往回滚过**（距底 > 48px）就不得再自动贴底（读历史时来的新结果不能把视线拽走），滚回底部自动恢复跟随，见 §4.9。
 
 ---
 
@@ -857,6 +887,7 @@ node dev-data/qa/meta-decode-check.js   # 元数据写入后仍可被真实解�
 | 改「插入／复制」的清理时机 | `src/lib/store.jsx` 的 `clearReuse` + `CONV_REUSE_SET/CLEAR` + `src/components/Composer.jsx#onTextInput/doSend` |
 | 改「切换标签时草稿怎么留」 | `src/components/Composer.jsx` 的搬运 effect（`draftOwnerRef` / `draftRef`）+ `src/lib/store.jsx` 的 `CONV_DRAFT_PARK/DROP`（仓库只在内存，删除会话时随之删除，见 §4.6） |
 | 改插入的拼接规则 | `src/components/Composer.jsx#appendPromptText`（append，不覆盖、不按光标插入） |
+| 改聊天区滚动 / 「进入标签停在最后一条消息」 | `src/components/ChatView.jsx` 的 `useLayoutEffect [convId,msgCount,tailId]` + `ResizeObserver(.message-list)` + `onScroll`（见 §4.9；不要改成只在挂载时贴一次底） |
 | 改解析失败文案 | `src/lib/promptReuse.jsx` 的 `PROMPT_MESSAGES` / `promptErrorText`（区分不支持 / 未找到 / 损坏 / 读取失败） |
 | 改持久化字段默认值 | `electron/src/store.js` 的 `DEFAULT_SETTINGS` / `DEFAULT_CONVERSATIONS` |
 | 改主题配色 | `src/styles/app.css` 顶部 CSS 变量 |
