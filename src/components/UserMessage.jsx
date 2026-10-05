@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useApp, useToast } from '../lib/store.jsx';
 import { uploadUrl, formatClock } from '../lib/util.js';
-import { resendEdited, resolveResendTarget } from '../lib/send.js';
+import { resendEdited, resolveResendTarget, sendBubbleAgain, sendBubbleToNewConversation } from '../lib/send.js';
 import { useComposerSelection, getComposerSelection } from '../lib/composerSelection.js';
 import { missingImageMessage } from '../lib/imageActions.js';
 import Icon from './Icon.jsx';
@@ -17,6 +17,8 @@ export default function UserMessage({ conv, msg }) {
   // 重发尺寸：null = 跟随下方输入框的当前尺寸；在下拉框里选过 = 只覆盖这一次重发
   const [sizeOverride, setSizeOverride] = useState(null);
   const [resending, setResending] = useState(false);
+  // 「新对话发送 / 当前对话发送」进行中（读图 + 提交）：防止连点重复发出
+  const [resendingAgain, setResendingAgain] = useState(false);
   // 图片右键菜单（复制 / 保存到下载 / 另存为）：菜单状态由组件持有，菜单项见 lib/imageActions.js
   const imageMenu = useImageMenu();
 
@@ -94,6 +96,46 @@ export default function UserMessage({ conv, msg }) {
       toast('已复制文字', 'info');
     } catch (e) {
       toast('复制失败', 'error');
+    }
+  };
+
+  /**
+   * 气泡重发：把这条消息的**文字 + 全部输入图**再发一遍（模型 / 尺寸 / 参数取输入区当前设置，
+   * 与「编辑重发」同一口径，见 AIDEV.md §4.7）。原消息与原回复都不动，只是新增一条请求。
+   *
+   * @param {'new'|'current'} where 'new' = 新开一个对话发送；'current' = 在当前对话里再发一次。
+   *   两者在等待上完全等价 —— 每个请求各占一个 jobId，同一个对话里可以同时等多个互不干扰的结果。
+   */
+  const resendBubble = async (where) => {
+    if (resendingAgain) return;
+    if (!String(msg.text || '').trim() && !(msg.images || []).length) { toast('这条消息没有可发送的内容', 'warn'); return; }
+    const t = resolveResendTarget({
+      settings: state.settings,
+      modelSeries: state.modelSeries,
+      protocols: state.protocols,
+      selection: getComposerSelection(),
+      fallbackModelId: msg.model && msg.model.id,
+      fallbackParams: msg.params
+    });
+    setResendingAgain(true);
+    try {
+      if (where === 'new') {
+        const { conv: next } = await sendBubbleToNewConversation({
+          dispatch, state, msg, params: t.params, modelId: t.modelId,
+          log: (l, m, e) => window.stab.log(l, m, e)
+        });
+        toast(`已在「${next.name}」新对话中发送`, 'info');
+      } else {
+        await sendBubbleAgain({
+          dispatch, state, conv, msg, params: t.params, modelId: t.modelId,
+          log: (l, m, e) => window.stab.log(l, m, e)
+        });
+        toast('已在当前对话中发送（与其它等待互不干扰）', 'info');
+      }
+    } catch (e) {
+      toast('发送失败: ' + e.message, 'error');
+    } finally {
+      setResendingAgain(false);
     }
   };
 

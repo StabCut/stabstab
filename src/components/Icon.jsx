@@ -37,6 +37,8 @@ import resetSrc from '../../assets/icons/reset.svg?raw';
 import moreSrc from '../../assets/icons/more.svg?raw';
 import warningSrc from '../../assets/icons/warning.svg?raw';
 import eyeSrc from '../../assets/icons/eye.svg?raw';
+import chatPlusSrc from '../../assets/icons/chat-plus.svg?raw';
+import sendSrc from '../../assets/icons/send.svg?raw';
 
 const RAW = {
   plus: plusSrc,
@@ -53,7 +55,10 @@ const RAW = {
   reset: resetSrc,
   more: moreSrc,
   warning: warningSrc,
-  eye: eyeSrc
+  eye: eyeSrc,
+  // 用户气泡上的两个重发按钮（见 components/UserMessage.jsx）
+  chatPlus: chatPlusSrc,
+  send: sendSrc
 };
 
 export const ICON_NAMES = Object.keys(RAW);

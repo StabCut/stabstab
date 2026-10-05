@@ -47,8 +47,9 @@ settings.json（用户数据：添加了哪些系列、系列里有哪些模型�
   精简成 5~6 字中文标题；未配置 Key 或调用失败时截取首条文字。模板/温度/Top-P 在 `rename-model.json`。
 - **模型系列 → API 来源 → 协议适配器**：内置 3 个系列（Qwen / Doubao Seedream / GPT Image），
   模型 id 由用户填写；每个「系列·来源」独立保存 API Key 与 API 地址。
-- 支持 **同步**（默认，当前会话阻塞等待）与 **异步 Task API**（后台轮询）两种请求模式；
-  异步仅对支持该能力的系列生效（当前只有 qwen 系列）。
+- **只有同步模式 + 同对话并行等待（伪异步）**：请求提交后阻塞等待图片返回；**等待期间输入框不锁定**，
+  同一个对话里可以连续发出多个请求，每个请求各占一个 jobId、各自等待、互不干扰（见 §4.12）。
+  用户气泡上还有「新对话发送 / 当前对话发送」两个按钮，把这条内容原样再发一遍（见 §4.13）。
 - 会话/设置/缓存/日志全部**本地持久化**在 `stabstab-data/`：打包后落在**用户数据目录**
   （Windows = `%APPDATA%\StabStab\stabstab-data`，Linux = `~/.config/StabStab/stabstab-data`），
   便携包落在 exe 同级，开发模式落在项目内 `dev-data/` —— **覆盖安装/卸载重装都不丢配置**，见 §5.6；
@@ -211,27 +212,27 @@ for f in electron/src/*.js electron/src/api/*.js; do node --check "$f"; done
 
 ```
 [渲染进程] Composer/UserMessage 收集 text + images(dataUrl) + srcName(输入图真实文件名) + params + modelId
-   └─ lib/send.js: sendNew() / resendEdited()
-        │  resendEdited 的 modelId / params 由编辑气泡按**输入区当前设置**给出（resolveResendTarget，见 §4.7）
-        ├─ lib/models.js resolveModel(modelId) → 界面用信息（尺寸列表 / 参数 schema / 模式提示 / 是否有 Key）
+   └─ lib/send.js: sendNew() / resendEdited() / sendBubbleAgain()（气泡重发，见 §4.13）
+        │  resendEdited / 气泡重发的 modelId / params 由输入区**当前设置**给出（resolveResendTarget，见 §4.7）
+        ├─ lib/models.js resolveModel(modelId) → 界面用信息（尺寸列表 / 参数 schema / 是否有 Key）
         ├─ 压缩每张图（compressIfNeeded，按 settings.compress*）
         ├─ dispatch MSG_ADD [userMsg, assistant占位(pending, meta.modelId)]
-        ├─ 同步模式 → BUSY_SET(convId, jobId=assistantMsg.id)
+        ├─ dispatch BUSY_SET(convId, jobId=assistantMsg.id)      ← 一个对话可以同时登记多个 jobId
         └─ window.stab.generate({conversationId, messageId, modelId, prompt, images, imageNames, params})
              │  imageNames：与 images 顺序一一对应的输入图文件名（读不到就是空串），见 §4.5
 [主进程] main.js api:generate：modelSeries.resolveModel(settings, modelSeries, modelId)
-   ├─ 解析出 protocol / sourceId / apiKey / baseUrl / mode（同步异步）
+   ├─ 解析出 protocol / sourceId / apiKey / baseUrl
    ├─ 缺模型 → NO_MODEL；缺协议 → NO_PROTOCOL；缺 Key → NO_API_KEY（都在事件里点明「系列 → 来源」）
    └─ runner.start(opts, sendEvent)   ── opts.imageNames 随 job 独立传递（并发生成不串图名）
         ├─ adapter.buildSubmitRequest(ctx) → fetch（AbortController + 超时）
-        ├─ 同步：parseSubmit → deliverResult（下载/解码每张图到 cache/，写入 {prompt, pics}）→ emit result
-        └─ 异步：parseSubmit 得 taskId → emit status → pollTask(指数退避) → deliverResult
-             │  重启后 resume：prompt / pics 由主进程从会话记录里取回（见 §4.5）
-[渲染进程] App.jsx onApiEvent 路由：
-   ├─ status → MSG_UPDATE {status:'running', taskStatus, taskId}
-   ├─ result → MSG_UPDATE {status:'success', images, usage...} + BUSY_CLEAR + 非当前会话则 CONV_DOT_SET(success 绿点)
-   ├─ error  → MSG_UPDATE {status:'error', error} + BUSY_CLEAR + 非当前会话则 CONV_DOT_SET(error 红点)
-   └─ cancelled → MSG_UPDATE {status:'cancelled'} + BUSY_CLEAR        （取消不算失败，不给圆点）
+        ├─ parseSubmit → deliverResult（下载/解码每张图到 cache/，写入 {prompt, pics}）→ emit result
+        └─ 仅当适配器返回 kind:'task'（Grsai 某些节点只回任务 id）→ emit status → pollTask 查询到结果为止
+             （这是**协议内部**的兜底，不是用户可切换的异步模式，也没有重启恢复）
+[渲染进程] App.jsx onApiEvent 路由（**按 messageId 定位**，所以同一对话里的多个请求各走各的）：
+   ├─ status → MSG_UPDATE {status:'running', taskStatus, taskId}       （仅协议内部任务兜底会出现）
+   ├─ result → MSG_UPDATE {status:'success', images, usage...} + BUSY_CLEAR(convId, jobId) + 非当前会话则 CONV_DOT_SET(success 绿点)
+   ├─ error  → MSG_UPDATE {status:'error', error} + BUSY_CLEAR(convId, jobId) + 非当前会话则 CONV_DOT_SET(error 红点)
+   └─ cancelled → MSG_UPDATE {status:'cancelled'} + BUSY_CLEAR(convId, jobId)  （取消不算失败，不给圆点）
    圆点动作由 store.jsx#dotActionForEvent(ev, activeId) 统一判定（见 §4.8）
 ```
 
@@ -877,7 +878,7 @@ ss-export/
     `--drop-line` / `--drop-line-strong`），曲线只作装饰（`pointer-events: none`），实际接收者是左右两个半区。
 22. **待复用提示词与「插入／复制」同生命周期**：存在 `state.temporary`，点击按钮 / 发送 / 切换 / 新建 / 删除任意会话（含非当前）/ 全部删除 / 主动改文字都必须一起清空；聚焦、移动光标、附件变化、拖放区显隐不得清理；异步解析必须用版本号 + 会话标识 + 文字快照三重校验，过期结果不得重新显示按钮。
 23. **逐标签草稿只存内存、随标签存亡**：输入区的文字与待发送图片按 `conversationId` 存在 `state.drafts`（仅内存，**不得**进 `state:save`，也**不得**塞进 `conversations`）；切换标签只搬运不清空（别人的草稿不许丢、也不许被上一个标签的内容覆盖），会话 `CONV_DELETE` / `CONV_DELETE_ALL` 时对应草稿随之删除；`CONV_DRAFT_PARK` 必须拒绝已不存在的会话（否则删除后迟到的一拍会把草稿塞回仓库、永不释放），发送成功必须 `CONV_DRAFT_DROP`（切回来不复活已发送的内容），见 §4.6。
-24. **编辑重发用输入区当前设置**：`resolveResendTarget`（`lib/send.js`）是唯一实现 —— 模型 / 尺寸 / 高级参数取**输入区当前值**（`lib/composerSelection.js` 的实时镜像），**不得**改回「用该消息记录里的 `msg.model` / `msg.params` 发」；尺寸候选与参数过滤都要按**当前模型**（`sizeOptions` / `paramSchema`）算，输入区遗留的不兼容尺寸校正到该模型第一个候选；输入区尚未发布设置时才退回消息记录那套；同步拦截（busy）用的 `mode` 也必须来自当前模型；重发后用户消息的 `params` / `model` 改写为本**实际发送**的那套，见 §4.7。
+24. **编辑重发用输入区当前设置**：`resolveResendTarget`（`lib/send.js`）是唯一实现 —— 模型 / 尺寸 / 高级参数取**输入区当前值**（`lib/composerSelection.js` 的实时镜像），**不得**改回「用该消息记录里的 `msg.model` / `msg.params` 发」；尺寸候选与参数过滤都要按**当前模型**（`sizeOptions` / `paramSchema`）算，输入区遗留的不兼容尺寸校正到该模型第一个候选；输入区尚未发布设置时才退回消息记录那套；重发后用户消息的 `params` / `model` 改写为本**实际发送**的那套，见 §4.7。用户气泡的「新对话发送 / 当前对话发送」也用同一套设置口径（见 §4.13）。
 25. **数据必须活在安装目录之外**：打包后（非便携）数据根一律 `<userData>/stabstab-data`，**严禁**改回 exe 同级 ——
     NSIS 覆盖安装会先跑旧卸载器，`RMDir /r $INSTDIR` 会把安装目录连数据一起删掉；便携形态只认
     `PORTABLE_EXECUTABLE_DIR` 或 exe 同级的 `stabstab-portable.txt` 标记。旧数据迁移（`migrateLegacyData`）**只拷不删**源目录，
@@ -1126,13 +1127,16 @@ node dev-data/qa/meta-decode-check.js   # 元数据写入后仍可被真实解�
 | 想做什么 | 改哪里 |
 |----------|--------|
 | 接入新模型/协议 | `electron/src/api/` 新建适配器 + `registry.js` 注册 + **`electron/assets/model-series.json` 挂到某个系列的 sources** |
-| 调整某个系列/来源 | `electron/assets/model-series.json`（label / 来源 / baseUrl / sizeOptions / hint / 是否支持异步）；用户级开关与覆盖在 `settings.json` 与数据目录的 `model-series.json` |
+| 调整某个系列/来源 | `electron/assets/model-series.json`（label / 来源 / baseUrl / sizeOptions / hint）；用户级覆盖在 `settings.json` 与数据目录的 `model-series.json` |
 | 加一个 API 参数到输入区 | 对应适配器的 `paramSchema` + `buildBody`；参数面板与 `buildParams` 都是 schema 驱动，无需改 UI |
 | 改 size 列表 | `electron/assets/model-series.json` 的 `sources[].sizeOptions`（或适配器的 `sizeOptions` 兜底） |
 | 改「模型设置」页结构 | `src/components/SettingsModal.jsx`（系列卡片 / 模型行 / 来源级 API Key 与地址） |
 | 改标题生成提示模板 / 温度 / Top-P / 默认地址 | `electron/assets/rename-model.json`（随包默认）或数据目录的 `rename-model.json`（可手工编辑，重启生效；设置页滑动条也写它） |
 | 改标签命名时机与回退 | `src/lib/title.js#maybeAutoTitle/fallbackTitle` + `src/lib/send.js`（触发点）+ `src/lib/store.jsx` 的 `CONV_RENAME_AUTO` 守卫 |
+| 改「同对话多个请求并行等待」（伪异步） | `src/lib/store.jsx` 的 `busy`（`convId -> {[jobId]}`）+ `BUSY_SET/BUSY_CLEAR` + `waitingJobs` + `src/lib/send.js`（每次发送只登记自己的 jobId）+ `src/components/Composer.jsx`（`waiting` / `stopAllWaiting` / `canSend`）+ `src/components/AssistantMessage.jsx#stopWaiting`（见 §4.12） |
+| 加/改用户气泡上的重发按钮 | `src/components/UserMessage.jsx#resendBubble` + `src/lib/send.js#sendBubbleAgain/sendBubbleToNewConversation` + `src/lib/store.jsx#makeConversation`/`CONV_ADD` + 图标 `assets/icons/{chat-plus,send}.svg`（见 §4.13） |
 | 改侧栏圆点（黄/绿/红、点开消费） | `src/lib/store.jsx#conversationDot/isGenerating/dotActionForEvent`（判定口径）+ `src/components/Sidebar.jsx#ConvDot` + `src/styles/app.css` 的 `.conv-dot` 修饰类 + `src/App.jsx` 的事件路由（见 §4.8） |
+| 改侧栏拖动排序（落点规则 / 视觉） | `src/lib/store.jsx#dropIndexFor/moveConversation` + `CONV_REORDER`（纯逻辑）+ `src/components/Sidebar.jsx` 的拖动状态机 + `src/styles/app.css` 的 `.dragging` / `.drop-before` / `.drop-after`（见 §4.11） |
 | 改重命名模型的协议/解析 | `electron/src/renameModel.js#generateTitle/sanitizeTitle/extractText/pickTitle`（Responses API，非 chat/completions） |
 | 改模型解析规则 | `electron/src/modelSeries.js#resolveModel` **与** `src/lib/models.js#resolveModel`（两处同口径） |
 | 改会话/消息数据结构 | `lib/store.jsx` 的 reducer + `lib/send.js` 构造器 + 主进程 `normalizeConversationsOnStartup` |

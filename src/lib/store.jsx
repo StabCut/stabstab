@@ -62,6 +62,29 @@ function dropDraft(drafts, convId) {
   return next;
 }
 
+/**
+ * 造一个新会话对象（含它的序号）。序号只增不减，由 state.conversations.tabCounter 派生。
+ * 单独抽出来是为了「新对话发送」：它必须先拿到新会话对象，才能把请求发进这个会话
+ * （见 lib/send.js#sendBubbleToNewConversation）。
+ * @param {number} tabCounter 当前计数器
+ * @returns {{conv:object, counter:number}} counter = 新计数器（CONV_ADD / CONV_NEW 写回 state）
+ */
+export function makeConversation(tabCounter) {
+  const n = (Number(tabCounter) || 0) + 1;
+  return {
+    counter: n,
+    conv: {
+      id: uid('c'),
+      name: String(n),          // 空对话 = 序号；出现首条文字后由自动命名替换（见 lib/title.js）
+      nameAuto: true,           // true = 名字仍可由自动命名流程替换
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      dot: null,                // 侧栏圆点终态：null | 'success' | 'error'（'running' 由 conversationDot 推导）
+      messages: []
+    }
+  };
+}
+
 /** 状态机（导出便于 QA 脚本直接验证 reducer 行为：见 dev-data/qa/title-test.mjs） */
 export function reducer(state, action) {
   switch (action.type) {
@@ -101,22 +124,25 @@ export function reducer(state, action) {
 
     // ---- 会话 ----
     case 'CONV_NEW': {
-      const n = state.conversations.tabCounter + 1;
-      const conv = {
-        id: uid('c'),
-        name: String(n),          // 空对话 = 序号；出现首条文字后由自动命名替换（见 lib/title.js）
-        nameAuto: true,           // true = 名字仍可由自动命名流程替换
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-        dot: null,                // 侧栏圆点终态：null | 'success' | 'error'（'running' 由 conversationDot 推导）
-        messages: []
-      };
+      const { conv, counter } = makeConversation(state.conversations.tabCounter);
       return {
         ...clearReuse(state),
         conversations: {
-          tabCounter: n,
+          tabCounter: counter,
           activeId: conv.id,
           conversations: [conv, ...state.conversations.conversations]
+        }
+      };
+    }
+    case 'CONV_ADD': {
+      // 带对象的「新建会话」：调用方已经拿 conv.id 去发请求了（「新对话发送」），
+      // 所以会话对象必须由调用方造好再插进来 —— 不能等 reducer 现场生成 id。
+      return {
+        ...clearReuse(state),
+        conversations: {
+          tabCounter: Math.max(state.conversations.tabCounter, action.counter || 0),
+          activeId: action.conv.id,
+          conversations: [action.conv, ...state.conversations.conversations]
         }
       };
     }

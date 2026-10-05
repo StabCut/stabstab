@@ -115,6 +115,9 @@ button { cursor: pointer; }
   display: inline-flex; align-items: center; justify-content: center;
 }
 .icon-btn:hover { background: var(--bg-hover); color: var(--text); }
+/* 正在处理中（如用户气泡的「新对话发送 / 当前对话发送」已点过一次）时的置灰 */
+.icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.icon-btn:disabled:hover { background: transparent; color: var(--text-dim); }
 
 .primary-btn {
   background: var(--accent); color: #fff; border: none;

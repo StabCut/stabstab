@@ -16,6 +16,7 @@ import { uid, formatBytes } from './util.js';
 import { compressIfNeeded, dataUrlBytes } from './images.js';
 import { resolveModel, normalizeSize, isValidSize } from './models.js';
 import { maybeAutoTitle } from './title.js';
+import { makeConversation } from './store.jsx';
 
 /** 依参数面板的 schema 生成初始参数值（size 由尺寸下拉单独维护） */
 export function defaultParams(schema) {
@@ -252,6 +253,40 @@ export async function resendEdited({ dispatch, state, conv, userMsg, newText, ke
     params
   });
   return { asst, resolved };
+}
+
+/**
+ * 气泡重发（用户气泡上的「当前对话发送」/「新对话发送」两个按钮的公共实现）：
+ * 把这条消息的**文字 + 全部输入图**按给定的模型 / 参数再发一遍 —— 等于把同样的内容
+ * 重新输入一次并点发送，与「重新开一个对话来请求并等待结果」没有差别。
+ *
+ * 与编辑重发的区别：**不改动原消息、也不删原回复**，只是新增一条用户消息 + 它自己的助手结果，
+ * 所以同一个对话里可以同时等 2 个以上互不干扰的结果（见 AIDEV.md §4.12）。
+ *
+ * @param msg        被重发的用户消息（只用它的 text / images）
+ * @param params     本次要发的参数（由调用方按输入区当前设置算好，见 resolveResendTarget）
+ * @param modelId    本次要发的模型 id
+ * @returns {Promise<{userMsg, asst}>}
+ */
+export async function sendBubbleAgain({ dispatch, state, conv, msg, params, modelId, log }) {
+  const text = msg && msg.text ? msg.text : '';
+  const attachments = await attachmentsOfMessage(msg && msg.images);
+  if (!text.trim() && !attachments.length) {
+    throw new Error('这条消息的内容已经不可用（图片文件可能已被清理），无法重发。');
+  }
+  return sendNew({ dispatch, state, conv, text, attachments, params, modelId, log });
+}
+
+/**
+ * 「新对话发送」：先建一个新对话，再把气泡内容发进去。
+ * 新对话会立刻成为当前标签（与点「新建对话」一致），于是能直接看到它在等结果。
+ * @returns {Promise<{conv:object, userMsg:object, asst:object}>} conv = 新建的会话
+ */
+export async function sendBubbleToNewConversation({ dispatch, state, msg, params, modelId, log }) {
+  const { conv, counter } = makeConversation(state.conversations.tabCounter);
+  dispatch({ type: 'CONV_ADD', conv, counter });
+  const r = await sendBubbleAgain({ dispatch, state, conv, msg, params, modelId, log });
+  return { conv, ...r };
 }
 
 export function dataUrlSize(dataUrl) {
