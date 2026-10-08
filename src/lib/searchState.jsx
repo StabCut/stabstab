@@ -16,7 +16,7 @@
  */
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from './store.jsx';
-import { searchConversations, hitsOfConversation } from './search.js';
+import { searchConversations } from './search.js';
 
 /** 输入防抖：搜索本身是毫秒级，但大数据量下每敲一个字都全量扫一遍没必要 */
 const QUERY_DEBOUNCE_MS = 120;
@@ -64,16 +64,30 @@ export function SearchProvider({ children }) {
   const closeSearch = useCallback(() => setOpen(false), []);
   const toggleSearch = useCallback(() => setOpen((v) => !v), []);
 
-  // 输入 → 防抖 → 真正查询
+  // 输入 → 防抖 → 真正查询。
+  // ★ typeSeqRef 是「这次防抖回调是不是还为当前这次输入而发」的闸：用户清空输入框后立刻
+  //   点一条历史项（setQueryTerm 直接设 term），清空那一拍排下的防抖原本会把新词覆盖成空串。
+  const typeSeqRef = useRef(0);
   const onQueryChange = useCallback((next) => {
+    typeSeqRef.current += 1;
     setQuery(next);
-    if (!String(next).trim()) setCursor(0);
   }, []);
 
   useEffect(() => {
-    const t = window.setTimeout(() => setTerm(query), QUERY_DEBOUNCE_MS);
+    const mine = typeSeqRef.current;
+    const t = window.setTimeout(() => {
+      if (typeSeqRef.current === mine) setTerm(query);
+    }, QUERY_DEBOUNCE_MS);
     return () => window.clearTimeout(t);
   }, [query]);
+
+  /** 直接落一个查询词（点历史项）：跳过防抖，同时作废还没发的那一次 */
+  const setQueryTerm = useCallback((value) => {
+    typeSeqRef.current += 1;
+    const v = String(value == null ? '' : value);
+    setQuery(v);
+    setTerm(v);
+  }, []);
 
   /**
    * 聊天数据变化（新消息 / 编辑重发 / 删除 / 导入）时结果会自动跟着变 ——
@@ -87,8 +101,14 @@ export function SearchProvider({ children }) {
   const hits = result ? result.hits : [];
   const hitCount = hits.length;
 
-  // 结果集变了（改了词 / 删了消息）：把游标收回「还没站上」，避免指向已消失的命中
-  useEffect(() => { setCursor(0); }, [term]);
+  // 结果集变了（改了词、删了消息）时把游标收回「还没站上任何一条」——
+  // ★ 必须和「换词自动落位」在同一拍里完成：归零在前、落位在后（见 ChatView 的绑定 effect）。
+  //   如果只归零不落位，就会出现「hits 已经更新、游标却是 0、界面上一点高亮都没有」的空窗。
+  //
+  // setGen 同时把「已经落位过的词」作废：否则同一个词「清空输入框 → 再输一遍」时，
+  // 绑定端看到词没变就不再落位，游标永远停在 0（界面上没有任何高亮，实际踩过）。
+  const [gen, setGen] = useState(0);
+  useEffect(() => { setCursor(0); setGen((g) => g + 1); }, [term]);
 
   /**
    * 记住查询历史：**每个查询词只登记一次**（lastLogged 记账），且只在这次查询真的查到东西时记。
@@ -121,6 +141,40 @@ export function SearchProvider({ children }) {
     if (h.convId !== activeId) dispatch({ type: 'CONV_ACTIVATE', id: h.convId });
   }, [hits, activeId, dispatch]);
 
+  /**
+   * 换查询词时的自动落点：优先停在**当前标签**里的第一处命中；当前标签一处都没有，
+   * 就切到有命中的第一个标签并停在它的第一处。留着游标不动是最差的体验（结果在手边却要自己翻）。
+   *
+   * ★ 必须由 searchState 提供、由 ChatView 在「同一个 term 只调一次」的前提下调用：
+   *   调用它会立刻改游标，而「换词 → 游标归零」也发生在同一拍 —— 两者顺序不确定会互相覆盖
+   *   （曾经的表现：换词后 hits 已经更新，游标却是 0，界面上任何高亮都没有）。
+   * @param {string} convId 当前标签
+   * @param {string} term   这一拍生效的查询词（调用方用它去重，保证每个词只自动落位一次）
+   */
+  const syncToTerm = useCallback((convId, term) => {
+    if (!hits.length) return false;
+    let pick = -1;
+    for (let i = 0; i < hits.length; i++) {
+      if (hits[i].convId === convId) { pick = i; break; }
+    }
+    gotoHit(pick >= 0 ? pick : 0);
+    return true;
+  }, [hits, gotoHit]);
+
+  /**
+   * 切到某个会话里的第 i 处命中（i 是**该会话内**的序号，0-based，超出就夹到两端）。
+   * 用在两个场合：切换标签后自动站到该会话的第一处 / 用户自己滚到别处后再点「下一个」。
+   * @returns {boolean} 该会话里有没有命中可站
+   */
+  const pageHit = useCallback((convId, i) => {
+    const list = [];
+    for (let k = 0; k < hits.length; k++) if (hits[k].convId === convId) list.push(k);
+    if (!list.length) return false;
+    const at = Math.max(0, Math.min(list.length - 1, Number(i) || 0));
+    gotoHit(list[at]);
+    return true;
+  }, [hits, gotoHit]);
+
   const gotoNext = useCallback(() => gotoHit(cursor), [gotoHit, cursor]);            // cursor 是 1-based，下一个正好是下标 cursor
   const gotoPrev = useCallback(() => gotoHit(cursor - 2), [gotoHit, cursor]);
 
@@ -130,28 +184,29 @@ export function SearchProvider({ children }) {
   }, []);
 
   /**
-   * 当前标签里的全部命中（用于高亮）：msgId -> [{fieldIndex, ranges}]。
-   * 光标站上的那一条由 ChatView 额外加 .current 强调。
+   * 扫描命中表（第 2 / 3 步的定位与高亮要用）：
+   *   · records：拍平后的全部记录，交给 messageMarks 算每个会话里的高亮区间；
+   *   · index：命中的全局序号（1-based），当前命中 = index.get(current.msgId + 字段下标)。
+   * 不直接把「当前是第几处」算进高亮表：那样每次挪游标都要重建整张表。
    */
-  const activeHits = useMemo(() => {
-    if (!open || !result || !activeId) return null;
-    return hitsOfConversation(result.flat, activeId, term);
-  }, [open, result, activeId, term]);
+  const index = useMemo(() => (hits.length ? hits : null), [hits]);
 
   const current = cursor > 0 && cursor <= hitCount ? hits[cursor - 1] : null;
 
   const value = useMemo(() => ({
     open, query, term, history, result,
     hits, hitCount, cursor, current, jump,
-    activeHits,
+    records: result ? result.flat : null,
+    index,
+    gen,
     openSearch, closeSearch, toggleSearch,
-    onQueryChange: (v) => onQueryChange(v),
-    setQueryTerm: (v) => { setQuery(String(v)); setTerm(String(v)); },
-    gotoHit, gotoNext, gotoPrev, consumeJump,
+    onQueryChange,
+    setQueryTerm,
+    gotoHit, gotoNext, gotoPrev, pageHit, syncToTerm, consumeJump,
     inputRef
   }), [
-    open, query, term, history, result, hits, hitCount, cursor, current, jump, activeHits,
-    openSearch, closeSearch, toggleSearch, onQueryChange, gotoHit, gotoNext, gotoPrev, consumeJump
+    open, query, term, history, result, hits, hitCount, cursor, current, jump, index, activeId, gen,
+    openSearch, closeSearch, toggleSearch, onQueryChange, setQueryTerm, gotoHit, gotoNext, gotoPrev, pageHit, syncToTerm, consumeJump
   ]);
 
   return <SearchCtx.Provider value={value}>{children}</SearchCtx.Provider>;

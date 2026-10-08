@@ -799,9 +799,19 @@ API 返回的文字都能命中，结果按命中处列出，点一下定位到�
    ├─ 查询历史：localStorage 'stabstab.searchHistory'（最多 8 条、最近在前、只记「搜到了东西」的词）
    └─ 历史登记用 lastLoggedRef 记账：**每个词只登记一次**，否则清空后再点历史项会重复登记
 [面板] components/SearchPanel.jsx（挂在 Sidebar 里，不占 ChatView）
-   ├─ 输入框（打开即聚焦）/ 统计文案 / 上一个·下一个 / 关闭；关键词为空时展示「最近搜索」
+   ├─ 输入框（打开即聚焦）/ 统计文案（悬停显示完整统计）/ 上一个·下一个 / 关闭；关键词为空时展示「最近搜索」
    ├─ 命中高亮用「按区间切分 + <mark>」，**不用 innerHTML**（消息文字是不可信输入）
    └─ Enter = 下一个、Shift+Enter = 上一个、Esc = 关闭（isComposing 时全部忽略）
+[定位] ChatView
+   ├─ messageMarks(conv.messages, records, convId, term, current) → msgId -> 命中区间（含「当前」标记）
+   │    · 只收「气泡里真的渲染出来的那段文字」：提示词 / API 返回文字 / 错误信息（错误卡片里那一行）
+   │    · 文件名、模型名、错误码、任务号没有可切分的文字 → 不高亮，但仍会让整条消息留一圈淡边
+   ├─ 换词（term 生效）：直接 gotoHit(0)（该词的第一处，可能因此切标签）；
+   │    换标签：若新标签里也有命中 → pageHit(convId, 0)
+   │    ★ 两者都必须**每批结果只落位一次**（term + gen 记账，见 searchState 的 gen）：
+   │      只看词记账时，「清空输入框 → 再输一遍同一个词」不会重新落位，游标永远停在 0
+   ├─ 滚动：等到 layout 阶段（mark 已落地）再 scrollIntoView({block:'center'})，一次到位
+   └─ 闪烁：目标那条加 .search-flash（CSS 动画 1.4s）；关掉搜索时立即清掉在飞的计时器
 [快捷键] App.jsx 的 window keydown：Ctrl/Cmd+F 打开面板；**焦点在 input/textarea/编辑框里时不抢**
    —— 应用内快捷键不进 lib/shortcuts.js 那套全局快捷键（那套只认 accelerator，且普通键必须带修饰键）
 ```
@@ -812,13 +822,18 @@ API 返回的文字都能命中，结果按命中处列出，点一下定位到�
   消息只增不改，全量线性扫描在这个数据量下是毫秒级。
 - **搜的是可见文字**：`AssistantMessage` 只在没有结果图时才渲染 `texts`，所以「搜得到但气泡上看不见」
   是可能的（接口同时返回文字和图片时）。这是已知取舍：宁可搜到，也不要漏掉 API 返回的内容。
-- **跳转分三步做**（本节的 [定位] 部分随实现补齐）：同对话内滚动 + 文字高亮（`.msg-text mark`）、
-  跨标签先 `CONV_ACTIVATE` 再滚（`jump` 是「两拍」的载体，由 ChatView 在目标消息挂上 DOM 时
-  `consumeJump` 清掉，避免下次切标签还被抑制）。定位时要压住 §4.9 的自动贴底。
-- 消息根节点带 `data-msg-id`（`.msg-slot` 是每条的定位抓手），滚动定位按它查节点，不靠下标。
+- **定位优先于自动贴底**（这是本节唯一与 §4.9 抢焦点的地方）：
+  `searchJump` 存在时 `useLayoutEffect` 直接 `return`（不贴底）；`onScroll` 之外，贴底那条
+  `ResizeObserver` 在「刚定位过」的 700ms 内也放过（`isRecentNav`），否则结果图解码撑高的那一下
+  会把视线从命中处拽回底部。定位后的 1.5s 内另有一个对齐观察者：目标偏出视野中心 48px 就重新对齐。
+- **状态镜像**：`.chat-main` 上挂了 `data-search-term / cursor / hits / jump / current-hit / current-range`
+  只读属性（不参与逻辑）。调试时肉眼可见、QA 断言也能同步到「状态真的算完了」那一拍 ——
+  只看统计文案会断言到防抖前的中间态上（这个坑真踩过）。
+- 消息根节点带 `data-msg-id`，每条外面还有一层 `.msg-slot`（定位抓手 + `data-hit` 标记）。
 - 回归：`node dev-data/qa/search-test.mjs`（纯逻辑）、
-  `node_modules\.bin\electron dev-data\qa\search-dom-test.js`（真实窗口里的面板交互 + 截图
+  `node_modules\.bin\electron dev-data\qa\search-dom-test.js`（真实窗口里的面板交互 + 定位高亮 + 截图
   `dev-data/qa/search-panel-dark.png`），见 §9.3。
+  ★ QA 脚本里的等待一律以 `data-search-term` + 统计文案为同步条件，不要用固定 `sleep` 猜时间。
 
 ---
 
@@ -1365,7 +1380,7 @@ node dev-data/qa/meta-decode-check.js   # 元数据写入后仍可被真实解�
 node dev-data/qa/conv-reorder-test/build.mjs   # 侧栏拖动排序：先构建 bundle
 node_modules\.bin\electron dev-data\qa\conv-reorder-test\main.js  # …再用真实 DragEvent 序列跑断言 + 截图（含「拖起淡出 + 落点线」）
 node dev-data/qa/search-test.mjs        # 全局搜索纯逻辑：字段收集 / 拍平 / 扫描 / 片段 / 命中区间 / 上限（38 项）
-node_modules\.bin\electron dev-data\qa\search-dom-test.js  # 搜索面板真实窗口断言（34 项）+ 截图 search-panel-dark.png
+node_modules\.bin\electron dev-data\qa\search-dom-test.js  # 搜索面板真实窗口断言（50 项：面板 / 历史 / 定位 / 高亮 / 滚动抑制）+ 截图
 ```
 
 `close-tray-test/run.js` 跑的是**真实主进程**（`electron/main.js`），只把「用户点标题栏 ×」换成窗口里的

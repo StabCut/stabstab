@@ -9,9 +9,14 @@ import { usePromptReuse } from '../lib/promptReuse.jsx';
 import Icon from './Icon.jsx';
 import SizePicker from './SizePicker.jsx';
 import ImageContextMenu, { useImageMenu } from './ImageContextMenu.jsx';
+import HighlightText from './HighlightText.jsx';
 import { MAX_IMAGES } from './Composer.jsx';
 
-export default function UserMessage({ conv, msg }) {
+/**
+ * @param marks 全局搜索在**这条消息里**的命中区间（`lib/search.js#messageMarks` 算出）；
+ *   没在搜索 / 这条没命中时是 undefined 或空数组 —— 此时渲染结果与不做搜索时完全一致。
+ */
+export default function UserMessage({ conv, msg, marks = null, flash = false }) {
   const { state, dispatch } = useApp();
   const toast = useToast();
   // 编辑中的气泡也是「图片接收区域」之一：指针拖到它上面时不弹左右解析区，交给这里接收补图
@@ -340,7 +345,7 @@ export default function UserMessage({ conv, msg }) {
   }
 
   return (
-    <div className="msg user" data-msg-id={msg.id}>
+    <div className={`msg user${flash ? ' search-flash' : ''}`} data-msg-id={msg.id}>
       {imageMenu.menu && <ImageContextMenu menu={imageMenu.menu} onClose={imageMenu.closeMenu} />}
       <div className="msg-bubble user-bubble">
         {(msg.images && msg.images.length > 0) && (
@@ -368,7 +373,7 @@ export default function UserMessage({ conv, msg }) {
             )}
           </div>
         )}
-        {msg.text && <div className="msg-text">{msg.text}</div>}
+        {msg.text && <HighlightText className="msg-text" text={msg.text} marks={marks} />}
         {/* 本次发送使用的模型：显示在时间左侧（模型名字右对齐贴住时间，长名字省略号截断） */}
         <div className={`msg-meta${msg.model && msg.model.name ? ' has-model' : ''}`}>
           {msg.model && msg.model.name && (

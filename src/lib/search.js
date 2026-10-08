@@ -237,3 +237,56 @@ export function hitsOfConversation(records, convId, query) {
   }
   return map;
 }
+
+/**
+ * 消息**气泡里真正渲染出来**的那段文字，命中下标指的是它。
+ * 为什么单独抽一个函数：搜索字段（fieldsOfMessage）比气泡里能看见的文字**多** ——
+ *   输入图文件名、结果文件名、模型名、错误码等是界面上的小字或压根不显示，它们不可能被高亮。
+ *   所以高亮必须按下标去问「这一段文字是哪个字段」，而不是把命中直接当偏移量用。
+ * @param {object} msg 消息对象
+ * @param {number} fieldIndex fieldsOfMessage(msg) 的下标
+ * @returns {string} 该下标对应的「气泡内可见文字」；不是可见文字（或下标无效）时返回 ''
+ */
+export function fieldText(msg, fieldIndex) {
+  const fields = fieldsOfMessage(msg);
+  const f = fields[Number(fieldIndex)];
+  if (!f) return '';
+  if (f.label === '提示词') return msg.text || '';
+  if (f.label === '返回文字') return (msg.texts || []).join('\n');
+  // 错误信息也有一处确定的渲染位置（AssistantMessage 的错误卡片里那一行），可以高亮
+  if (f.label === '错误信息') return (msg.error && msg.error.message) || '';
+  return '';        // 文件名 / 模型名 / 错误码等：气泡里没有对应的可高亮文字
+}
+
+/**
+ * 把「某个会话里的全部命中」按消息下标整理成高亮表，并标出当前站上的那一处。
+ *
+ * @param {Array} messages    该会话的消息数组（权威顺序：下标对位用）
+ * @param {SearchRecord[]} records 全部记录（searchConversations 返回的 flat）
+ * @param {string} convId
+ * @param {string} query
+ * @param {{msgId?:string, fieldIndex?:number}|null} current 当前定位目标（null = 还没站上任何一条）
+ * @returns {Map<string, {ranges:Array<[number,number]>, current:boolean}[]>} msgId -> 每处命中一段
+ */
+export function messageMarks(messages, records, convId, query, current) {
+  const out = new Map();
+  const back = hitsOfConversation(records, convId, query);
+  for (let i = 0; i < (messages || []).length; i++) {
+    const msg = messages[i];
+    const entries = back.get(msg.id);
+    if (!entries) continue;
+    const marks = [];
+    for (const e of entries) {
+      const text = fieldText(msg, e.fieldIndex);
+      // 只收「下标落在气泡可见文字里」的命中：片段是裁过的（带省略号），偏移量不可用，
+      // 所以在可见文字上重新算一遍区间（同一个 needle 与同一个口径）
+      if (!text) continue;
+      marks.push({
+        ranges: matchRanges(text, String(query || '').trim().toLowerCase()),
+        current: !!(current && current.msgId === msg.id && current.fieldIndex === e.fieldIndex)
+      });
+    }
+    if (marks.length) out.set(msg.id, marks);
+  }
+  return out;
+}

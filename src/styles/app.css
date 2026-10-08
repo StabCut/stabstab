@@ -319,6 +319,14 @@ button { cursor: pointer; }
 }
 /* 每条消息的定位抓手（搜索跳转用；不参与排版，消息本身仍是 .msg 的 flex 布局） */
 .msg-slot { display: block; }
+/* 搜索命中过的地方留一个淡圈，方便回头一眼认出「这一条里有命中」 */
+.msg-slot[data-hit='1'] .msg-bubble { box-shadow: 0 0 0 1px var(--gold); }
+/* 刚定位过来的那一条：整条闪一下（一次性动画，不改变布局） */
+.msg-slot .msg.search-flash .msg-bubble { animation: search-flash 1.2s ease-out; }
+@keyframes search-flash {
+  0% { box-shadow: 0 0 0 3px var(--coral); }
+  100% { box-shadow: 0 0 0 1px var(--gold); }
+}
 
 /* ================= 消息 ================= */
 .msg { display: flex; gap: 8px; align-items: flex-start; position: relative; }

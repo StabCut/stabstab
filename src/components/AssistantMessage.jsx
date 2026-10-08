@@ -3,6 +3,7 @@ import { useApp, useToast } from '../lib/store.jsx';
 import { cacheUrl, formatClock, formatBytes } from '../lib/util.js';
 import Icon from './Icon.jsx';
 import ImageContextMenu, { useImageMenu } from './ImageContextMenu.jsx';
+import HighlightText from './HighlightText.jsx';
 
 // 协议内部任务兜底（Grsai 某些节点只回任务 id）时的状态文案；常规同步请求不会走到这里
 const TASK_STATUS_LABEL = {
@@ -12,7 +13,12 @@ const TASK_STATUS_LABEL = {
   UNKNOWN: '未知'
 };
 
-export default function AssistantMessage({ conv, msg }) {
+/**
+ * @param marks 全局搜索在**这条消息里**的命中区间（`lib/search.js#messageMarks` 算出）：
+ *   只有「API 返回文字」能被高亮 —— 错误码 / 任务号 / 文件名在气泡里没有可切分的文字。
+ * @param flash 刚定位到这条消息：整条闪一下（CSS 动画，一次性）。
+ */
+export default function AssistantMessage({ conv, msg, marks = null, flash = false }) {
   const { dispatch } = useApp();
   const toast = useToast();
   // 图片右键菜单（复制 / 保存到下载 / 另存为）：菜单项见 lib/imageActions.js
@@ -127,7 +133,7 @@ export default function AssistantMessage({ conv, msg }) {
           </div>
         )}
         {imgs.length === 0 && (msg.texts || []).length > 0 && (
-          <div className="msg-text assistant-text">{(msg.texts || []).join('\n')}</div>
+          <HighlightText className="msg-text assistant-text" text={(msg.texts || []).join('\n')} marks={marks} />
         )}
         <div className="result-meta">
           {msg.usage && msg.usage.output_image_count != null && `${msg.usage.output_image_count} 张`}
@@ -141,7 +147,8 @@ export default function AssistantMessage({ conv, msg }) {
       <div className="result-card error">
         <div className="error-title"><Icon name="warning" size={16} /> 生成失败</div>
         {msg.error && msg.error.code && <div className="error-code">错误码：{msg.error.code}</div>}
-        <div className="error-message">{(msg.error && msg.error.message) || '未知错误'}</div>
+        {/* 错误信息是唯一「可高亮」的位置：搜索命中错误原文时就标在这里 */}
+        <HighlightText className="error-message" text={(msg.error && msg.error.message) || '未知错误'} marks={marks} />
         {msg.error && msg.error.requestId && <div className="error-req">Request ID：{msg.error.requestId}</div>}
         {msg.taskId && <div className="error-req">Task ID：{msg.taskId}</div>}
       </div>
@@ -155,7 +162,7 @@ export default function AssistantMessage({ conv, msg }) {
   }
 
   return (
-    <div className="msg assistant" data-msg-id={msg.id}>
+    <div className={`msg assistant${flash ? ' search-flash' : ''}`} data-msg-id={msg.id}>
       {imageMenu.menu && <ImageContextMenu menu={imageMenu.menu} onClose={imageMenu.closeMenu} />}
       <div className="msg-avatar" title="StabStab">
         <img src="./icon.svg" alt="" draggable={false} />
