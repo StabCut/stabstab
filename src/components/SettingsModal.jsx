@@ -1,9 +1,18 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp, useToast } from '../lib/store.jsx';
 import { uid } from '../lib/util.js';
 import { sourceConfigOf, sourceKey } from '../lib/models.js';
 import { titleDefaults } from '../lib/title.js';
+import {
+  SHORTCUT_ACTIONS,
+  SHORTCUT_ACTION_IDS,
+  actionLabel,
+  formatAccelerator,
+  normalizeShortcutValues,
+  planShortcuts
+} from '../lib/shortcuts.js';
 import Icon from './Icon.jsx';
+import ShortcutRecorder from './ShortcutRecorder.jsx';
 
 const TABS = [
   { id: 'model', label: '模型设置' },
@@ -58,12 +67,69 @@ export default function SettingsModal({ initialTab = 'model' }) {
   // ---- 数据管理（配置 + 聊天记录 导出 / 导入）----
   const [transferBusy, setTransferBusy] = useState('');       // '' | 'export' | 'import'
   const [importResult, setImportResult] = useState(null);     // {source, parts, notes, media}
+  // ---- 全局快捷键（基础设置）----
+  // shortcutCheck = 每个动作的注册结论：{ok, code, accelerator, conflictWith}
+  //   code：'empty' 未设置 | 'ok' 可用 | 'duplicate' 与本程序别的动作重复
+  //        | 'taken' 已被其它程序 / 系统占用 | 'invalid' 组合不合法
+  // 来源两处：录完立刻本地判一次（同口径），随后由主进程真注册一次覆盖（才知道有没有被别的程序占用）。
+  const [shortcutCheck, setShortcutCheck] = useState(null);
+  const checkSeq = useRef(0);
 
   const set = (patch) => setDraft((d) => ({ ...d, ...patch }));
 
   const seriesList = draftSeries.series || [];
   const groups = draft.modelGroups || [];
   const defaultClose = defaultCloseAction(state.paths);   // 基础设置：「关闭窗口时」的默认值
+
+  // 全局快捷键：草稿值 / 已保存生效的值 / 渲染用的动作表
+  const draftShortcuts = useMemo(() => normalizeShortcutValues(draft.shortcuts), [draft.shortcuts]);
+  const savedShortcuts = useMemo(
+    () => normalizeShortcutValues(state.settings && state.settings.shortcuts),
+    [state.settings]
+  );
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+
+  /** 交给主进程试探性注册一遍（真注册 → 立刻恢复原状，见 electron/src/shortcuts.js#check） */
+  const runShortcutCheck = useCallback(async (next) => {
+    if (!window.stab || !window.stab.checkShortcuts) return;
+    const seq = ++checkSeq.current;
+    try {
+      const r = await window.stab.checkShortcuts(next);
+      if (seq === checkSeq.current && r && r.results) setShortcutCheck(r.results);
+    } catch (e) {
+      // 主进程不可用：保留本地结论（保存时仍会真注册一次，被占用会在保存后的提示里点名）
+      window.stab.log && window.stab.log('warn', '快捷键冲突检测失败', { error: e && e.message });
+    }
+  }, []);
+
+  /** 录制器写回一个组合：先本地判重复（立刻可见），再让主进程真注册一次补上「被占用」 */
+  const setShortcut = useCallback((actionId, accelerator) => {
+    const shortcuts = { ...normalizeShortcutValues(draftRef.current.shortcuts), [actionId]: accelerator || '' };
+    setDraft((d) => ({ ...d, shortcuts }));
+    setShortcutCheck(planShortcuts(shortcuts));
+    runShortcutCheck(shortcuts);
+  }, [runShortcutCheck]);
+
+  // 逐个动作的稳定回调：录制器把 onChange 放进了 effect 依赖里，每渲染换一个新函数会让它反复重挂监听
+  const shortcutHandlers = useMemo(() => {
+    const map = {};
+    for (const action of SHORTCUT_ACTIONS) map[action.id] = (accel) => setShortcut(action.id, accel);
+    return map;
+  }, [setShortcut]);
+
+  // 打开设置时读一次「当前生效」的注册结果：上次被别的程序占用 / 重复的组合，一进来就能看到
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      if (!window.stab || !window.stab.shortcutStatus) return;
+      try {
+        const r = await window.stab.shortcutStatus();
+        if (alive && r && r.results) setShortcutCheck(r.results);
+      } catch (e) { /* 读不到就不显示状态，不影响保存 */ }
+    })();
+    return () => { alive = false; };
+  }, []);
 
   const addedSeries = useMemo(
     () => seriesList.filter((s) => groups.some((g) => g.seriesId === s.id)),
@@ -261,6 +327,9 @@ export default function SettingsModal({ initialTab = 'model' }) {
     cleaned.saveNamePromptChars = Math.min(50, Math.max(0, Math.round(Number(cleaned.saveNamePromptChars) || 0)));
     // 关闭窗口行为：只认 'tray' / 'quit'，其余（含从未设置）一律回 '' = 跟随默认（主进程同口径，见 closeBehavior.js）
     cleaned.closeAction = (cleaned.closeAction === 'tray' || cleaned.closeAction === 'quit') ? cleaned.closeAction : '';
+    // 全局快捷键：只留三个动作 id 的字符串（组合是否合法 / 是否被占用由主进程注册时判定，
+    // 拿不到可用组合也照样存下来 —— 用户能自己看到提示并换一个，不会因为一次冲突把设置吃掉）
+    cleaned.shortcuts = normalizeShortcutValues(cleaned.shortcuts);
     // 重命名模型：三个字段都是字符串，留空 = 用代码里的默认地址 / 默认模型
     const rm = cleaned.renameModel || {};
     cleaned.renameModel = {
@@ -297,11 +366,23 @@ export default function SettingsModal({ initialTab = 'model' }) {
     }
 
     dispatch({ type: 'SETTINGS_UPDATE', settings: cleaned, modelSeries: draftSeries, renameConfig: draftRename });
-    toast('设置已保存', 'info');
+    // 保存后点名报告「不会生效」的快捷键（主进程马上会真注册一遍并按需跳过它们）：
+    // 组合照旧存下来，只是不注册 —— 用户据此换一个，或等占用它的程序退出。
+    const brokenShortcuts = SHORTCUT_ACTION_IDS
+      .filter((id) => cleaned.shortcuts[id] && shortcutCheck && shortcutCheck[id] && shortcutCheck[id].ok === false)
+      .map((id) => `${actionLabel(id)}（${formatAccelerator(cleaned.shortcuts[id], state.platform)}）`);
+    if (brokenShortcuts.length) {
+      toast(`已保存；但${brokenShortcuts.join('、')}的快捷键不可用，请在「基础设置 → 全局快捷键」里换一个。`, 'warn', { timeout: 9000 });
+    } else {
+      toast('设置已保存', 'info');
+    }
     window.stab.log('info', '设置已更新', {
       theme: cleaned.theme, timeout: cleaned.requestTimeoutSec,
       compress: cleaned.compressEnabled, maxMB: cleaned.compressMaxMB,
       closeAction: cleaned.closeAction || `默认(${defaultClose})`,
+      shortcuts: SHORTCUT_ACTION_IDS
+        .map((id) => `${id}=${cleaned.shortcuts[id] || '（未设置）'}`).join(','),
+      shortcutConflicts: brokenShortcuts.length ? brokenShortcuts.join(',') : undefined,
       series: cleaned.modelGroups.map((g) => `${g.seriesId}:${g.models.length}`).join(','),
       models: allModels.length,
       defaultModel: cleaned.defaultModelId,
@@ -636,6 +717,33 @@ export default function SettingsModal({ initialTab = 'model' }) {
                     默认（从未设置过）按运行方式决定：<b>开发模式（npm run dev）直接退出程序</b>，
                     <b>打包后的安装版 / 便携版最小化到托盘</b>；这里选了之后一律按你的选择走。
                     当前生效：{closeActionText(draft.closeAction, defaultClose)}。
+                  </p>
+                </div>
+
+                <div className="field">
+                  <label>全局快捷键</label>
+                  <p className="field-hint">
+                    设置后<b>在本机任何界面都生效</b>（本程序不在前台时也能用）。
+                    点右侧方框后直接按下想用的组合键：Esc 取消录制、退格清除。
+                    组合键至少带一个修饰键（Ctrl / Alt / Shift / Win），功能键（F1~F24）可以单用。
+                    与别的动作重复、或被其它程序占用时，下方会直接标出来。
+                  </p>
+                  <div className="shortcut-list">
+                    {SHORTCUT_ACTIONS.map((action) => (
+                      <ShortcutRecorder
+                        key={action.id}
+                        action={action}
+                        value={draftShortcuts[action.id]}
+                        savedValue={savedShortcuts[action.id]}
+                        result={shortcutCheck ? shortcutCheck[action.id] : null}
+                        platform={state.platform}
+                        onChange={shortcutHandlers[action.id]}
+                      />
+                    ))}
+                  </div>
+                  <p className="field-hint">
+                    设置保存在数据目录的 <code>settings.json</code>（<code>shortcuts</code> 字段），保存后立即生效、不必重启；
+                    被其它程序占用的组合会照旧存下来但不会注册，换一个即可。
                   </p>
                 </div>
 

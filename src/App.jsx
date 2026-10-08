@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { AppProvider, useApp, dotActionForEvent } from './lib/store.jsx';
 import { PromptReuseProvider } from './lib/promptReuse.jsx';
 import Sidebar from './components/Sidebar.jsx';
@@ -9,7 +9,9 @@ import Lightbox from './components/Lightbox.jsx';
 import Toasts from './components/Toasts.jsx';
 
 function Shell() {
-  const { state, dispatch, stateRef } = useApp();
+  const { state, dispatch, stateRef, flushSave } = useApp();
+  // 全局快捷键改了状态（主题 / 新建对话）后立刻落盘一次，见下面的快捷键监听
+  const [flushTick, setFlushTick] = useState(0);
 
   // 注册 API 事件监听（先于 bootstrap 完成）
   useEffect(() => {
@@ -56,6 +58,38 @@ function Shell() {
     });
     return off;
   }, [dispatch, stateRef]);
+
+  // 全局快捷键：主进程把「切换主题 / 新建对话」两个动作转发过来（见 electron/main.js#onShortcutTrigger）。
+  // 「显示 / 隐藏主界面」不在这里 —— 那是窗口控制，主进程自己就做完了。
+  // 窗口可能正藏在托盘里（渲染进程照常收到事件），所以改完要**立刻落盘**，不能只等 400ms 的防抖。
+  useEffect(() => {
+    if (!window.stab || !window.stab.onShortcutAction) return undefined;
+    const off = window.stab.onShortcutAction((ev) => {
+      const action = ev && ev.action;
+      if (action === 'newConversation') {
+        dispatch({ type: 'CONV_NEW' });
+        setFlushTick((t) => t + 1);
+        window.stab.log('info', '全局快捷键：新建对话');
+        return;
+      }
+      if (action === 'toggleTheme') {
+        const s = stateRef.current;
+        const cur = (s.settings && s.settings.theme) || 'system';
+        // 选着「跟随系统」时按**当前实际显示**的主题取反：正黑就切白天，正白就切黑夜
+        const shown = cur === 'system'
+          ? ((window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light')
+          : cur;
+        const next = shown === 'dark' ? 'light' : 'dark';
+        dispatch({ type: 'SETTINGS_UPDATE', settings: { theme: next } });
+        setFlushTick((t) => t + 1);
+        window.stab.log('info', '全局快捷键：切换主题', { from: cur, to: next });
+      }
+    });
+    return off;
+  }, [dispatch, stateRef]);
+
+  // 快捷键改完的状态立刻写盘（防抖计时器在窗口隐藏 / 被系统节流时可能要等一会儿）
+  useEffect(() => { if (flushTick) flushSave(); }, [flushTick, flushSave]);
 
   // 启动引导
   useEffect(() => {

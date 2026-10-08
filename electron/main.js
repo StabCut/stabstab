@@ -8,7 +8,7 @@
  * - 自定义协议 appfile:// 提供本地图片（缓存/附件）给渲染进程
  * - 全部 IPC 服务：设置、会话、生成请求、对话框、剪贴板、日志
  */
-const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, nativeImage, nativeTheme, Menu, Tray, protocol, net } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, nativeImage, nativeTheme, Menu, Tray, protocol, net, globalShortcut } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const { pathToFileURL } = require('url');
@@ -17,6 +17,7 @@ const { getPaths } = require('./src/paths');
 const log = require('./src/logger');
 const store = require('./src/store');
 const closeBehavior = require('./src/closeBehavior');
+const shortcutsLib = require('./src/shortcuts');
 const modelSeriesLib = require('./src/modelSeries');
 const renameModel = require('./src/renameModel');
 const registry = require('./src/api/registry');
@@ -67,6 +68,9 @@ let settings = null;
 let modelSeries = null;     // 内置模型系列配置（含来源 / 默认地址 / 尺寸；只有同步一种请求模式）
 let renameConfig = null;    // 重命名模型配置（提示模板 / 温度 / Top-P / 默认地址，见 electron/assets/rename-model.json）
 let conversations = null;   // 主进程内存副本（权威数据由渲染进程通过 state:save 同步）
+let hiddenToTray = false;   // 窗口此刻是不是「藏在托盘里」（隐藏期间托盘绝不允许被撤掉，否则没有回到界面的入口）
+let shortcutApplied = null; // 已经注册生效的那套全局快捷键（= settings.shortcuts 的快照，用于避免重复注册）
+let shortcutStatus = {};    // 上一次注册的结果：actionId -> {ok, code, accelerator}（设置页显示用）
 
 // ---------- 自定义协议：appfile://cache|x|x.png ----------
 protocol.registerSchemesAsPrivileged([
@@ -300,9 +304,13 @@ function normalizeConversationsOnStartup() {
 // 生效行为由 electron/src/closeBehavior.js 决定（用户设置优先，未设置时按是否打包给默认值）。
 // 「最小化到托盘」= 只是 win.hide()，**进程继续在后台运行**（正在等待的生成请求照常出结果），
 // 入口在托盘图标：单击 / 双击 / 菜单「显示主界面」都能把窗口叫回来，菜单「退出程序」才是真退出。
-/** 按当前设置让托盘图标存在（要托盘）/ 撤掉（不要托盘）；设置页改完立即生效，不必重启 */
+/**
+ * 按当前设置让托盘图标存在（要托盘）/ 撤掉（不要托盘）；设置页改完立即生效，不必重启。
+ * ★ 窗口正藏在托盘里时（hiddenToTray）托盘**必须保留**：它是当前唯一能回到界面的入口，
+ *   这时候按设置把它撤掉，窗口就再也叫不回来了（全局快捷键「显示 / 隐藏主界面」也走这条路）。
+ */
 function syncTrayWithSettings() {
-  if (closeBehavior.resolveCloseAction(settings, app.isPackaged) === 'tray') ensureTray();
+  if (hiddenToTray || closeBehavior.resolveCloseAction(settings, app.isPackaged) === 'tray') ensureTray();
   else destroyTray();
 }
 
@@ -340,12 +348,18 @@ function destroyTray() {
   log.info('托盘图标已移除（关闭窗口将直接退出程序）');
 }
 
-/** 把窗口叫回来（托盘点击 / 第二实例 / macOS 点 Dock）：最小化就还原、隐藏就显示、已销毁就重建 */
+/** 把窗口叫回来（托盘点击 / 第二实例 / macOS 点 Dock / 全局快捷键）：最小化就还原、隐藏就显示、已销毁就重建 */
 function showMainWindow() {
   if (!win || win.isDestroyed()) { createWindow(); return; }
   if (win.isMinimized()) win.restore();
   if (!win.isVisible()) win.show();
   win.focus();
+  // 回到界面后「藏在托盘里」这个事实就结束了：托盘是否保留重新交给用户设置说了算
+  if (hiddenToTray) {
+    hiddenToTray = false;
+    // 刚从托盘菜单 / 托盘点击进来时，这里可能正在处理托盘自己的事件：推迟一拍再撤，避免自毁中的引用
+    setImmediate(syncTrayWithSettings);
+  }
 }
 
 /** 真正退出程序（托盘菜单「退出程序」）：先把 isQuitting 立起来，close 事件才不会被拦成隐藏 */
@@ -357,10 +371,72 @@ function quitApp() {
 /**
  * 隐藏到托盘（**不发系统通知**：点 × 是用户的明确操作，再弹一条通知属于打扰；
  * 托盘图标与它的右键菜单已经足够说明「程序还在后台运行」）。
+ * 调用方必须先保证托盘可用（ensureTray），否则窗口藏起来就回不去了。
  */
 function hideToTray() {
+  hiddenToTray = true;
   win.hide();
   log.info('窗口已最小化到托盘，进程继续在后台运行');
+}
+
+// ---------- 全局快捷键（设置 → 基础设置 →「全局快捷键」） ----------
+// 规则：shortcuts.js 是全程序唯一注册 globalShortcut 的地方（注册 / 冲突检测都在那里）。
+//   生效时机：启动时注册一次；设置里改动后（state:save）按需重新注册，不必重启。
+//   窗口控制（显示 / 隐藏）在主进程做；主题切换与新建对话都在**渲染进程**做
+//   （它才是设置与会话数据的编辑主体，见 store.jsx），主进程只把动作转发过去。
+//   「被别的程序占用」只有真注册一次才知道：注册结果记在 shortcutStatus，设置页据此提示。
+
+/**
+ * 按当前设置注册全局快捷键（快捷键变化 / 启动时调用；没变化就跳过，避免一次次抢占组合键）。
+ * 注册结果（谁生效、谁被占用）记在 shortcutStatus，设置页打开时经 shortcuts:status 读它。
+ * @param force 启动时强制注册一遍
+ */
+function applyShortcutsIfChanged(force) {
+  const wanted = shortcutsLib.normalizeShortcuts(settings.shortcuts);
+  if (!force && shortcutApplied && shortcutsLib.sameShortcuts(shortcutApplied, wanted)) return;
+  const { results } = shortcutsLib.apply(globalShortcut, wanted, onShortcutTrigger);
+  shortcutApplied = wanted;
+  shortcutStatus = results;
+  const taken = shortcutsLib.ACTION_IDS.filter((id) => results[id] && results[id].code === 'taken');
+  const invalid = shortcutsLib.ACTION_IDS.filter((id) => results[id] && !results[id].ok && results[id].code !== 'empty' && results[id].code !== 'taken');
+  const active = shortcutsLib.ACTION_IDS.filter((id) => results[id] && results[id].ok && results[id].accelerator);
+  log.info('全局快捷键已应用', {
+    active: active.map((id) => `${id}=${results[id].accelerator}`).join(',') || '（未设置）',
+    taken: taken.map((id) => `${id}=${results[id].accelerator}`).join(',') || undefined,
+    invalid: invalid.map((id) => `${id}(${results[id].code})`).join(',') || undefined
+  });
+}
+
+/** 快捷键触发入口（three actions） */
+function onShortcutTrigger(actionId) {
+  if (actionId === 'toggleWindow') { toggleWindowByShortcut(); return; }
+  // 主题 / 新建对话：转发给渲染进程（它才是设置与会话的编辑主体）。
+  // 窗口藏到托盘时也照发：渲染进程还活着，改完会立即落盘，用户下次打开就是这个状态。
+  if (!win || win.isDestroyed()) { createWindow(); return; }
+  win.webContents.send('shortcut:action', { action: actionId });
+  log.info('全局快捷键触发', { action: actionId });
+}
+
+/**
+ * 「显示 / 隐藏主界面」：可见 → 藏到托盘；不可见 / 最小化 → 唤回。
+ * 藏之前一定要有托盘（那是唯一的回程入口）：托盘建不出来就退回「最小化到任务栏」，
+ * 绝不把窗口藏进虚空（判定在 shortcuts.js#planWindowToggle，与 close 事件的 shouldHideOnClose 同一条铁律）。
+ */
+function toggleWindowByShortcut() {
+  if (!win || win.isDestroyed()) { createWindow(); return; }
+  // 不可见 / 最小化 → 唤回（这一步与托盘无关）
+  if (shortcutsLib.planWindowToggle({ visible: win.isVisible(), minimized: win.isMinimized(), trayAvailable: !!tray }) === 'show') {
+    showMainWindow();
+    return;
+  }
+  // 可见 → 要藏起来：先把托盘准备好，托盘可用才允许 hide
+  ensureTray();
+  if (shortcutsLib.planWindowToggle({ visible: true, minimized: false, trayAvailable: !!tray }) === 'hide') {
+    hideToTray();
+    return;
+  }
+  win.minimize();
+  log.warn('托盘不可用，全局快捷键改为「最小化到任务栏」');
 }
 
 // ---------- 窗口 ----------
@@ -518,6 +594,8 @@ function registerIpc() {
         nativeTheme.themeSource = settings.theme === 'system' ? 'system' : (settings.theme === 'dark' ? 'dark' : 'light');
         // 关闭窗口行为可能刚被改过：立即让托盘图标与之对齐（改完就生效，不必重启）
         syncTrayWithSettings();
+        // 全局快捷键可能刚被改过：按需重新注册（没变就跳过，不会反复抢占组合键）
+        applyShortcutsIfChanged(false);
       }
       if (payload && payload.modelSeries) {
         // 只允许改「隐藏哪些系列」以及自定义系列，内置结构由 merge 保证不被破坏
@@ -539,6 +617,20 @@ function registerIpc() {
   });
 
   ipcMain.handle('protocols:list', () => ({ ok: true, protocols: registry.listProtocols() }));
+
+  // ---- 全局快捷键 ----
+  // 当前生效的组合与上一次注册结果（设置页打开时读一次，用来显示「已生效 / 被其它程序占用」）
+  ipcMain.handle('shortcuts:status', () => ({
+    ok: true,
+    shortcuts: shortcutsLib.normalizeShortcuts(settings.shortcuts),
+    results: shortcutStatus
+  }));
+  // 试探性冲突检测（不改设置）：录完一个组合就调一次，用来在保存前就发现「被别的程序占用」。
+  // 内部会真注册一遍再恢复当前生效的那套（毫秒级，见 shortcuts.js#check）。
+  ipcMain.handle('shortcuts:check', (_e, candidates) => {
+    const r = shortcutsLib.check(globalShortcut, candidates, settings.shortcuts, onShortcutTrigger);
+    return { ok: true, shortcuts: r.shortcuts, results: r.results };
+  });
 
   // ---- 生成请求 ----
   // 渲染进程只传「模型 id」；协议 / 来源 / 密钥 / 地址在这里统一解析（主进程才是权威口径）。
@@ -948,6 +1040,7 @@ if (!gotLock) {
     registerAppFileProtocol();
     registerIpc();
     syncTrayWithSettings();     // 打包后默认行为是托盘：启动即把托盘图标挂上；开发模式默认直接退出，不建托盘
+    applyShortcutsIfChanged(true);   // 全局快捷键：启动即按设置注册（被占用的会在日志里点名）
     createWindow();
 
     app.on('activate', () => {
@@ -973,6 +1066,7 @@ if (!gotLock) {
   app.on('before-quit', () => {
     isQuitting = true;          // 先立标记：随后的 win close 事件才会真的关（不拦成隐藏）
     log.info('应用退出');
+    globalShortcut.unregisterAll();   // 让出全局组合键（不给系统留一堆指向已退出进程的快捷键）
     destroyTray();
     runner.cancelAll();
   });

@@ -1290,6 +1290,77 @@ async function main() {
     check(caKeep.settings.closeAction === 'tray', '导入：导入包里的「跟随默认」（空值）不覆盖本机已有的选择');
   }
 
+  // ================= [26] 全局快捷键（注册 / 冲突检测） =================
+  // 权威口径在 electron/src/shortcuts.js（全程序唯一注册 globalShortcut 的地方，见 AIDEV.md §4.17）；
+  // 真机（真的调 Electron globalShortcut、「被别的程序占用」）由
+  // dev-data/qa/shortcuts-electron-test.js 另起进程验证，这里用假 globalShortcut 覆盖纯逻辑。
+  {
+    console.log('\n[26] 全局快捷键（组合键解析 / 内部重复 / 注册 / 试探性检查）');
+    const sc = require(path.join(ROOT, 'electron/src/shortcuts'));
+
+    check(sc.parseAccelerator('CommandOrControl+Shift+S').accelerator === 'CommandOrControl+Shift+S'
+      && sc.parseAccelerator('shift+alt+f5').accelerator === 'Alt+Shift+F5'
+      && sc.parseAccelerator('ctrl+alt+w').accelerator === 'Control+Alt+W',
+      '组合键解析：别名 / 大小写 / 顺序都归一（修饰键按固定序）');
+    check(sc.parseAccelerator('S').code === 'no-modifier' && sc.parseAccelerator('Ctrl+Shift').code === 'no-key'
+      && sc.parseAccelerator('Ctrl+Foo').code === 'invalid' && sc.parseAccelerator('F9').ok === true,
+      '普通键必须带修饰键；只有修饰键 / 认不出的键不合法；功能键可单用');
+    check(sc.normalizeShortcuts({ toggleTheme: 'ctrl+alt+t', toggleWindow: 42, junk: 'Ctrl+Alt+J' }).toggleWindow === ''
+      && Object.keys(sc.normalizeShortcuts({})).length === 3,
+      'settings 规整：只认三个动作 id，非法 / 脏值一律清成空串');
+    check(store.DEFAULT_SETTINGS.shortcuts && Object.values(store.DEFAULT_SETTINGS.shortcuts).every((v) => v === ''),
+      '默认不预置任何组合键（避免开箱就和别的软件抢快捷键）');
+
+    const dup = sc.planShortcuts({ toggleWindow: 'Ctrl+Alt+K', toggleTheme: 'ALT+CTRL+K' });
+    check(dup.results.toggleWindow.code === 'duplicate' && dup.results.toggleTheme.code === 'duplicate'
+      && dup.results.toggleWindow.conflictWith === 'toggleTheme',
+      '内部冲突检测：两个动作填同一个组合（写法不同也算）→ 互相指认 duplicate');
+
+    /** 假 globalShortcut：行为对齐 Electron（被占用回 false、非法抛异常、unregisterAll 清空） */
+    const fakeGsc = (taken = []) => {
+      const reg = new Map();
+      return {
+        reg,
+        register(accel, cb) {
+          if (accel === 'F9') throw new Error('invalid accelerator');
+          if (taken.includes(accel) || reg.has(accel)) return false;
+          reg.set(accel, cb);
+          return true;
+        },
+        unregisterAll() { reg.clear(); },
+        isRegistered(a) { return reg.has(a); }
+      };
+    };
+
+    const fired = [];
+    const gsc = fakeGsc(['Control+Alt+Y']);
+    let r = sc.apply(gsc, { toggleWindow: 'Ctrl+Alt+Y', toggleTheme: 'Ctrl+Alt+T', newConversation: 'F9' }, (id) => fired.push(id));
+    check(r.results.toggleWindow.code === 'taken' && r.shortcuts.toggleWindow === 'Control+Alt+Y',
+      '真注册：被别的程序占用 → code=taken（组合值照旧留在设置里）');
+    check(r.results.toggleTheme.code === 'ok' && r.results.newConversation.code === 'invalid',
+      '真注册：可用的注册成功；Electron 抛异常的组合兜成 invalid 且不影响别的动作');
+    gsc.reg.get('Control+Alt+T')();
+    check(fired.length === 1 && fired[0] === 'toggleTheme', '注册成功的那项回调绑定到对应动作');
+
+    r = sc.apply(gsc, { toggleWindow: 'Ctrl+Alt+2' }, () => {});
+    check(gsc.isRegistered('Control+Alt+2') && !gsc.isRegistered('Control+Alt+T'),
+      '换组合时先注销旧的（改快捷键不会留下幽灵）');
+
+    const live = { toggleWindow: 'Ctrl+Alt+2' };
+    const probed = sc.check(gsc, { toggleWindow: 'Ctrl+Alt+Y', toggleTheme: 'Ctrl+Alt+3' }, live, () => {});
+    check(probed.results.toggleWindow.code === 'taken' && probed.results.toggleTheme.code === 'ok',
+      '试探性检查（保存前）：能发现「被别的程序占用」，不需要先保存');
+    check(gsc.isRegistered('Control+Alt+2') && !gsc.isRegistered('Control+Alt+3'),
+      '试探性检查结束后把当前生效的组合恢复回来（用户在录制时不会掉快捷键）');
+
+    check(sc.planWindowToggle({ visible: true, minimized: false, trayAvailable: true }) === 'hide'
+      && sc.planWindowToggle({ visible: false, minimized: false, trayAvailable: true }) === 'show'
+      && sc.planWindowToggle({ visible: true, minimized: true, trayAvailable: true }) === 'show',
+      '「显示 / 隐藏主界面」：可见就藏、不可见就唤回');
+    check(sc.planWindowToggle({ visible: true, minimized: false, trayAvailable: false }) === 'minimize',
+      '「显示 / 隐藏主界面」兜底：托盘不可用时退回最小化（绝不把窗口藏进虚空）');
+  }
+
   console.log(`\n========== 结果: ${pass} 通过, ${fail} 失败 ==========`);
   server.close();
   runner.cancelAll();

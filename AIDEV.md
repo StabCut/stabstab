@@ -57,6 +57,10 @@ settings.json（用户数据：添加了哪些系列、系列里有哪些模型�
 - **关闭窗口行为可选（设置 → 基础设置 →「关闭窗口时」）**：`直接退出程序` 或 `最小化到托盘`（隐藏窗口、进程继续跑）。
   **从未设置过**时按运行形态给默认值：`npm run dev`（未打包）→ 直接退出程序；打包后（安装版 / 便携版）→ 最小化到托盘。
   规则实现在 `electron/src/closeBehavior.js`，见 §4.15。
+- **全局快捷键（设置 → 基础设置 →「全局快捷键」）**：三个动作各配一个系统级快捷键 ——
+  显示/隐藏主界面、切换白天黑夜主题、新建对话；录制时**即时冲突检测**（与本程序其它动作重复 + 被其它程序占用），
+  见 §4.17。
+- **危险操作二次确认**：删除全部对话等不可恢复操作先弹确认框，**Enter 确定 / Esc 取消**，见 §4.18。
 
 **技术栈**：Electron 43（Node 22 内核）、React 19、Vite 8、electron-builder 26。
 主进程为 **纯 CommonJS（无构建）**，渲染进程由 Vite 打包为静态资源。
@@ -79,6 +83,7 @@ stabstab/
 │       ├── logger.js                  # 文件日志 <data>/log/app-YYYYMMDD.log
 │       ├── store.js                   # settings.json / conversations.json 原子读写 + 旧结构迁移
 │       ├── closeBehavior.js           # ★ 关闭窗口行为（直接退出 / 最小化到托盘）的取值规整 + 默认值规则（纯函数）
+│       ├── shortcuts.js               # ★ 全局快捷键：组合键解析 / 内部重复检测 / 真注册与试探性冲突检测，见 §4.17
 │       ├── modelSeries.js             # ★ 模型系列配置读写与解析（resolveModel = 发请求的权威口径）
 │       ├── renameModel.js             # ★ 重命名模型：rename-model.json 读写 + DeepSeek Responses API 调用
 │       ├── imageutil.js               # PNG/JPEG/GIF/WEBP 尺寸嗅探、缓存下载（含 data:base64 结果）
@@ -107,13 +112,16 @@ stabstab/
 │   │   ├── Composer.jsx               # 输入框：粘贴/拖入/多选、size/高级参数、发送（等待中也能发）/停止等待、附加提示词解析、逐标签草稿搬运
 │   │   ├── SizePicker.jsx             # ★ 尺寸选择器：候选尺寸（sizeOptions）+ 末尾「自定义…」（两个数字 + 可点的 ×⇄: + 比例与方框示例，见 §4.10）
 │   │   ├── PromptDrop.jsx             # ★ 全窗口左右解析分区（曲线分隔）+ 「图片提示词」查看弹窗
-│   │   ├── SettingsModal.jsx          # 设置：模型 / 重命名模型 / 基础 / 高级 / 数据管理 五页
+│   │   ├── SettingsModal.jsx          # 设置：模型 / 重命名模型 / 基础 / 高级 / 数据管理 五页（基础页含「全局快捷键」，见 §4.17）
+│   │   ├── ShortcutRecorder.jsx       # ★ 全局快捷键录制框（点一下再按键；Esc 取消录制、退格清除）+ 状态行
+│   │   ├── ConfirmDialog.jsx          # ★ 二次确认弹窗（Enter 确定 / Esc 取消；图标沿用调用方那一个），见 §4.18
 │   │   ├── Lightbox.jsx               # 全屏图片预览：滚轮缩放/拖动/ESC
 │   │   └── Toasts.jsx                 # 轻提示
 │   └── lib/
 │       ├── store.jsx                  # React Context + reducer 全局状态 + 防抖落盘（含逐标签草稿 drafts，仅内存）
 │       ├── promptReuse.jsx            # ★ 解析分区显隐状态机（图片接收区域是一组元素：输入框 + 编辑气泡）+ 元数据解析 + 待复用提示词（临时状态）
 │       ├── models.js                  # ★ 模型系列/模型解析（界面侧，与主进程同口径）+ 尺寸/比例纯函数（sizeLabel / ratioText / sizeRatioOf）
+│       ├── shortcuts.js               # ★ 全局快捷键（界面侧）：动作文案 + 键盘事件→accelerator + 显示写法 + 保存前重复提示（与主进程同口径，见 §4.17）
 │       ├── title.js                   # ★ 会话标签自动命名（首条文字 → 重命名模型 → 回退截取）
 │       ├── send.js                    # 发送/重发公共逻辑（无上下文、消息配对、压缩、参数过滤、重发取哪套设置）
 │       ├── composerSelection.js        # ★ 输入区「当前模型 + 当前参数」的实时镜像（编辑重发据此发请求，见 §4.7）
@@ -157,6 +165,10 @@ for f in electron/src/*.js electron/src/api/*.js; do node --check "$f"; done
 #   dev-data/qa/size-picker-test/         尺寸选择器「自定义」的交互 + 排版截图（Electron 隐藏窗口）
 #   dev-data/qa/edit-attach-test/         编辑气泡补图（粘贴 / 拖入 / ＋ / 上限 / 重发带图）
 #   dev-data/qa/paths-test.js             数据目录解析与迁移
+#   dev-data/qa/shortcuts-test.js          全局快捷键纯逻辑 + 与渲染进程口径的逐条比对
+#   dev-data/qa/shortcuts-electron-test.js 全局快捷键真机注册与冲突检测（另起进程占住组合键）
+#   dev-data/qa/shortcuts-app-test/run.js  全局快捷键的主进程接线（启动注册 / 保存后重新注册）
+#   dev-data/qa/shortcuts-dom-test.js      真实窗口里的 DOM 断言（删除确认弹窗 Enter/Esc + 录制框 + 快捷键动作）
 ```
 
 开发模式数据目录：项目内 `dev-data/`（已 gitignore）。
@@ -190,6 +202,9 @@ for f in electron/src/*.js electron/src/api/*.js; do node --check "$f"; done
 | `bootstrap()` | `app:bootstrap` | invoke | 一次返回 settings/modelSeries/renameConfig/conversations/paths/platform |
 | `saveState({settings,conversations,modelSeries,renameConfig})` | `state:save` | invoke | 防抖整包落盘（四份数据一起写） |
 | `listProtocols()` | `protocols:list` | invoke | 协议元信息：sizeOptions / paramSchema / supportsImageInput |
+| `checkShortcuts(shortcuts)` | `shortcuts:check` | invoke | 全局快捷键试探性冲突检测（**不改设置**：真注册一遍再恢复当前生效的那套），见 §4.17 |
+| `shortcutStatus()` | `shortcuts:status` | invoke | 当前生效的组合与上一次注册结果（设置页显示「已生效 / 被其它程序占用」） |
+| `onShortcutAction(cb)` | `shortcut:action` | on | 主进程把「切换主题 / 新建对话」两个快捷键动作转发给渲染进程（窗口显隐由主进程自己做） |
 | `generate(opts)` | `api:generate` | invoke | 发起生成（立即返回 jobId）；`opts.imageNames` = 输入图文件名（顺序同 images），见 §4.5 |
 | `cancelJob(jobId)` | `api:cancel` | invoke | 中止**这一个**请求的等待（同对话里的其它请求不受影响，见 §4.12） |
 | `onApiEvent(cb)` | `api:event` | on | 结果/状态事件流 |
@@ -705,6 +720,62 @@ settings.closeAction                      'tray' | 'quit' | ''（'' = 从未设�
 - 回归：`node_modules\.bin\electron dev-data\qa\settings-height-test.js`（在隐藏窗口里量 6 个页面的弹窗高度：
   必须都 = 视口的 86%，且长内容页面自己在滚动），见 §9.3。
 
+### 4.17 全局快捷键（设置 → 基础设置 →「全局快捷键」）
+
+三个动作（`settings.shortcuts`，字段名 = 动作 id，值是 Electron accelerator，空串 = 未设置）：
+
+| 动作 id | 界面文案 | 触发现象 |
+|---------|----------|----------|
+| `toggleWindow` | 显示 / 隐藏主界面 | 可见 → 藏到托盘；不可见 / 最小化 → 唤回（= 点托盘图标） |
+| `toggleTheme` | 切换外观主题（白天 / 黑夜） | 在**当前实际显示**的主题上取反（`system` 时按 `prefers-color-scheme` 算，然后落成具体主题） |
+| `newConversation` | 新建对话 | = 点侧栏「新建对话」 |
+
+- **注册权只有一处**：`electron/src/shortcuts.js` 是全程序唯一调 `globalShortcut.register` 的地方
+  （`apply()` 内部先 `unregisterAll()`，所以改快捷键不会留下幽灵键）。`main.js` 只在两个时机调它：
+  启动时 `applyShortcutsIfChanged(true)`、`state:save` 里 `applyShortcutsIfChanged(false)`
+  （`sameShortcuts` 比对没变就跳过，避免每次防抖落盘都抢一遍组合键）。`before-quit` 里 `unregisterAll()`。
+- **谁干什么**：窗口显隐在主进程做（`toggleWindowByShortcut` → `planWindowToggle` 判定 show / hide / minimize）；
+  主题与新建对话转发给渲染进程（`shortcut:action`，它才是设置与会话数据的编辑主体），
+  渲染进程处理完**立即 flushSave**（窗口可能正藏在托盘里，不能只等 400ms 防抖），见 `src/App.jsx`。
+- **藏之前必须有托盘**：`planWindowToggle` 在托盘不可用时返回 `'minimize'` —— 没有托盘就没有回到界面的入口，
+  hide 等于把窗口藏进虚空（与 §4.15 的 `shouldHideOnClose` 同一条铁律）。`hiddenToTray` 期间
+  `syncTrayWithSettings()` 也**不允许**撤掉托盘。
+- **冲突检测分两类，都要报**：
+  1. 程序内部重复（两个动作同一个组合）：`planShortcuts` / `findDuplicates` 纯逻辑判定，
+     渲染进程录制完立刻就地判一次（`src/lib/shortcuts.js#planShortcuts`，同口径），提示「与「X」重复，保存后不会生效」。
+  2. 系统级占用（别的程序 / 系统已占着）：**只有真注册一次才知道**（`register()` 回 `false` → `code:'taken'`）。
+     所以录完一个组合就调一次 `shortcuts:check`：它把候选**真注册一遍**、记下结果、再在 `finally` 里
+     把当前生效的那套恢复回来（毫秒级试探，用户无感）。保存后主进程再真注册一次，结果记在
+     `shortcutStatus`，并写进日志（`全局快捷键已应用`）。
+- **非法 / 被占用的组合照旧存下来**（不静默丢弃、也不拦住保存）：设置页会标出来、保存时弹一条提醒，
+  用户换一个即可 —— 组合可能只是暂时被别的程序占着。`normalizeShortcuts` 只清掉**格式非法**的脏值。
+- **组合键写法**：至少一个修饰键（Ctrl / Alt / Shift / Win），功能键（F1~F24）与 PrintScreen 可单用；
+  录制框一律写 `CommandOrControl`（Windows/Linux = Ctrl，macOS = Cmd）。解析 / 归一口径在
+  `electron/src/shortcuts.js#parseAccelerator`（权威）与 `src/lib/shortcuts.js#splitAccelerator`（同口径，供录制与显示）。
+  注意 `ctrl+X` 与 `cmdorctrl+X` 是**两套写法**：Windows 上落到同一个物理键，但字面不同 → 不算内部重复，
+  会在真注册时撞成 `taken`（一样会提示用户，不会静默失效）。
+- 界面：`SettingsModal.jsx`（基础设置页三段）+ `ShortcutRecorder.jsx`（点一下再按键；Esc 取消录制、
+  退格清除；只按修饰键会提示继续按键）。录制监听挂在 window 的**捕获**阶段并 `stopPropagation()`，
+  否则 Esc 会顺手被设置弹窗自己吃掉（把整个弹窗关掉）。
+- 回归：`node dev-data/qa/shortcuts-test.js`（纯逻辑 + 与渲染进程口径逐条比对）、
+  `node_modules\.bin\electron dev-data\qa\shortcuts-electron-test.js`（真机：另起一个 Electron 进程占住组合键，
+  验证 `taken` 与 check 的恢复）、`node dev-data\qa\shortcuts-app-test\run.js`（真主进程接线）、
+  `node_modules\.bin\electron dev-data\qa\shortcuts-dom-test.js`（界面交互），见 §9.3。
+
+### 4.18 危险操作的二次确认（「删除全部对话」）
+
+- 组件 `src/components/ConfirmDialog.jsx`：遮罩 + 卡片 + 图标 + 标题 + 说明 + 后果清单 + 两个按钮。
+- **键盘硬约定：Enter = 确定，Esc = 取消**（都挂在 window 的捕获阶段，焦点在哪都有效；
+  `e.isComposing` 时忽略 —— 中文输入法组字中的回车不算确定）。点遮罩 = 取消。
+  内部用 `doneRef` 闸住重复触发（Enter 既被这里接住、又可能触发聚焦按钮的原生 click）。
+- **图标沿用调用方给的那一个**：删除全部对话继续用 `trash`（不是警告三角），与底部按钮同一个图标
+  （DOM 断言里逐字节比过两份 SVG）。
+- 接入点：`Sidebar.jsx` 底部「删除全部对话」—— 点按钮**只打开弹窗**，确认后才 `CONV_DELETE_ALL`；
+  没有对话时不弹（按钮点了没反应）。文案写清后果（不可恢复 / 逐标签草稿一并清空 / 正在等的请求结果丢弃 /
+  缓存图片不删）。
+- 回归：`node_modules\.bin\electron dev-data\qa\shortcuts-dom-test.js` 的 A 段（Esc 取消后对话一个不少、
+  Enter 确认后真的删光）；静态预览 `settings-preview.mjs confirm-delete-light|dark`。
+
 ---
 
 ## 5. 持久化数据结构（Schema）
@@ -719,6 +790,11 @@ settings.closeAction                      'tray' | 'quit' | ''（'' = 从未设�
   "compressMaxMB": 10,          // 超过该大小自动压缩
   "closeAction": "",            // 点窗口 × 时的行为："" = 从未设置（跟随默认）| "tray" 最小化到托盘 | "quit" 直接退出
                                 //   默认值：开发模式（未打包）= quit，打包后 = tray（见 §4.15 / closeBehavior.js）
+  "shortcuts": {                // 全局快捷键（设置 → 基础设置 →「全局快捷键」，见 §4.17）
+    "toggleWindow": "",         //   值是 Electron accelerator（如 "CommandOrControl+Shift+S"），空 = 未设置
+    "toggleTheme": "",          //   toggleWindow 显示/隐藏主界面 | toggleTheme 切换白天黑夜 | newConversation 新建对话
+    "newConversation": ""
+  },
   "modelGroups": [              // 已添加的模型系列（隐藏的系列不在这里）
     {
       "seriesId": "qwen",       // 对应 model-series.json 里的 series[].id
@@ -1042,6 +1118,19 @@ ss-export/
 35. **设置弹窗高度固定**：`.settings-modal` 必须是固定高度（`height: 86vh`，见 §4.16），
     **不得**改回 `height: auto` / 只给 `max-height` —— 那会让切换设置页时弹窗高度随内容乱跳；
     内容高于内容区的页面由 `.settings-content` 自己滚动（保持 `.settings-body` 的 `min-height: 0`）。
+36. **全局快捷键只有一处注册、两处同口径**（见 §4.17）：`globalShortcut.register` 只能出现在
+    `electron/src/shortcuts.js`（`apply()` 里先 `unregisterAll()`）；渲染进程**不得**自己注册全局快捷键，
+    只能通过 `settings.shortcuts` + `state:save` 生效。「组合键口径」（修饰键别名 / 修饰键顺序 / 键名归一 /
+    「普通键必须带修饰键、功能键可单用」）在 `electron/src/shortcuts.js`（权威）与 `src/lib/shortcuts.js`
+    （录制与显示）**各有一份**，与 `modelSeries.js` 的两处 `resolveModel` 同一套路：**改一处必须改另一处**
+    （`dev-data/qa/shortcuts-test.js` 会把渲染进程那份打包出来逐条比对）。
+    冲突检测两类都不能省：内部重复（纯逻辑）**和**系统级占用（只认真注册的返回值得知，见 `check()`）；
+    `check()` 是试探性注册，**必须**在 `finally` 里恢复当前生效的那套。窗口显隐一律走 `planWindowToggle`：
+    托盘不可用时**只能**最小化，绝不能 hide（没有回程入口 = 窗口藏进虚空，同不变量 34）。
+37. **危险操作必须先确认，且 Enter 确定 / Esc 取消**（见 §4.18）：删除全部对话之类的不可恢复操作，
+    点按钮只**打开**确认弹窗，真正的删除只在用户确认后执行；`ConfirmDialog` 的键盘约定
+    （window 捕获阶段拦 Enter / Esc、输入法组字中的回车不算、`doneRef` 闸重复触发）**不得**去掉；
+    弹窗图标沿用触发它的那个图标（删除继续用 `trash`），不要换成警告三角。
 
 ---
 
@@ -1214,10 +1303,14 @@ Get-Content dev-data\log\app-<日期>.log -Tail 20 # 应能看到「渲染进程
 `dev-data/qa/`（gitignore，不进仓库）里有几个 esbuild + 无头 Chrome 的脚本，用**真实组件 / 真实代码 + 真实 app.css** 出图或断言：
 
 ```bash
-node dev-data/qa/settings-preview.mjs   # 设置弹窗：空态 / 多系列 / 高级设置 / 基础设置（关闭窗口时）/ 重命名模型，亮暗两套
+node dev-data/qa/settings-preview.mjs   # 设置弹窗：空态 / 多系列 / 高级设置 / 基础设置（关闭窗口时、全局快捷键）/ 确认弹窗 / 快捷键状态行 / 重命名模型，亮暗两套
 node dev-data/qa/settings-height-test.js # 设置弹窗高度固定：隐藏窗口里量 6 个页面（都 = 视口 86%、长内容页自己在滚动），electron 跑
 node dev-data/qa/close-behavior-test.js # 关闭窗口行为纯逻辑（取值规整 / 默认值 / 是否拦截 close / settings 规整，15 项）
 node dev-data/qa/close-tray-test/run.js # 关闭窗口真机行为（真实主进程 + 真实关窗：直接退出 / 隐藏到托盘），electron 跑
+node dev-data/qa/shortcuts-test.js        # 全局快捷键纯逻辑（解析 / 规整 / 内部重复 / 假 globalShortcut 注册 + check 恢复现场）+ 与渲染进程口径逐条比对（35 项）
+node_modules\.bin\electron dev-data\qa\shortcuts-electron-test.js  # 真机 globalShortcut：真注册 / 真冲突（另起进程占住组合键 → taken）/ check 恢复，electron 跑
+node dev-data\qa\shortcuts-app-test\run.js # 全局快捷键的主进程接线：启动按 settings.json 注册、state:save 后按新值重注册（真主进程 + 真窗口）
+node_modules\.bin\electron dev-data\qa\shortcuts-dom-test.js       # 真实窗口 DOM 断言：删除确认弹窗 Enter/Esc、录制框、快捷键动作（25 项），electron 跑
 node dev-data/qa/composer-preview.mjs   # 输入区 + 各协议参数面板
 node dev-data/qa/title-test.mjs         # 标签自动命名：触发时机 / 回退 / reducer 守卫（22 项断言）
 node dev-data/qa/promptdrop-preview.mjs # 全窗口解析分区 / 插入·复制 / 图片提示词弹窗，亮暗两套（分 base/overlay/modal 三层出图）
@@ -1241,6 +1334,16 @@ node_modules\.bin\electron dev-data\qa\conv-reorder-test\main.js  # …再用真
 模拟「拖入 `图片.png` + `参考图.jpg` → 输入「改为黑白」→ 发送」，断言前端发出的 `imageNames` 就是
 `["图片.png","参考图.jpg"]`（顺序一致）；再模拟系统剪贴板粘贴（浏览器给的占位名 `image.png`），
 断言 `imageNames` 是 `[""]`（pic 项位置保留、值为空串）。
+
+全局快捷键那四个脚本各管一段（见 §4.17）：`shortcuts-test.js` 是纯逻辑（假 `globalShortcut`，含
+「check 跑完必须恢复现场」与「渲染进程那份口径逐条一致」）；`shortcuts-electron-test.js` 用**真的**
+`globalShortcut`，并**另起一个 Electron 进程占住某个组合键**来验证 `taken` 真的能被发现；
+`shortcuts-app-test/run.js` 跑真实主进程验证接线（启动注册 + `state:save` 后重注册，跑前备份、跑后还原
+`dev-data/settings.json`，入口同样临时复制到项目根）；`shortcuts-dom-test.js` 在隐藏窗口里加载真实
+`dist/index.html`（先 `npm run build`），用**真实的 `KeyboardEvent` 序列从焦点元素冒泡**去模拟按键 ——
+这一点很关键：直接 `window.dispatchEvent` 会打乱捕获/冒泡顺序，测不出「录制中 Esc 只取消录制、
+不会把设置弹窗一起关掉」。另外注意：本机可能已经有驱动占着某些组合键（实测 Intel 显卡驱动占着
+`Ctrl+Alt+F12`），测试用的组合键要避开这类，否则会莫名其妙读到 `taken`。
 
 `dom-behavior-test.js` 用 electron 加载真实的 `dist/index.html`，再注入 `promptdrop-dom-test-inject.js`：
 它按真实 DOM 事件序列模拟「拖动图片 → 鼠标在顶栏/输入框之间移动 → 松手 → 改文字」，
@@ -1287,6 +1390,9 @@ node_modules\.bin\electron dev-data\qa\conv-reorder-test\main.js  # …再用真
 | 改解析失败文案 | `src/lib/promptReuse.jsx` 的 `PROMPT_MESSAGES` / `promptErrorText`（区分不支持 / 未找到 / 损坏 / 读取失败） |
 | 改持久化字段默认值 | `electron/src/store.js` 的 `DEFAULT_SETTINGS` / `DEFAULT_CONVERSATIONS` |
 | 改「关闭窗口」行为（默认值 / 托盘菜单 / 提示） | `electron/src/closeBehavior.js`（唯一判定）+ `electron/main.js` 的 `ensureTray` / `createWindow` 的 `win.on('close')` / `hideToTray` / `syncTrayWithSettings` + 设置页 `src/components/SettingsModal.jsx` 基础设置页（见 §4.15） |
+| 改全局快捷键（动作 / 组合键口径 / 冲突检测） | `electron/src/shortcuts.js`（唯一注册处，权威口径）+ `src/lib/shortcuts.js`（录制 / 显示 / 立即提示，**同口径**）+ `src/components/ShortcutRecorder.jsx` + `electron/main.js` 的 `onShortcutTrigger` / `applyShortcutsIfChanged` / `toggleWindowByShortcut` + `src/App.jsx` 的 `shortcut:action` 处理（见 §4.17） |
+| 加一个全局快捷键动作 | 三处一起加：`electron/src/shortcuts.js#ACTIONS` + `src/lib/shortcuts.js#SHORTCUT_ACTIONS`（id 与文案必须一致）+ `electron/src/store.js#DEFAULT_SETTINGS.shortcuts` 与 `src/App.jsx`（若是界面动作，在 `onShortcutTrigger` 里转发） |
+| 改二次确认弹窗（文案 / 键盘 / 图标） | `src/components/ConfirmDialog.jsx` + 接入处（如 `src/components/Sidebar.jsx` 的「删除全部对话」）+ `src/styles/app.css` 的 `.confirm-*`（见 §4.18） |
 | 改设置弹窗高度 / 切页高度乱跳 | `src/styles/app.css` 的 `.settings-modal`（固定 `height: 86vh`）+ `.settings-body` / `.settings-content` 的滚动链（见 §4.16） |
 | 改导出 / 导入的包名或包内协议 | `electron/src/dataTransfer.js` 顶部常量（`EXPORT_PREFIX` / `ROOT_DIR` / `FORMAT` / `FORMAT_VERSION` / `MEDIA_DIRS`）+ `zipNameFor` / `parseZipName` / `inspectDir`（见 §5.7） |
 | 改导入的合并规则 | `electron/src/dataTransfer.js` 的 `mergeImport` / `mergeModelGroups` / `mergeConversations` / `mergeSourceConfig` / `mergeRenameConfig`（纯函数，改完在 `scripts/test-api.js` §24 补断言） |

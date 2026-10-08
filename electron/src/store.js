@@ -13,12 +13,16 @@
  *   closeAction    '' | 'tray' | 'quit'  点窗口 × 时的行为（设置 → 基础设置 →「关闭窗口时」）。
  *                  '' = 从未设置 → 按运行形态给默认值：开发模式直接退出、打包后最小化到托盘
  *                  （判定口径见 electron/src/closeBehavior.js，主进程与界面共用同一套规则）。
+ *   shortcuts      { toggleWindow, toggleTheme, newConversation } 全局快捷键（设置 → 基础设置 →
+ *                  「全局快捷键」）。值是 Electron accelerator（如 CommandOrControl+Shift+S），
+ *                  '' = 未设置。规整 / 冲突检测见 electron/src/shortcuts.js（全程序唯一注册处）。
  * 旧版（v1）的 api.apiKey/api.baseUrl/models/requestMode 会在启动时自动迁移，见 migrateLegacySettings。
  */
 const fs = require('fs');
 const path = require('path');
 const log = require('./logger');
 const closeBehavior = require('./closeBehavior');
+const shortcutsLib = require('./shortcuts');
 
 const APP_VERSION = 1;
 
@@ -30,6 +34,9 @@ const DEFAULT_SETTINGS = {
   compressMaxMB: 10,                   // 超过该大小的图片自动压缩
   saveNamePromptChars: 5,              // 保存文件名取自提示词前 N 个字（0 = 不用提示词命名，见「高级设置」）
   closeAction: '',                     // '' = 从未设置（跟随默认）| 'tray' 最小化到托盘 | 'quit' 直接退出
+  shortcuts: {                         // 全局快捷键（设置 → 基础设置 →「全局快捷键」），空串 = 未设置
+    ...shortcutsLib.DEFAULT_SHORTCUTS
+  },
   modelGroups: [],                     // 见文件头注释
   sourceConfig: {},
   defaultModelId: '',
@@ -141,6 +148,8 @@ function normalizeModelGroups(settings, seriesConfig) {
   out.sourceConfig = cfg;
   // 关闭窗口行为：只认 'tray' / 'quit'，其余（含从未设置的空值、手工改坏的值）一律回 '' = 跟随默认
   out.closeAction = closeBehavior.normalizeCloseAction(out.closeAction);
+  // 全局快捷键：只认三个动作 id + 合法 accelerator，非法 / 脏值一律清成 ''（主进程注册前再规整一次）
+  out.shortcuts = shortcutsLib.normalizeShortcuts(out.shortcuts);
   // 重命名模型：只保留三个字符串字段（缺省 = 用代码里的默认地址 / 默认模型）
   const rm = (out.renameModel && typeof out.renameModel === 'object') ? out.renameModel : {};
   out.renameModel = {

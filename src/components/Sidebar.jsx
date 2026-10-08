@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useApp, useToast, conversationDot, dropIndexFor } from '../lib/store.jsx';
 import Icon from './Icon.jsx';
+import ConfirmDialog from './ConfirmDialog.jsx';
 
 /** 圆点文案：黄 = 后台还在等结果 · 绿 = 后台生成成功 · 红 = 后台生成失败 */
 const DOT_TITLE = {
@@ -128,6 +129,9 @@ export default function Sidebar() {
   // 落盘后就是用户看到的顺序（见 AIDEV.md §4.11）。
   const [dragId, setDragId] = useState(null);
   const [hover, setHover] = useState(null);      // {id, pos} 落点指示线
+  // 「删除全部对话」的二次确认：点按钮只打开弹窗，**真正删除要用户在弹窗里确认**
+  // （Enter 确定 / Esc 取消，见 ConfirmDialog）
+  const [confirmDeleteAll, setConfirmDeleteAll] = useState(false);
   const dragIdRef = useRef(null);                // 供 dragover/drop 读到最新值（避免闭包拿到旧 state）
   const listRef = useRef(null);
 
@@ -249,8 +253,7 @@ export default function Sidebar() {
           title="删除全部对话"
           onClick={() => {
             if (conversations.length === 0) return;
-            dispatch({ type: 'CONV_DELETE_ALL' });
-            toast('已删除全部对话', 'info');
+            setConfirmDeleteAll(true);      // 有对话才弹确认；确认后才是真的删
           }}
         >
           <Icon name="trash" size={20} />
@@ -264,6 +267,31 @@ export default function Sidebar() {
           <Icon name="gear" size={20} />
         </button>
       </div>
+
+      {/* 删除全部对话：二次确认（图标沿用底部按钮同一个 trash；Enter 确定 / Esc 取消） */}
+      {confirmDeleteAll && (
+        <ConfirmDialog
+          icon="trash"
+          danger
+          title="删除全部对话？"
+          message={`将删除全部 ${conversations.length} 个对话（共 ${
+            conversations.reduce((n, c) => n + (c.messages || []).length, 0)
+          } 条消息），此操作不可恢复。`}
+          lines={[
+            '每个对话里还没发送的输入草稿也会一起清空。',
+            '正在等待返回的生成请求，其结果会随之丢弃。',
+            '缓存目录里的图片不会被删除（如需清理，用左下角文件夹按钮打开目录）。'
+          ]}
+          confirmText="删除全部"
+          cancelText="取消"
+          onConfirm={() => {
+            setConfirmDeleteAll(false);
+            dispatch({ type: 'CONV_DELETE_ALL' });
+            toast('已删除全部对话', 'info');
+          }}
+          onCancel={() => setConfirmDeleteAll(false)}
+        />
+      )}
     </aside>
   );
 }

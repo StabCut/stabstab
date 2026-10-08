@@ -26,6 +26,18 @@ contextBridge.exposeInMainWorld('stab', {
   // ---- 会话标签自动命名（重命名模型：DeepSeek Responses API）----
   generateTitle: (text) => ipcRenderer.invoke('title:generate', text),
 
+  // ---- 全局快捷键（设置 → 基础设置 →「全局快捷键」）----
+  // 注册 / 冲突检测都在主进程（electron/src/shortcuts.js）：这里只负责「试一下」与「读当前状态」，
+  // 真正生效靠 settings.shortcuts 随 state:save 落盘（主进程按需重新注册）。
+  // onShortcutAction = 主进程把「切换主题 / 新建对话」两个动作转发给渲染进程（窗口控制由主进程自己做）。
+  checkShortcuts: (shortcuts) => ipcRenderer.invoke('shortcuts:check', shortcuts),
+  shortcutStatus: () => ipcRenderer.invoke('shortcuts:status'),
+  onShortcutAction: (cb) => {
+    const handler = (_e, data) => cb(data);
+    ipcRenderer.on('shortcut:action', handler);
+    return () => ipcRenderer.removeListener('shortcut:action', handler);
+  },
+
   // ---- 附件（用户输入图片持久化） ----
   saveAttachment: (att) => ipcRenderer.invoke('attachments:save', att),   // {name, mime, dataUrl} -> {file}
   readAttachment: (file) => ipcRenderer.invoke('attachments:read', file), // file -> {dataUrl, mime}
