@@ -155,7 +155,7 @@ export default function AssistantMessage({ conv, msg }) {
   }
 
   return (
-    <div className="msg assistant">
+    <div className="msg assistant" data-msg-id={msg.id}>
       {imageMenu.menu && <ImageContextMenu menu={imageMenu.menu} onClose={imageMenu.closeMenu} />}
       <div className="msg-avatar" title="StabStab">
         <img src="./icon.svg" alt="" draggable={false} />

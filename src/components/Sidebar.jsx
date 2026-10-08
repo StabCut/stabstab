@@ -1,7 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useApp, useToast, conversationDot, dropIndexFor } from '../lib/store.jsx';
+import { useSearch } from '../lib/searchState.jsx';
 import Icon from './Icon.jsx';
 import ConfirmDialog from './ConfirmDialog.jsx';
+import SearchPanel from './SearchPanel.jsx';
 
 /** 圆点文案：黄 = 后台还在等结果 · 绿 = 后台生成成功 · 红 = 后台生成失败 */
 const DOT_TITLE = {
@@ -25,7 +27,7 @@ function ConvDot({ kind }) {
  *   id     = 正在被拖动的会话 id（null = 没在拖）
  *   hover  = {id, pos} 落点提示（pos: 'before' | 'after'）
  */
-function ConversationItem({ conv, isActive, drag }) {
+function ConversationItem({ conv, isActive, drag, search }) {
   const { state, dispatch } = useApp();
   const [menuOpen, setMenuOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -37,6 +39,8 @@ function ConversationItem({ conv, isActive, drag }) {
   // 正在被拖起的标签淡出；落点指示线只画在别人身上（拖到自己身上不算落点）
   const dragging = drag.id === conv.id;
   const dropPos = !dragging && drag.hover && drag.hover.id === conv.id ? drag.hover.pos : '';
+  // 搜索当前跳转目标所在的对话：标一下，便于在长列表里认出「刚跳过去的是它」
+  const searchTarget = !!(search && search.jump && search.jump.convId === conv.id);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -62,7 +66,7 @@ function ConversationItem({ conv, isActive, drag }) {
 
   return (
     <div
-      className={`conv-item ${isActive ? 'active' : ''}${dragging ? ' dragging' : ''}${dropPos ? ` drop-${dropPos}` : ''}`}
+      className={`conv-item ${isActive ? 'active' : ''}${dragging ? ' dragging' : ''}${dropPos ? ` drop-${dropPos}` : ''}${searchTarget ? ' search-target' : ''}`}
       // 拖动排序（HTML5 DnD）：整条标签都是把手；重命名中关掉 draggable，否则输入框里选不了字
       draggable={!renaming}
       onDragStart={(e) => drag.onStart(conv.id, e)}
@@ -72,6 +76,7 @@ function ConversationItem({ conv, isActive, drag }) {
       onClick={() => dispatch({ type: 'CONV_ACTIVATE', id: conv.id })}
       title={conv.name}
       data-conv-id={conv.id}
+      data-search-target={searchTarget ? '1' : '0'}
     >
       <ConvDot kind={dot} />
       {renaming ? (
@@ -124,6 +129,8 @@ function ConversationItem({ conv, isActive, drag }) {
 export default function Sidebar() {
   const { state, dispatch } = useApp();
   const toast = useToast();
+  // 全局搜索面板的开关（状态在 lib/searchState.jsx：跨标签命中列表与跳转意图都放那边）
+  const search = useSearch();
   const { conversations, activeId } = state.conversations;
   // 侧栏顺序 = conversations 的数组顺序（不再按 createdAt 排序）：拖动排序直接改数组顺序，
   // 落盘后就是用户看到的顺序（见 AIDEV.md §4.11）。
@@ -210,7 +217,17 @@ export default function Sidebar() {
       <div className="sidebar-header">
         <img className="app-logo" src="./icon.svg" alt="logo" draggable={false} />
         <span className="app-title">StabStab</span>
+        {/* 全局搜索（Ctrl+F）：展开后占据侧栏上半，对话列表往下让位 */}
+        <button
+          className={`icon-btn header-search-btn${search.open ? ' active' : ''}`}
+          title="搜索全部对话（Ctrl+F）"
+          onClick={search.toggleSearch}
+        >
+          <Icon name="search" size={17} />
+        </button>
       </div>
+
+      {search.open && <SearchPanel />}
 
       <button
         className="primary-btn new-conv-btn"
@@ -240,7 +257,7 @@ export default function Sidebar() {
           <div className="conv-empty">暂无对话，点击上方新建</div>
         )}
         {conversations.map((c) => (
-          <ConversationItem key={c.id} conv={c} isActive={c.id === activeId} drag={drag} />
+          <ConversationItem key={c.id} conv={c} isActive={c.id === activeId} drag={drag} search={search} />
         ))}
       </div>
 

@@ -160,6 +160,75 @@ button { cursor: pointer; }
 .conv-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; padding-right: 2px; }
 .conv-empty { color: var(--text-dim); text-align: center; padding: 24px 8px; font-size: 13px; }
 
+/* ================= 全局搜索（见 AIDEV.md §4.17） ================= */
+/* 面板占据侧栏上半：对话列表在下面（.conv-list 自己 flex:1 收缩），互不遮挡 */
+.sidebar-header .header-search-btn { margin-left: auto; }
+.sidebar-header .header-search-btn.active { background: var(--bg-active); color: var(--accent); }
+
+.search-panel { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.search-bar {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px;
+  padding: 5px 8px;
+}
+.search-bar:focus-within { border-color: var(--accent); }
+.search-bar-icon { color: var(--text-dim); }
+.search-input {
+  flex: 1; min-width: 0; background: transparent; border: none; outline: none;
+  font-size: 13px; padding: 2px 0;
+}
+.search-tools { display: flex; align-items: center; gap: 6px; }
+.search-count {
+  flex: 1; min-width: 0; font-size: 11.5px; color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.search-nav { display: flex; align-items: center; gap: 2px; flex: none; }
+
+.search-results {
+  max-height: 42vh; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 4px; padding-right: 2px;
+}
+.search-empty { color: var(--text-dim); font-size: 12.5px; line-height: 1.6; padding: 10px 4px; }
+.search-history { display: flex; flex-direction: column; gap: 2px; }
+.search-history-title { font-size: 11.5px; color: var(--text-dim); padding: 2px 4px; }
+.search-history-item {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  background: transparent; border: none; border-radius: 6px;
+  padding: 5px 6px; color: var(--text-dim); font-size: 12.5px; text-align: left;
+}
+.search-history-item:hover { background: var(--bg-hover); color: var(--text); }
+.search-history-item span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.search-hit {
+  display: block; width: 100%; text-align: left;
+  background: transparent; border: 1px solid transparent; border-radius: 8px;
+  padding: 6px 8px; color: var(--text);
+}
+.search-hit:hover { background: var(--bg-hover); }
+.search-hit.current { background: var(--bg-active); border-color: var(--accent); }
+.search-hit-head { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+.search-hit-conv {
+  min-width: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 11.5px; font-weight: 600;
+}
+.search-hit-kind {
+  flex: none; font-size: 10px; padding: 0 5px; border-radius: 999px;
+  border: 1px solid var(--border); color: var(--text-dim);
+}
+.search-hit-kind.user { border-color: var(--accent); color: var(--accent); }
+.search-hit-label { flex: none; font-size: 10.5px; color: var(--text-dim); }
+.search-hit-snippet {
+  font-size: 11.5px; line-height: 1.5; color: var(--text-dim);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+/* 命中高亮：结果列表里用琥珀底，聊天区里的命中用同一套配色（见 .msg-text mark） */
+.search-hit-snippet mark,
+.msg-text mark {
+  background: var(--gold); color: #3a2f00; border-radius: 3px; padding: 0 1px;
+}
+/* 当前站上的那一条命中：加下划线，便于在一屏多个命中里指出「就是它」 */
+.msg-text mark.current { background: var(--coral); color: #fff; }
+
 .conv-item {
   display: flex; align-items: center; gap: 8px;
   padding: 8px 10px; border-radius: 8px; cursor: pointer; position: relative;
@@ -168,6 +237,8 @@ button { cursor: pointer; }
 }
 .conv-item:hover { background: var(--bg-hover); }
 .conv-item.active { background: var(--bg-active); }
+/* 搜索跳转的目标对话（见 lib/searchState.jsx 的 jump）：左边一条强调色，长列表里也认得出 */
+.conv-item.search-target { box-shadow: inset 2px 0 0 var(--accent); }
 /* 拖动排序（见 AIDEV.md §4.11）：被拖起的标签淡出，落点用一条强调色细线表示插到上/下 */
 .conv-item.dragging { opacity: 0.45; cursor: grabbing; }
 .conv-item.drop-before::before,
@@ -246,6 +317,8 @@ button { cursor: pointer; }
   max-width: 880px; margin: 0 auto; padding: 0 24px;
   display: flex; flex-direction: column; gap: 18px;
 }
+/* 每条消息的定位抓手（搜索跳转用；不参与排版，消息本身仍是 .msg 的 flex 布局） */
+.msg-slot { display: block; }
 
 /* ================= 消息 ================= */
 .msg { display: flex; gap: 8px; align-items: flex-start; position: relative; }

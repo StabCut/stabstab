@@ -39,6 +39,9 @@ import warningSrc from '../../assets/icons/warning.svg?raw';
 import eyeSrc from '../../assets/icons/eye.svg?raw';
 import chatPlusSrc from '../../assets/icons/chat-plus.svg?raw';
 import sendSrc from '../../assets/icons/send.svg?raw';
+import searchSrc from '../../assets/icons/search.svg?raw';
+import chevronUpSrc from '../../assets/icons/chevron-up.svg?raw';
+import chevronDownSrc from '../../assets/icons/chevron-down.svg?raw';
 
 const RAW = {
   plus: plusSrc,
@@ -58,7 +61,11 @@ const RAW = {
   eye: eyeSrc,
   // 用户气泡上的两个重发按钮（见 components/UserMessage.jsx）
   chatPlus: chatPlusSrc,
-  send: sendSrc
+  send: sendSrc,
+  // 全局搜索（见 components/SearchPanel.jsx）
+  search: searchSrc,
+  chevronUp: chevronUpSrc,
+  chevronDown: chevronDownSrc
 };
 
 export const ICON_NAMES = Object.keys(RAW);

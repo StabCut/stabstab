@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { AppProvider, useApp, dotActionForEvent } from './lib/store.jsx';
 import { PromptReuseProvider } from './lib/promptReuse.jsx';
+import { SearchProvider, useSearch } from './lib/searchState.jsx';
 import Sidebar from './components/Sidebar.jsx';
 import ChatView from './components/ChatView.jsx';
 import PromptDropZones from './components/PromptDrop.jsx';
@@ -10,8 +11,28 @@ import Toasts from './components/Toasts.jsx';
 
 function Shell() {
   const { state, dispatch, stateRef, flushSave } = useApp();
+  const search = useSearch();
   // 全局快捷键改了状态（主题 / 新建对话）后立刻落盘一次，见下面的快捷键监听
   const [flushTick, setFlushTick] = useState(0);
+  // Ctrl+F 的监听常驻（不随开关重新注册）；用 ref 读最新状态，避免闭包拿到旧值
+  const searchRef = useRef(search);
+  searchRef.current = search;
+
+  // Ctrl+F / Cmd+F：应用内搜索（**不是**全局快捷键那套 —— 见 lib/shortcuts.js 的适用范围）。
+  // 焦点正在输入框 / 编辑框里时不抢：那种场合 Ctrl+F 交给输入框自己处理。
+  useEffect(() => {
+    const onKey = (e) => {
+      const key = String(e.key || '').toLowerCase();
+      if (key !== 'f' || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+      const el = document.activeElement;
+      const tag = el && el.tagName ? el.tagName.toLowerCase() : '';
+      if (tag === 'textarea' || tag === 'input' || (el && el.isContentEditable)) return;
+      e.preventDefault();
+      searchRef.current.openSearch();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   // 注册 API 事件监听（先于 bootstrap 完成）
   useEffect(() => {
@@ -150,10 +171,13 @@ function Shell() {
 export default function App() {
   return (
     <AppProvider>
-      {/* 顶部解析拖放区 / 待复用提示词（插入·复制）的状态由这里统一持有 */}
-      <PromptReuseProvider>
-        <Shell />
-      </PromptReuseProvider>
+      {/* 全局搜索（跨标签命中列表 + 跳转意图）由这里统一持有：见 lib/searchState.jsx */}
+      <SearchProvider>
+        {/* 顶部解析拖放区 / 待复用提示词（插入·复制）的状态由这里统一持有 */}
+        <PromptReuseProvider>
+          <Shell />
+        </PromptReuseProvider>
+      </SearchProvider>
     </AppProvider>
   );
 }

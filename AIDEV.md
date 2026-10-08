@@ -778,6 +778,50 @@ settings.closeAction                      'tray' | 'quit' | ''（'' = 从未设�
 
 ---
 
+### 4.19 全局搜索（全部对话的用户气泡 + API 返回内容）
+
+侧栏标题栏那个放大镜 / `Ctrl+F` 打开搜索面板，**在全部对话里**搜关键字：用户气泡的提示词与
+API 返回的文字都能命中，结果按命中处列出，点一下定位到那条消息。
+
+```
+[收集] lib/search.js#collectRecords(conversations)
+   ├─ 用户气泡：text（提示词）/ images[].name、srcName（输入图文件名）/ model.name（本次模型）
+   ├─ 助手气泡：texts[]（API 返回文字）/ error.code、message、requestId / taskId / images[].name（结果文件名）
+   ├─ 消息对象上用 WeakMap 缓存可搜字段 → 每敲一个字只做字符串比较，不重复收集
+   └─ 跳过空对话、跳过没有任何文字的消息（例如纯图片 + 还没返回的结果）
+[扫描] searchConversations(conversations, query)
+   ├─ 大小写不敏感、按「字段」计数（一条消息里命中两个字段 = 2 处）
+   ├─ 结果条数上限 HIT_LIMIT = 200（超出的用 truncated 标记，统计数字仍是真实总数）
+   └─ 顺带返回 flat（拍平后的记录），跳转时直接复用，不重复拍平
+[状态] lib/searchState.jsx（SearchProvider）
+   ├─ open / query（输入框即时值）/ term（120ms 防抖后的实际查询串）/ cursor / jump
+   ├─ ★ 必须提升到 App 层：结果跨标签，而 ChatView 只有当前标签的数据 —— 放在它内部切标签就清空
+   ├─ 查询历史：localStorage 'stabstab.searchHistory'（最多 8 条、最近在前、只记「搜到了东西」的词）
+   └─ 历史登记用 lastLoggedRef 记账：**每个词只登记一次**，否则清空后再点历史项会重复登记
+[面板] components/SearchPanel.jsx（挂在 Sidebar 里，不占 ChatView）
+   ├─ 输入框（打开即聚焦）/ 统计文案 / 上一个·下一个 / 关闭；关键词为空时展示「最近搜索」
+   ├─ 命中高亮用「按区间切分 + <mark>」，**不用 innerHTML**（消息文字是不可信输入）
+   └─ Enter = 下一个、Shift+Enter = 上一个、Esc = 关闭（isComposing 时全部忽略）
+[快捷键] App.jsx 的 window keydown：Ctrl/Cmd+F 打开面板；**焦点在 input/textarea/编辑框里时不抢**
+   —— 应用内快捷键不进 lib/shortcuts.js 那套全局快捷键（那套只认 accelerator，且普通键必须带修饰键）
+```
+
+- **数据源是内存里的 `state.conversations`**：不做磁盘索引、不加 IPC、不动主进程。
+  列表本来就全量渲染（没有虚拟滚动），所以搜索只是纯函数扫描；新消息 / 编辑重发 / 删除 / 导入
+  之后结果自动跟着变（依赖项就是 conversations，没有「索引过期」这回事），但**不为性能做倒排索引** ——
+  消息只增不改，全量线性扫描在这个数据量下是毫秒级。
+- **搜的是可见文字**：`AssistantMessage` 只在没有结果图时才渲染 `texts`，所以「搜得到但气泡上看不见」
+  是可能的（接口同时返回文字和图片时）。这是已知取舍：宁可搜到，也不要漏掉 API 返回的内容。
+- **跳转分三步做**（本节的 [定位] 部分随实现补齐）：同对话内滚动 + 文字高亮（`.msg-text mark`）、
+  跨标签先 `CONV_ACTIVATE` 再滚（`jump` 是「两拍」的载体，由 ChatView 在目标消息挂上 DOM 时
+  `consumeJump` 清掉，避免下次切标签还被抑制）。定位时要压住 §4.9 的自动贴底。
+- 消息根节点带 `data-msg-id`（`.msg-slot` 是每条的定位抓手），滚动定位按它查节点，不靠下标。
+- 回归：`node dev-data/qa/search-test.mjs`（纯逻辑）、
+  `node_modules\.bin\electron dev-data\qa\search-dom-test.js`（真实窗口里的面板交互 + 截图
+  `dev-data/qa/search-panel-dark.png`），见 §9.3。
+
+---
+
 ## 5. 持久化数据结构（Schema）
 ### 5.1 `settings.json`
 
@@ -1320,6 +1364,8 @@ node dev-data/qa/picname-flow-test.js   # 输入图文件名链路（拖入/粘�
 node dev-data/qa/meta-decode-check.js   # 元数据写入后仍可被真实解码器解码（electron 跑，PNG/JPEG/WebP）
 node dev-data/qa/conv-reorder-test/build.mjs   # 侧栏拖动排序：先构建 bundle
 node_modules\.bin\electron dev-data\qa\conv-reorder-test\main.js  # …再用真实 DragEvent 序列跑断言 + 截图（含「拖起淡出 + 落点线」）
+node dev-data/qa/search-test.mjs        # 全局搜索纯逻辑：字段收集 / 拍平 / 扫描 / 片段 / 命中区间 / 上限（38 项）
+node_modules\.bin\electron dev-data\qa\search-dom-test.js  # 搜索面板真实窗口断言（34 项）+ 截图 search-panel-dark.png
 ```
 
 `close-tray-test/run.js` 跑的是**真实主进程**（`electron/main.js`），只把「用户点标题栏 ×」换成窗口里的
@@ -1393,6 +1439,7 @@ node_modules\.bin\electron dev-data\qa\conv-reorder-test\main.js  # …再用真
 | 改全局快捷键（动作 / 组合键口径 / 冲突检测） | `electron/src/shortcuts.js`（唯一注册处，权威口径）+ `src/lib/shortcuts.js`（录制 / 显示 / 立即提示，**同口径**）+ `src/components/ShortcutRecorder.jsx` + `electron/main.js` 的 `onShortcutTrigger` / `applyShortcutsIfChanged` / `toggleWindowByShortcut` + `src/App.jsx` 的 `shortcut:action` 处理（见 §4.17） |
 | 加一个全局快捷键动作 | 三处一起加：`electron/src/shortcuts.js#ACTIONS` + `src/lib/shortcuts.js#SHORTCUT_ACTIONS`（id 与文案必须一致）+ `electron/src/store.js#DEFAULT_SETTINGS.shortcuts` 与 `src/App.jsx`（若是界面动作，在 `onShortcutTrigger` 里转发） |
 | 改二次确认弹窗（文案 / 键盘 / 图标） | `src/components/ConfirmDialog.jsx` + 接入处（如 `src/components/Sidebar.jsx` 的「删除全部对话」）+ `src/styles/app.css` 的 `.confirm-*`（见 §4.18） |
+| 改全局搜索（搜哪些字段 / 结果分组 / 面板） | `src/lib/search.js`（纯逻辑：`fieldsOfMessage` / `collectRecords` / `searchConversations` / `matchRanges`）+ `src/lib/searchState.jsx`（状态与跳转意图）+ `src/components/SearchPanel.jsx` + `app.css` 的 `.search-*`（见 §4.19） |
 | 改设置弹窗高度 / 切页高度乱跳 | `src/styles/app.css` 的 `.settings-modal`（固定 `height: 86vh`）+ `.settings-body` / `.settings-content` 的滚动链（见 §4.16） |
 | 改导出 / 导入的包名或包内协议 | `electron/src/dataTransfer.js` 顶部常量（`EXPORT_PREFIX` / `ROOT_DIR` / `FORMAT` / `FORMAT_VERSION` / `MEDIA_DIRS`）+ `zipNameFor` / `parseZipName` / `inspectDir`（见 §5.7） |
 | 改导入的合并规则 | `electron/src/dataTransfer.js` 的 `mergeImport` / `mergeModelGroups` / `mergeConversations` / `mergeSourceConfig` / `mergeRenameConfig`（纯函数，改完在 `scripts/test-api.js` §24 补断言） |

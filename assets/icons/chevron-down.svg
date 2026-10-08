@@ -1,0 +1,7 @@
+<!-- StabStab 界面图标：向下箭头（搜索面板「下一个命中」） -->
+<!-- 这是源文件：修改后应用即刻生效（由 src/components/Icon.jsx 通过 ?raw 导入） -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
+     fill="none" stroke="currentColor" stroke-width="1.75"
+     stroke-linecap="round" stroke-linejoin="round">
+    <path d="M6 9.5l6 6 6-6" />
+</svg>

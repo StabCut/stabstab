@@ -340,7 +340,7 @@ export default function UserMessage({ conv, msg }) {
   }
 
   return (
-    <div className="msg user">
+    <div className="msg user" data-msg-id={msg.id}>
       {imageMenu.menu && <ImageContextMenu menu={imageMenu.menu} onClose={imageMenu.closeMenu} />}
       <div className="msg-bubble user-bubble">
         {(msg.images && msg.images.length > 0) && (

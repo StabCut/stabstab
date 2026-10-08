@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useRef } from 'react';
 import { useApp, useActiveConversation, useToast } from '../lib/store.jsx';
 import { PROMPT_MESSAGES } from '../lib/promptReuse.jsx';
+import { useSearch } from '../lib/searchState.jsx';
 import UserMessage from './UserMessage.jsx';
 import AssistantMessage from './AssistantMessage.jsx';
 import Composer from './Composer.jsx';
@@ -22,6 +23,8 @@ export default function ChatView() {
   const { state, dispatch } = useApp();
   const conv = useActiveConversation();
   const toast = useToast();
+  // 搜索：待定位目标 + 用完即清的 consumeJump（定位与滚动抑制在第 2 / 3 步接上）
+  const { jump: searchJump, consumeJump } = useSearch();
   // 待复用提示词存在全局 store 里（见 lib/store.jsx 的 temporary），这里只读 + 清理
   const temporary = state.temporary;
 
@@ -136,11 +139,21 @@ export default function ChatView() {
           <EmptyState />
         ) : (
           <div className="message-list" ref={contentRef}>
-            {conv.messages.map((m) =>
-              m.role === 'user'
-                ? <UserMessage key={m.id} conv={conv} msg={m} />
-                : <AssistantMessage key={m.id} conv={conv} msg={m} />
-            )}
+            {conv.messages.map((m) => (
+              // 外层这层 div 只是「搜索定位」的抓手：ref 回调在目标消息挂上 DOM 的那一拍
+              // 清掉待定位意图（见 lib/searchState.jsx#consumeJump），第 2 / 3 步会在同一拍滚动过去。
+              <div
+                key={m.id}
+                className="msg-slot"
+                ref={(el) => {
+                  if (el && searchJump && searchJump.msgId === m.id) consumeJump(searchJump.seq);
+                }}
+              >
+                {m.role === 'user'
+                  ? <UserMessage conv={conv} msg={m} />
+                  : <AssistantMessage conv={conv} msg={m} />}
+              </div>
+            ))}
           </div>
         )}
       </div>
