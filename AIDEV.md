@@ -811,7 +811,12 @@ API 返回的文字都能命中，结果按命中处列出，点一下定位到�
    │    ★ 两者都必须**每批结果只落位一次**（term + gen 记账，见 searchState 的 gen）：
    │      只看词记账时，「清空输入框 → 再输一遍同一个词」不会重新落位，游标永远停在 0
    ├─ 滚动：等到 layout 阶段（mark 已落地）再 scrollIntoView({block:'center'})，一次到位
-   └─ 闪烁：目标那条加 .search-flash（CSS 动画 1.4s）；关掉搜索时立即清掉在飞的计时器
+   ├─ 闪烁：目标那条加 .search-flash（CSS 动画 1.4s）
+   └─ 收尾（跨标签跳转的两拍在这里闭环，漏了会「滚动看起来坏了」）：
+        · 目标消息挂上 DOM 时 ref 回调 consumeJump —— 清掉待定位意图；
+        · 目标**不存在**（被删 / 编辑重发删了旧回复）时兜底 consumeJump，
+          否则「定位期间不贴底」会一直生效，此后进任何标签都不再停到最新消息；
+        · 关掉搜索时也 consumeJump + 立刻清闪烁（不等 1.4s 计时器）
 [快捷键] App.jsx 的 window keydown：Ctrl/Cmd+F 打开面板；**焦点在 input/textarea/编辑框里时不抢**
    —— 应用内快捷键不进 lib/shortcuts.js 那套全局快捷键（那套只认 accelerator，且普通键必须带修饰键）
 ```
@@ -1380,7 +1385,7 @@ node dev-data/qa/meta-decode-check.js   # 元数据写入后仍可被真实解�
 node dev-data/qa/conv-reorder-test/build.mjs   # 侧栏拖动排序：先构建 bundle
 node_modules\.bin\electron dev-data\qa\conv-reorder-test\main.js  # …再用真实 DragEvent 序列跑断言 + 截图（含「拖起淡出 + 落点线」）
 node dev-data/qa/search-test.mjs        # 全局搜索纯逻辑：字段收集 / 拍平 / 扫描 / 片段 / 命中区间 / 上限（38 项）
-node_modules\.bin\electron dev-data\qa\search-dom-test.js  # 搜索面板真实窗口断言（50 项：面板 / 历史 / 定位 / 高亮 / 滚动抑制）+ 截图
+node_modules\.bin\electron dev-data\qa\search-dom-test.js  # 搜索面板真实窗口断言（57 项：面板 / 历史 / 定位 / 高亮 / 跨标签 / 滚动抑制 / 收尾）+ 截图
 ```
 
 `close-tray-test/run.js` 跑的是**真实主进程**（`electron/main.js`），只把「用户点标题栏 ×」换成窗口里的

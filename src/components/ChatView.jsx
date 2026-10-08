@@ -115,6 +115,8 @@ export default function ChatView() {
   const jumpSeq = searchJump ? searchJump.seq : 0;
   const curMsgId = currentHit ? currentHit.msgId : null;
   const curField = currentHit ? currentHit.fieldIndex : -1;
+  // 这一拍在渲染的消息（提前算出来：下面几个 effect 都要用，比如「目标还在不在」）
+  const convMessages = conv ? conv.messages : [];
 
   const scrollToMessage = (msgId) => {
     const box = scrollRef.current;
@@ -138,6 +140,18 @@ export default function ChatView() {
     }, 1400);
     return () => window.clearTimeout(t);
   }, [jumpSeq, curMsgId, curField, convId]);
+
+  /**
+   * 待定位意图的兜底清理：目标消息**已经不在这个会话里**（被删掉 / 编辑重发删了旧回复）
+   * 或整段会话被切走时，把它清掉。
+   *
+   * 为什么必须有：pending 还在的话，上面那个贴底 useLayoutEffect 会一直走「搜索定位期间不贴底」
+   * 的分支 —— 用户此后进任何标签都不再自动停到最新消息，看起来像「滚动坏了」。
+   */
+  useEffect(() => {
+    if (!searchJump) return;
+    if (!convMessages.some((m) => m.id === searchJump.msgId)) consumeJump(searchJump.seq);
+  }, [searchJump, convMessages, consumeJump]);
 
   /**
    * 图片解码会持续把内容撑高（§4.9 那个 ResizeObserver 的由来），目标可能因此漂出视野：
@@ -190,12 +204,15 @@ export default function ChatView() {
   }, [search.open, searchTerm, convId, currentHit, pageHit]);
 
   /**
-   * 关掉搜索时把闪烁标记清掉（开着的期间不清）：否则 1.4s 内关掉面板，那条消息要等到计时器
-   * 到点才会褪色，看起来像「关了搜索还留着痕迹」。
+   * 关掉搜索时：清掉待定位意图与闪烁标记（开着的期间不清）。
+   * 清 pending 是必须的 —— 否则「定位完 → 关面板 → 再切标签」时，待定位意图还在，
+   * 上面那条「搜索定位期间不贴底」会一直生效，新标签不再自动停在最新消息。
    */
   useEffect(() => {
-    if (!search.open || !searchTerm) setFlashId(null);
-  }, [search.open, searchTerm]);
+    if (search.open) return;
+    setFlashId(null);
+    if (searchJump) consumeJump(searchJump.seq);
+  }, [search.open, searchJump, consumeJump]);
 
   // 右上角文件夹按钮：打开数据目录下的 downloads（开发模式即 dev-data/downloads），
   // 与左下角标签栏底部「打开缓存目录」按钮区分开。
