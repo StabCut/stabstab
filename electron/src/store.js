@@ -10,11 +10,15 @@
  *   renameModel    { apiKey, baseUrl, modelId } 「重命名模型」：用 DeepSeek Responses API
  *                  把首条用户文字压成会话标签名；baseUrl/modelId 留空 = 用代码里的默认值
  *                  （默认地址 https://api.deepseek.com 写死在 electron/src/renameModel.js）
+ *   closeAction    '' | 'tray' | 'quit'  点窗口 × 时的行为（设置 → 基础设置 →「关闭窗口时」）。
+ *                  '' = 从未设置 → 按运行形态给默认值：开发模式直接退出、打包后最小化到托盘
+ *                  （判定口径见 electron/src/closeBehavior.js，主进程与界面共用同一套规则）。
  * 旧版（v1）的 api.apiKey/api.baseUrl/models/requestMode 会在启动时自动迁移，见 migrateLegacySettings。
  */
 const fs = require('fs');
 const path = require('path');
 const log = require('./logger');
+const closeBehavior = require('./closeBehavior');
 
 const APP_VERSION = 1;
 
@@ -25,6 +29,7 @@ const DEFAULT_SETTINGS = {
   compressEnabled: true,               // 图片自动压缩开关
   compressMaxMB: 10,                   // 超过该大小的图片自动压缩
   saveNamePromptChars: 5,              // 保存文件名取自提示词前 N 个字（0 = 不用提示词命名，见「高级设置」）
+  closeAction: '',                     // '' = 从未设置（跟随默认）| 'tray' 最小化到托盘 | 'quit' 直接退出
   modelGroups: [],                     // 见文件头注释
   sourceConfig: {},
   defaultModelId: '',
@@ -134,6 +139,8 @@ function normalizeModelGroups(settings, seriesConfig) {
     cfg[k] = { apiKey: String(v.apiKey || ''), baseUrl: String(v.baseUrl || '').trim() };
   }
   out.sourceConfig = cfg;
+  // 关闭窗口行为：只认 'tray' / 'quit'，其余（含从未设置的空值、手工改坏的值）一律回 '' = 跟随默认
+  out.closeAction = closeBehavior.normalizeCloseAction(out.closeAction);
   // 重命名模型：只保留三个字符串字段（缺省 = 用代码里的默认地址 / 默认模型）
   const rm = (out.renameModel && typeof out.renameModel === 'object') ? out.renameModel : {};
   out.renameModel = {

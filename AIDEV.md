@@ -54,6 +54,9 @@ settings.json（用户数据：添加了哪些系列、系列里有哪些模型�
   （Windows = `%APPDATA%\StabStab\stabstab-data`，Linux = `~/.config/StabStab/stabstab-data`），
   便携包落在 exe 同级，开发模式落在项目内 `dev-data/` —— **覆盖安装/卸载重装都不丢配置**，见 §5.6；
   内置模型系列配置同步落地一份到 `<dataRoot>/model-series.json`，可手工编辑。
+- **关闭窗口行为可选（设置 → 基础设置 →「关闭窗口时」）**：`直接退出程序` 或 `最小化到托盘`（隐藏窗口、进程继续跑）。
+  **从未设置过**时按运行形态给默认值：`npm run dev`（未打包）→ 直接退出程序；打包后（安装版 / 便携版）→ 最小化到托盘。
+  规则实现在 `electron/src/closeBehavior.js`，见 §4.15。
 
 **技术栈**：Electron 43（Node 22 内核）、React 19、Vite 8、electron-builder 26。
 主进程为 **纯 CommonJS（无构建）**，渲染进程由 Vite 打包为静态资源。
@@ -75,6 +78,7 @@ stabstab/
 │       ├── paths.js                   # ★ 数据根目录解析（用户目录 / 便携 exe 同级 / dev-data）+ 旧数据迁移，见 §5.6
 │       ├── logger.js                  # 文件日志 <data>/log/app-YYYYMMDD.log
 │       ├── store.js                   # settings.json / conversations.json 原子读写 + 旧结构迁移
+│       ├── closeBehavior.js           # ★ 关闭窗口行为（直接退出 / 最小化到托盘）的取值规整 + 默认值规则（纯函数）
 │       ├── modelSeries.js             # ★ 模型系列配置读写与解析（resolveModel = 发请求的权威口径）
 │       ├── renameModel.js             # ★ 重命名模型：rename-model.json 读写 + DeepSeek Responses API 调用
 │       ├── imageutil.js               # PNG/JPEG/GIF/WEBP 尺寸嗅探、缓存下载（含 data:base64 结果）
@@ -648,10 +652,62 @@ isGenerating = waitingJobs(state, convId) 非空（busy 里有任意 jobId）
 - 样式（`app.css`）：`.msg-model` 单行 + 省略号（`max-width: 260px`），靠 `.msg-meta.has-model` 变成
   `flex` + `align-items: baseline` 右对齐贴住时间；`title` 里带系列 / 来源，长模型名悬停可看全。
 
+### 4.15 关闭窗口行为：直接退出程序 / 最小化到托盘
+
+点标题栏 × 时做什么，由**设置 → 基础设置 →「关闭窗口时」**（`settings.closeAction`）决定。
+规则集中在一个纯函数模块里（主进程与界面同口径）：`electron/src/closeBehavior.js`。
+
+```
+settings.closeAction                      'tray' | 'quit' | ''（'' = 从未设置）
+   └─ closeBehavior.resolveCloseAction(settings, app.isPackaged)
+        ├─ 有显式设置 → 一律按用户的设置走（开发模式选了托盘也真的进托盘）
+        └─ ''        → 按运行形态给默认值：
+              · 开发模式（npm run dev，app.isPackaged === false）→ 'quit'   ← 调试时点 × 就该直接关掉
+              · 打包后（安装版 / 便携版）                          → 'tray'   ← 关窗口不打断后台任务
+[main.js] win.on('close')
+   ├─ action === 'tray' → ensureTray()（首次用到才建托盘）
+   ├─ closeBehavior.shouldHideOnClose({isQuitting, closeAction, trayAvailable}) 为真
+   │     → e.preventDefault() + win.hide()：**只是隐藏窗口，进程继续跑**
+   │        （正在等待的生成请求照常返回；**不发系统通知**，托盘图标本身就是「还在后台运行」的说明）
+   └─ 否则放行 = 真关窗口 → window-all-closed → app.quit()
+[托盘图标] 单击 / 双击 / 菜单「显示主界面」→ showMainWindow()（最小化就还原、隐藏就显示、已销毁就重建）
+         菜单「退出程序」                      → quitApp()：isQuitting = true + app.quit()
+[生命周期] before-quit → isQuitting = true（此后 close 不再被拦）+ destroyTray() + runner.cancelAll()
+         second-instance / macOS activate → showMainWindow()（隐藏到托盘时再点图标 / 再启动一次都能唤回）
+```
+
+- **`isQuitting` 是唯一的「正在退出」开关**：托盘菜单「退出程序」、系统关机（`session-end`，仅 Windows）、
+  任何 `app.quit()` 都会先立起它 —— 不立的话 `close` 会把退出拦成隐藏，程序就永远退不掉。
+- **托盘建不出来时绝不隐藏**（`trayAvailable === false` → 放行真关）：Linux 没有托盘宿主 / 图标读取失败时，
+  窗口一旦藏起来就再没有入口把它叫回来，等于制造一个看不见的僵尸进程。这条是 `shouldHideOnClose` 里的安全底线，不要删。
+- **设置改完立即生效**：`state:save`（以及导入配置）之后主进程都会 `syncTrayWithSettings()` ——
+  改成托盘就挂上图标，改回直接退出就撤掉图标；不必重启。`window-all-closed` 在托盘模式下不退出
+  （窗口异常销毁但托盘还在时，退出只交给托盘菜单）。
+- **托盘模式下进程一直活着**：请求、轮询、日志、防抖落盘都照常；只有托盘菜单「退出程序」才会走
+  `before-quit`（→ `runner.cancelAll()`，正在等待的请求按中断处理）。
+- 图标复用 `electron/assets/icon.png`（随包打进 asar），运行时按平台缩到 16px（Windows）/ 18px（macOS 菜单栏）。
+- **隐藏到托盘时不发任何系统通知 / 气泡提示**（用户明确点 × 就是不想被打断，再弹一条属于打扰）；同理不要加「首次隐藏提示」
+  之类的弹窗 —— 唤起入口只有托盘图标与它的右键菜单。
+- **开发模式默认不建托盘**（默认行为就是直接退出），所以调试时行为与以前完全一致。
+- 回归：`node dev-data/qa/close-behavior-test.js`（纯逻辑 15 项）+ `node dev-data/qa/close-tray-test/run.js`
+  （真实主进程 + 真实关窗：案例 A 直接退出、案例 B 隐藏到托盘且之后仍能真退出），见 §9.3。
+
+### 4.16 设置弹窗高度固定（不随页面内容变化）
+
+设置弹窗的高度是**固定值**：`src/styles/app.css` 里 `.settings-modal { height: 86vh; }`（= `.modal` 的上限 86vh）。
+
+- 目的：在「模型设置 / 重命名模型 / 基础设置 / 高级设置 / 数据管理」之间切换时，弹窗**不再忽高忽低**
+  （以前只有 `max-height`，内容一变高度就跟着变）。内容比内容区高的页面由 `.settings-content` 自己出下拉条，
+  内容矮的页面留白 —— 高度只跟窗口大小有关，与内容多少无关。
+- 布局链：`.modal`（column）→ `.settings-body`（`flex: 1; min-height: 0`）→ `.settings-content`（`flex: 1; overflow-y: auto`）；
+  这三层是「固定高度 + 内容区滚动」成立的前提，不要去掉 `min-height: 0`。
+- 改回 `height: auto` / 只留 `max-height` 就等于恢复「切页高度乱跳」，别改。
+- 回归：`node_modules\.bin\electron dev-data\qa\settings-height-test.js`（在隐藏窗口里量 6 个页面的弹窗高度：
+  必须都 = 视口的 86%，且长内容页面自己在滚动），见 §9.3。
+
 ---
 
 ## 5. 持久化数据结构（Schema）
-
 ### 5.1 `settings.json`
 
 ```jsonc
@@ -661,6 +717,8 @@ isGenerating = waitingJobs(state, convId) 非空（busy 里有任意 jobId）
   "requestTimeoutSec": 300,     // 单次请求超时（秒）
   "compressEnabled": true,      // 图片自动压缩开关
   "compressMaxMB": 10,          // 超过该大小自动压缩
+  "closeAction": "",            // 点窗口 × 时的行为："" = 从未设置（跟随默认）| "tray" 最小化到托盘 | "quit" 直接退出
+                                //   默认值：开发模式（未打包）= quit，打包后 = tray（见 §4.15 / closeBehavior.js）
   "modelGroups": [              // 已添加的模型系列（隐藏的系列不在这里）
     {
       "seriesId": "qwen",       // 对应 model-series.json 里的 series[].id
@@ -975,6 +1033,15 @@ ss-export/
 33. **用户气泡的模型标签只读 `msg.model`**：显示的是**这条消息当时真正用的模型名**（`send.js#modelRef` 写入），
     不得在渲染时按当前设置反查 / 回填 —— 模型被改名或删掉后，历史气泡仍要显示当时的名字；
     老数据没有 `msg.model` 时只显示时间，不留空位。见 §4.14。
+34. **关闭窗口行为只有一处判定**：`electron/src/closeBehavior.js`（`resolveCloseAction` / `shouldHideOnClose`，纯函数）——
+    用户设置 `settings.closeAction`（`'tray' | 'quit' | ''`）**优先**，`''` 才按 `app.isPackaged` 给默认值
+    （开发模式 `quit` / 打包后 `tray`）；**不得**在别处再写一套「开发模式就退出」的判断，也不得把该判定搬到渲染进程。
+    `close` 事件只有「`isQuitting` 为假 **且** 生效行为 = tray **且** 托盘可用」三者同时成立才能拦成隐藏
+    （托盘建不出来必须放行真关，否则窗口藏进虚空）；托盘菜单「退出程序」/ `app.quit()` / 系统关机都必须能真退出。
+    设置改完要立即 `syncTrayWithSettings()`（改回直接退出就撤掉托盘），见 §4.15。
+35. **设置弹窗高度固定**：`.settings-modal` 必须是固定高度（`height: 86vh`，见 §4.16），
+    **不得**改回 `height: auto` / 只给 `max-height` —— 那会让切换设置页时弹窗高度随内容乱跳；
+    内容高于内容区的页面由 `.settings-content` 自己滚动（保持 `.settings-body` 的 `min-height: 0`）。
 
 ---
 
@@ -1075,7 +1142,7 @@ module.exports = {
 无需 GUI，用本地 HTTP 服务模拟各家接口即可验证 runner 的同步 / 错误 / 取消 / **并发隔离** 全链路 + 各协议解析：
 
 ```bash
-npm run test:api      # 即 node scripts/test-api.js（当前 297 项断言，含模型系列 / 设置迁移 / 重命名模型 / 图片提示词元数据 + 输入图文件名 picN / ZIP 打包解包 / 导出导入合并）
+npm run test:api      # 即 node scripts/test-api.js（当前 307 项断言，含模型系列 / 设置迁移 / 重命名模型 / 图片提示词元数据 + 输入图文件名 picN / ZIP 打包解包 / 导出导入合并 / 关闭窗口行为）
 ```
 
 该脚本自包含：内置一张 16x16 PNG（校验尺寸嗅探 / b64 结果落盘）、临时目录自动清理。可直接参考或扩展。
@@ -1147,7 +1214,10 @@ Get-Content dev-data\log\app-<日期>.log -Tail 20 # 应能看到「渲染进程
 `dev-data/qa/`（gitignore，不进仓库）里有几个 esbuild + 无头 Chrome 的脚本，用**真实组件 / 真实代码 + 真实 app.css** 出图或断言：
 
 ```bash
-node dev-data/qa/settings-preview.mjs   # 设置弹窗：空态 / 多系列 / 高级设置 / 重命名模型，亮暗两套
+node dev-data/qa/settings-preview.mjs   # 设置弹窗：空态 / 多系列 / 高级设置 / 基础设置（关闭窗口时）/ 重命名模型，亮暗两套
+node dev-data/qa/settings-height-test.js # 设置弹窗高度固定：隐藏窗口里量 6 个页面（都 = 视口 86%、长内容页自己在滚动），electron 跑
+node dev-data/qa/close-behavior-test.js # 关闭窗口行为纯逻辑（取值规整 / 默认值 / 是否拦截 close / settings 规整，15 项）
+node dev-data/qa/close-tray-test/run.js # 关闭窗口真机行为（真实主进程 + 真实关窗：直接退出 / 隐藏到托盘），electron 跑
 node dev-data/qa/composer-preview.mjs   # 输入区 + 各协议参数面板
 node dev-data/qa/title-test.mjs         # 标签自动命名：触发时机 / 回退 / reducer 守卫（22 项断言）
 node dev-data/qa/promptdrop-preview.mjs # 全窗口解析分区 / 插入·复制 / 图片提示词弹窗，亮暗两套（分 base/overlay/modal 三层出图）
@@ -1158,6 +1228,14 @@ node dev-data/qa/meta-decode-check.js   # 元数据写入后仍可被真实解�
 node dev-data/qa/conv-reorder-test/build.mjs   # 侧栏拖动排序：先构建 bundle
 node_modules\.bin\electron dev-data\qa\conv-reorder-test\main.js  # …再用真实 DragEvent 序列跑断言 + 截图（含「拖起淡出 + 落点线」）
 ```
+
+`close-tray-test/run.js` 跑的是**真实主进程**（`electron/main.js`），只把「用户点标题栏 ×」换成窗口里的
+`win.close()`：案例 A（`closeAction` 为空 + 未打包）断言进程自己退出、日志没有建托盘；案例 B（`closeAction='tray'`）
+断言窗口被隐藏、进程仍活着，最后 `app.quit()`（= 托盘菜单「退出程序」）能真退出。两个坑：入口脚本会被临时复制到
+**项目根**再跑（`app.getAppPath()` = 入口所在目录，它决定开发模式 `dev-data/` 的位置；放子目录里测的就不是真实数据目录了），
+以及**跑之前先确认没有别的 StabStab/electron 实例**（`requestSingleInstanceLock` 会让第二个进程直接退出）；
+脚本会备份并还原 `dev-data/settings.json`。`settings-height-test.js` 直接在隐藏 `BrowserWindow` 里
+`executeJavaScript` 量 `.settings-modal` 的高度（先加载 `about:blank` 等窗口尺寸落定，否则第一页会量到还没稳定的视口）。
 
 `picname-flow-test.js` 用真实 `dist/index.html` + 真实 `lib/send.js`，只把 `api:generate` 换成捕获桩：
 模拟「拖入 `图片.png` + `参考图.jpg` → 输入「改为黑白」→ 发送」，断言前端发出的 `imageNames` 就是
@@ -1208,6 +1286,8 @@ node_modules\.bin\electron dev-data\qa\conv-reorder-test\main.js  # …再用真
 | 改聊天区滚动 / 「进入标签停在最后一条消息」 | `src/components/ChatView.jsx` 的 `useLayoutEffect [convId,msgCount,tailId]` + `ResizeObserver(.message-list)` + `onScroll`（见 §4.9；不要改成只在挂载时贴一次底） |
 | 改解析失败文案 | `src/lib/promptReuse.jsx` 的 `PROMPT_MESSAGES` / `promptErrorText`（区分不支持 / 未找到 / 损坏 / 读取失败） |
 | 改持久化字段默认值 | `electron/src/store.js` 的 `DEFAULT_SETTINGS` / `DEFAULT_CONVERSATIONS` |
+| 改「关闭窗口」行为（默认值 / 托盘菜单 / 提示） | `electron/src/closeBehavior.js`（唯一判定）+ `electron/main.js` 的 `ensureTray` / `createWindow` 的 `win.on('close')` / `hideToTray` / `syncTrayWithSettings` + 设置页 `src/components/SettingsModal.jsx` 基础设置页（见 §4.15） |
+| 改设置弹窗高度 / 切页高度乱跳 | `src/styles/app.css` 的 `.settings-modal`（固定 `height: 86vh`）+ `.settings-body` / `.settings-content` 的滚动链（见 §4.16） |
 | 改导出 / 导入的包名或包内协议 | `electron/src/dataTransfer.js` 顶部常量（`EXPORT_PREFIX` / `ROOT_DIR` / `FORMAT` / `FORMAT_VERSION` / `MEDIA_DIRS`）+ `zipNameFor` / `parseZipName` / `inspectDir`（见 §5.7） |
 | 改导入的合并规则 | `electron/src/dataTransfer.js` 的 `mergeImport` / `mergeModelGroups` / `mergeConversations` / `mergeSourceConfig` / `mergeRenameConfig`（纯函数，改完在 `scripts/test-api.js` §24 补断言） |
 | 改 ZIP 打包 / 解包实现 | `electron/src/zip.js`（唯一实现：`writeZip` / `listZip` / `extractAll`；保持零第三方依赖） |

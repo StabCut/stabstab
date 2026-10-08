@@ -1254,6 +1254,42 @@ async function main() {
       '导入的模型属于本机已隐藏的系列时：自动新增分组并把该系列从隐藏里放出来');
   }
 
+  // ================= [25] 关闭窗口行为（直接退出 / 最小化到托盘） =================
+  // 权威口径在 electron/src/closeBehavior.js（纯函数，主进程与界面共用）；见 AIDEV.md §4.15
+  {
+    console.log('\n[25] 关闭窗口行为（直接退出 / 最小化到托盘）');
+    const cb = require(path.join(ROOT, 'electron/src/closeBehavior'));
+    const dt = require(path.join(ROOT, 'electron/src/dataTransfer'));
+
+    check(cb.normalizeCloseAction('  TRAY ') === 'tray' && cb.normalizeCloseAction('乱写') === '' && cb.normalizeCloseAction(null) === '',
+      '取值规整：只认 tray / quit（忽略大小写与空格），其余一律回空串 = 跟随默认');
+    check(cb.resolveCloseAction({ closeAction: '' }, false) === 'quit', '开发模式（未打包）+ 从未设置 → 直接退出程序');
+    check(cb.resolveCloseAction({ closeAction: '' }, true) === 'tray', '打包后（安装版 / 便携版）+ 从未设置 → 最小化到托盘');
+    check(cb.resolveCloseAction({ closeAction: 'tray' }, false) === 'tray' && cb.resolveCloseAction({ closeAction: 'quit' }, true) === 'quit',
+      '用户的显式设置优先于默认值（开发模式选托盘也真的进托盘）');
+    check(cb.shouldHideOnClose({ isQuitting: false, closeAction: 'tray', trayAvailable: true }) === true
+      && cb.shouldHideOnClose({ isQuitting: true, closeAction: 'tray', trayAvailable: true }) === false,
+      '关闭拦截：托盘模式下把 close 拦成隐藏，但「正在退出」一律放行');
+    check(cb.shouldHideOnClose({ isQuitting: false, closeAction: 'quit', trayAvailable: true }) === false
+      && cb.shouldHideOnClose({ isQuitting: false, closeAction: 'tray', trayAvailable: false }) === false,
+      '关闭拦截：直接退出 / 托盘建不出来时都必须放行真关（否则窗口藏进虚空、无法唤回）');
+
+    check(store.DEFAULT_SETTINGS.closeAction === '' && store.normalizeModelGroups({ closeAction: '乱写' }, { series: [] }).closeAction === '',
+      'settings 规整：默认值为空（跟随默认），脏值被清成空串');
+    check(store.normalizeModelGroups({ closeAction: 'TRAY' }, { series: [] }).closeAction === 'tray', 'settings 规整：合法值（含大小写）原样保留');
+
+    const caImport = dt.mergeImport({
+      current: { settings: { ...store.DEFAULT_SETTINGS }, modelSeries: { series: [] }, renameConfig: {}, conversations: { conversations: [] } },
+      imported: { settings: { closeAction: 'quit' }, modelSeries: { series: [] }, conversations: { conversations: [] } }
+    });
+    check(caImport.settings.closeAction === 'quit', '导入：closeAction 按导入值更新');
+    const caKeep = dt.mergeImport({
+      current: { settings: { ...store.DEFAULT_SETTINGS, closeAction: 'tray' }, modelSeries: { series: [] }, renameConfig: {}, conversations: { conversations: [] } },
+      imported: { settings: { closeAction: '' }, modelSeries: { series: [] }, conversations: { conversations: [] } }
+    });
+    check(caKeep.settings.closeAction === 'tray', '导入：导入包里的「跟随默认」（空值）不覆盖本机已有的选择');
+  }
+
   console.log(`\n========== 结果: ${pass} 通过, ${fail} 失败 ==========`);
   server.close();
   runner.cancelAll();

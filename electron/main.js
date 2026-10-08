@@ -2,11 +2,13 @@
 /*
  * StabStab —— Electron 主进程入口
  * - 隐藏默认菜单栏（文件/编辑…），保留系统标题栏的最小化/最大化/关闭按钮
+ * - 关闭窗口行为可选：直接退出程序 / 最小化到托盘（点 × 只隐藏窗口、进程继续跑）
+ *   —— 用户设置优先，未设置时开发模式直接退出、打包后最小化到托盘（见 src/closeBehavior.js）
  * - 数据目录：可执行文件同级 stabstab-data/（不可写时回退用户目录）
  * - 自定义协议 appfile:// 提供本地图片（缓存/附件）给渲染进程
  * - 全部 IPC 服务：设置、会话、生成请求、对话框、剪贴板、日志
  */
-const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, nativeImage, nativeTheme, Menu, protocol, net } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, nativeImage, nativeTheme, Menu, Tray, protocol, net } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const { pathToFileURL } = require('url');
@@ -14,6 +16,7 @@ const { pathToFileURL } = require('url');
 const { getPaths } = require('./src/paths');
 const log = require('./src/logger');
 const store = require('./src/store');
+const closeBehavior = require('./src/closeBehavior');
 const modelSeriesLib = require('./src/modelSeries');
 const renameModel = require('./src/renameModel');
 const registry = require('./src/api/registry');
@@ -57,6 +60,8 @@ if (process.platform === 'linux') {
 }
 
 let win = null;
+let tray = null;            // 托盘图标（只在「最小化到托盘」时创建，见下面的 ensureTray）
+let isQuitting = false;     // 正在退出（托盘菜单「退出程序」/ 系统关机 / app.quit）：close 事件不再拦截
 let PATHS = null;
 let settings = null;
 let modelSeries = null;     // 内置模型系列配置（含来源 / 默认地址 / 尺寸；只有同步一种请求模式）
@@ -291,6 +296,73 @@ function normalizeConversationsOnStartup() {
   }
 }
 
+// ---------- 关闭窗口：直接退出 / 最小化到托盘 ----------
+// 生效行为由 electron/src/closeBehavior.js 决定（用户设置优先，未设置时按是否打包给默认值）。
+// 「最小化到托盘」= 只是 win.hide()，**进程继续在后台运行**（正在等待的生成请求照常出结果），
+// 入口在托盘图标：单击 / 双击 / 菜单「显示主界面」都能把窗口叫回来，菜单「退出程序」才是真退出。
+/** 按当前设置让托盘图标存在（要托盘）/ 撤掉（不要托盘）；设置页改完立即生效，不必重启 */
+function syncTrayWithSettings() {
+  if (closeBehavior.resolveCloseAction(settings, app.isPackaged) === 'tray') ensureTray();
+  else destroyTray();
+}
+
+/** 创建托盘图标（已存在则直接返回）。失败返回 null —— 调用方据此退回「真关窗口」，不让窗口藏进虚空 */
+function ensureTray() {
+  if (tray && !tray.isDestroyed()) return tray;
+  try {
+    const iconPath = path.join(__dirname, 'assets', 'icon.png');
+    let image = nativeImage.createFromPath(iconPath);
+    if (image.isEmpty()) throw new Error('托盘图标读取失败');
+    // 托盘图标要小：Windows 16px（高 DPI 由系统放大）、macOS 菜单栏 18px
+    image = image.resize({ width: process.platform === 'darwin' ? 18 : 16, height: process.platform === 'darwin' ? 18 : 16, quality: 'best' });
+    tray = new Tray(image);
+    tray.setToolTip(`${APP_NAME} —— 仍在后台运行`);
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: '显示主界面', click: () => showMainWindow() },
+      { type: 'separator' },
+      { label: '退出程序', click: () => quitApp() }
+    ]));
+    tray.on('click', () => showMainWindow());
+    tray.on('double-click', () => showMainWindow());
+    log.info('托盘图标已就绪（关闭窗口将最小化到托盘）', { platform: process.platform });
+    return tray;
+  } catch (e) {
+    tray = null;
+    log.warn('创建托盘图标失败，关闭窗口将直接退出程序', { error: e && e.message });
+    return null;
+  }
+}
+
+function destroyTray() {
+  if (!tray || tray.isDestroyed()) { tray = null; return; }
+  try { tray.destroy(); } catch (e) { /* 已经被系统回收，忽略 */ }
+  tray = null;
+  log.info('托盘图标已移除（关闭窗口将直接退出程序）');
+}
+
+/** 把窗口叫回来（托盘点击 / 第二实例 / macOS 点 Dock）：最小化就还原、隐藏就显示、已销毁就重建 */
+function showMainWindow() {
+  if (!win || win.isDestroyed()) { createWindow(); return; }
+  if (win.isMinimized()) win.restore();
+  if (!win.isVisible()) win.show();
+  win.focus();
+}
+
+/** 真正退出程序（托盘菜单「退出程序」）：先把 isQuitting 立起来，close 事件才不会被拦成隐藏 */
+function quitApp() {
+  isQuitting = true;
+  app.quit();
+}
+
+/**
+ * 隐藏到托盘（**不发系统通知**：点 × 是用户的明确操作，再弹一条通知属于打扰；
+ * 托盘图标与它的右键菜单已经足够说明「程序还在后台运行」）。
+ */
+function hideToTray() {
+  win.hide();
+  log.info('窗口已最小化到托盘，进程继续在后台运行');
+}
+
 // ---------- 窗口 ----------
 function createWindow() {
   // 运行时窗口图标使用打包进 asar 的 electron/assets/icon.png
@@ -317,6 +389,22 @@ function createWindow() {
   Menu.setApplicationMenu(null);
 
   win.once('ready-to-show', () => win.show());
+
+  // 点标题栏 × 的去向（见 electron/src/closeBehavior.js）：
+  //   · 生效行为 = 'tray' 且托盘可用 → 拦下来，只隐藏窗口，进程继续跑
+  //   · 其余情况（用户选了「直接退出程序」/ 开发模式默认 / 正在退出 / 托盘建不出来）→ 放行 = 真关
+  win.on('close', (e) => {
+    const action = closeBehavior.resolveCloseAction(settings, app.isPackaged);
+    if (action === 'tray') ensureTray();          // 首次用到才建托盘（开发模式默认直接退出，不必建）
+    const hide = closeBehavior.shouldHideOnClose({ isQuitting, closeAction: action, trayAvailable: !!tray });
+    if (!hide) {
+      log.info('窗口关闭：直接退出程序', { action, quitting: isQuitting, tray: !!tray });
+      if (action !== 'tray' && tray) destroyTray();  // 用户改回「直接退出」后，托盘图标一并撤掉
+      return;
+    }
+    e.preventDefault();
+    hideToTray();
+  });
   win.on('closed', () => { win = null; });
 
   // 诊断：渲染进程异常退出 / 页面加载失败（沙箱被拦截时可据此定位）
@@ -428,6 +516,8 @@ function registerIpc() {
         settings = store.normalizeModelGroups({ ...settings, ...payload.settings }, modelSeries);
         store.saveSettings(PATHS.settings, settings);
         nativeTheme.themeSource = settings.theme === 'system' ? 'system' : (settings.theme === 'dark' ? 'dark' : 'light');
+        // 关闭窗口行为可能刚被改过：立即让托盘图标与之对齐（改完就生效，不必重启）
+        syncTrayWithSettings();
       }
       if (payload && payload.modelSeries) {
         // 只允许改「隐藏哪些系列」以及自定义系列，内置结构由 merge 保证不被破坏
@@ -701,6 +791,7 @@ function registerIpc() {
       renameConfig = nextRename;
       conversations = r.merged.conversations;
       nativeTheme.themeSource = settings.theme === 'system' ? 'system' : (settings.theme === 'dark' ? 'dark' : 'light');
+      syncTrayWithSettings();   // 导入的设置里可能带着关闭窗口行为
     } catch (e) {
       log.error('导入失败：数据落盘出错', { error: e.message });
       return { ok: false, code: 'SAVE_FAILED', message: `导入数据写入失败：${e.message}` };
@@ -829,10 +920,8 @@ if (!gotLock) {
   app.quit();
 } else {
   app.on('second-instance', () => {
-    if (win) {
-      if (win.isMinimized()) win.restore();
-      win.focus();
-    }
+    // 再次启动 = 把已有窗口叫到前面（可能正最小化、或已经隐藏到托盘）
+    showMainWindow();
   });
 
   app.whenReady().then(() => {
@@ -858,19 +947,33 @@ if (!gotLock) {
 
     registerAppFileProtocol();
     registerIpc();
+    syncTrayWithSettings();     // 打包后默认行为是托盘：启动即把托盘图标挂上；开发模式默认直接退出，不建托盘
     createWindow();
 
     app.on('activate', () => {
+      // macOS 点 Dock：窗口没了就重建，隐藏着就叫回来
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
+      else showMainWindow();
     });
   });
 
   app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') app.quit();
+    if (process.platform === 'darwin') return;
+    // 托盘模式下窗口消失（异常销毁）但托盘还在：退出交给托盘菜单，别把托盘变成没人管的孤儿进程
+    if (!isQuitting && tray && closeBehavior.resolveCloseAction(settings, app.isPackaged) === 'tray') {
+      log.warn('窗口已不存在，但仍处于托盘模式：保留进程与托盘，等待托盘菜单退出');
+      return;
+    }
+    app.quit();
   });
 
+  // 系统关机 / 注销（仅 Windows）：必须放行窗口关闭，否则会拖住关机
+  app.on('session-end', () => { isQuitting = true; });
+
   app.on('before-quit', () => {
+    isQuitting = true;          // 先立标记：随后的 win close 事件才会真的关（不拦成隐藏）
     log.info('应用退出');
+    destroyTray();
     runner.cancelAll();
   });
 }

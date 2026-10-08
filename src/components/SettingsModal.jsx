@@ -26,6 +26,21 @@ const IMPORT_ERROR_LABEL = {
 
 const clone = (v) => JSON.parse(JSON.stringify(v));
 
+/**
+ * 关闭窗口行为的界面口径（**权威实现**在主进程 electron/src/closeBehavior.js，
+ * 这里只用来显示「跟随默认」的默认值文案与「当前生效」提示，两处规则必须一致）：
+ *   · 数据目录形态 kind = 'dev'（npm run dev，未打包）→ 直接退出程序
+ *   · 其余（'user' 安装版 / 'portable' 便携版，都是打包后运行）→ 最小化到托盘
+ */
+const defaultCloseAction = (paths) => ((paths && paths.kind === 'dev') ? 'quit' : 'tray');
+
+/** 「当前生效」文案：用户选过就报用户的选择，没选过就报默认值（并说明它来自默认） */
+const closeActionText = (closeAction, fallback) => {
+  const v = closeAction === 'tray' || closeAction === 'quit' ? closeAction : '';
+  const label = (x) => (x === 'tray' ? '最小化到托盘' : '直接退出程序');
+  return v ? `${label(v)}（已设置）` : `${label(fallback)}（跟随默认）`;
+};
+
 export default function SettingsModal({ initialTab = 'model' }) {
   const { state, dispatch, flushSave } = useApp();
   const toast = useToast();
@@ -48,6 +63,7 @@ export default function SettingsModal({ initialTab = 'model' }) {
 
   const seriesList = draftSeries.series || [];
   const groups = draft.modelGroups || [];
+  const defaultClose = defaultCloseAction(state.paths);   // 基础设置：「关闭窗口时」的默认值
 
   const addedSeries = useMemo(
     () => seriesList.filter((s) => groups.some((g) => g.seriesId === s.id)),
@@ -243,6 +259,8 @@ export default function SettingsModal({ initialTab = 'model' }) {
     cleaned.compressMaxMB = Math.min(100, Math.max(0.5, Number(cleaned.compressMaxMB) || 10));
     // 保存文件名取自提示词前 N 个字：0 = 关闭（始终用原文件名）
     cleaned.saveNamePromptChars = Math.min(50, Math.max(0, Math.round(Number(cleaned.saveNamePromptChars) || 0)));
+    // 关闭窗口行为：只认 'tray' / 'quit'，其余（含从未设置）一律回 '' = 跟随默认（主进程同口径，见 closeBehavior.js）
+    cleaned.closeAction = (cleaned.closeAction === 'tray' || cleaned.closeAction === 'quit') ? cleaned.closeAction : '';
     // 重命名模型：三个字段都是字符串，留空 = 用代码里的默认地址 / 默认模型
     const rm = cleaned.renameModel || {};
     cleaned.renameModel = {
@@ -283,6 +301,7 @@ export default function SettingsModal({ initialTab = 'model' }) {
     window.stab.log('info', '设置已更新', {
       theme: cleaned.theme, timeout: cleaned.requestTimeoutSec,
       compress: cleaned.compressEnabled, maxMB: cleaned.compressMaxMB,
+      closeAction: cleaned.closeAction || `默认(${defaultClose})`,
       series: cleaned.modelGroups.map((g) => `${g.seriesId}:${g.models.length}`).join(','),
       models: allModels.length,
       defaultModel: cleaned.defaultModelId,
@@ -600,6 +619,24 @@ export default function SettingsModal({ initialTab = 'model' }) {
                     <option value="dark">黑暗模式</option>
                     <option value="system">跟随系统</option>
                   </select>
+                </div>
+
+                <div className="field">
+                  <label>关闭窗口时</label>
+                  <select value={draft.closeAction || ''} onChange={(e) => set({ closeAction: e.target.value })}>
+                    <option value="">跟随默认（{defaultClose === 'tray' ? '最小化到托盘' : '直接退出程序'}）</option>
+                    <option value="tray">最小化到托盘（后台继续运行）</option>
+                    <option value="quit">直接退出程序</option>
+                  </select>
+                  <p className="field-hint">
+                    「最小化到托盘」= 点 × 只是隐藏窗口：进程继续在后台运行，正在等待的生成请求不会中断；
+                    单击托盘图标（或右键菜单「显示主界面」）即可唤回窗口，要彻底退出用托盘菜单里的「退出程序」。
+                  </p>
+                  <p className="field-hint">
+                    默认（从未设置过）按运行方式决定：<b>开发模式（npm run dev）直接退出程序</b>，
+                    <b>打包后的安装版 / 便携版最小化到托盘</b>；这里选了之后一律按你的选择走。
+                    当前生效：{closeActionText(draft.closeAction, defaultClose)}。
+                  </p>
                 </div>
 
                 <div className="field">

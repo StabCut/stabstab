@@ -60,7 +60,7 @@ const ZIP_NAME_RE = /^ss-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})\.zip$/i;
 const ROOT_ALLOWED = new Set([MANIFEST_FILE, SETTINGS_FILE, CONVERSATIONS_FILE, SERIES_FILE, RENAME_FILE, ...MEDIA_DIRS]);
 const MEDIA_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.tiff']);
 /** 「选项类」设置：按导入的值改动（见文件头合并规则） */
-const OPTION_KEYS = ['theme', 'requestTimeoutSec', 'compressEnabled', 'compressMaxMB', 'saveNamePromptChars'];
+const OPTION_KEYS = ['theme', 'requestTimeoutSec', 'compressEnabled', 'compressMaxMB', 'saveNamePromptChars', 'closeAction'];
 
 const clone = (v) => JSON.parse(JSON.stringify(v));
 const pad2 = (n) => String(n).padStart(2, '0');

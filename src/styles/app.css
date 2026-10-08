@@ -681,7 +681,13 @@ body.modal-resizing * { user-select: none !important; }
 .field-inline input::placeholder { color: var(--text-dim); }
 
 /* ---- 模型设置：模型系列卡片 ---- */
-.settings-modal { width: 880px; }
+.settings-modal {
+  width: 880px;
+  /* 高度固定（= .modal 的上限 86vh）：切换「模型 / 重命名模型 / 基础 / 高级 / 数据管理」页时
+     弹窗不再随内容多少忽高忽低（内容比它高的页出下拉条，比它矮的页留白）。
+     不要再改回 height:auto / 只给 max-height —— 那正是「切页时窗口高度乱跳」的原因。 */
+  height: 86vh;
+}
 .settings-content code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px; background: var(--bg-input); border: 1px solid var(--border);
