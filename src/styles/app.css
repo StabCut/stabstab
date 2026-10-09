@@ -119,6 +119,13 @@ button { cursor: pointer; }
 .icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .icon-btn:disabled:hover { background: transparent; color: var(--text-dim); }
 
+/* 同样的「正在处理」观感，但按钮**仍可点** —— 用户气泡的两个发送按钮用它：
+   普通点击会被逻辑挡住（不会重复发请求），而按住 Ctrl / Shift 的「只复制到输入框」照常生效。
+   所以这里给的是禁用**外观**（.icon-btn:disabled 的一套值），不是真的 disabled 属性。 */
+.icon-btn.is-pending { opacity: 0.4; cursor: progress; }
+.icon-btn.is-pending:hover { background: transparent; color: var(--text-dim); }
+.icon-btn.is-pending:active { background: transparent; }
+
 .primary-btn {
   background: var(--accent); color: #fff; border: none;
   padding: 9px 14px; border-radius: var(--radius); font-weight: 600;

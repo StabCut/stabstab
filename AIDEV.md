@@ -107,9 +107,9 @@ stabstab/
 │   ├── components/
 │   │   ├── Sidebar.jsx                # 左侧：Logo、新建、会话列表（含后台状态圆点，见 §4.8；拖动排序见 §4.11）、重命名/删除、底部操作
 │   │   ├── ChatView.jsx               # 主区：头部（插入·复制临时按钮）、消息列表（进入标签贴底，见 §4.9）、空态、输入框
-│   │   ├── UserMessage.jsx            # 用户气泡：文本/图片、底部「模型名 + 时间」（见 §4.14）、新对话发送·当前对话发送（见 §4.13）、编辑重发、编辑气泡补图（粘贴/拖入/＋，见 §4.7.1）、复制、删除
+│   │   ├── UserMessage.jsx            # 用户气泡：文本/图片、底部「模型名 + 时间」（见 §4.14）、新对话发送·当前对话发送（普通点击 = 再发一遍；按住 Ctrl / Shift = 只复制到输入框，见 §4.13 / §4.13.1）、编辑重发、编辑气泡补图（粘贴/拖入/＋，见 §4.7.1）、复制、删除
 │   │   ├── AssistantMessage.jsx       # 助手气泡：结果图/错误/等待卡片（各自带「停止等待」，见 §4.12）
-│   │   ├── Composer.jsx               # 输入框：粘贴/拖入/多选、size/高级参数、发送（等待中也能发）/停止等待、附加提示词解析、逐标签草稿搬运
+│   │   ├── Composer.jsx               # 输入框：粘贴/拖入/多选、size/高级参数、发送（等待中也能发）/停止等待、附加提示词解析、逐标签草稿搬运、接收气泡拷来的草稿（见 §4.13.1）
 │   │   ├── SizePicker.jsx             # ★ 尺寸选择器：候选尺寸（sizeOptions）+ 末尾「自定义…」（两个数字 + 可点的 ×⇄: + 比例与方框示例，见 §4.10）
 │   │   ├── PromptDrop.jsx             # ★ 全窗口左右解析分区（曲线分隔）+ 「图片提示词」查看弹窗
 │   │   ├── SettingsModal.jsx          # 设置：模型 / 重命名模型 / 基础 / 高级 / 数据管理 五页（基础页含「全局快捷键」，见 §4.17）
@@ -125,6 +125,7 @@ stabstab/
 │       ├── title.js                   # ★ 会话标签自动命名（首条文字 → 重命名模型 → 回退截取）
 │       ├── send.js                    # 发送/重发公共逻辑（无上下文、消息配对、压缩、参数过滤、重发取哪套设置）
 │       ├── composerSelection.js        # ★ 输入区「当前模型 + 当前参数」的实时镜像（编辑重发据此发请求，见 §4.7）
+│       ├── composerDraft.js            # ★ 气泡内容 → 输入区草稿的过路通道：按住 Ctrl / Shift 点气泡按钮时按会话排队待落草稿（见 §4.13.1）
 │       ├── images.js                  # File→dataUrl、尺寸读取、按设置压缩
 │       └── util.js                    # uid/时间/字节/尺寸解析/appfile URL 构造
 ├── build/                             # 打包资源：icon.svg / icon.png / icon.ico
@@ -647,7 +648,39 @@ isGenerating = waitingJobs(state, convId) 非空（busy 里有任意 jobId）
   于是 `store.jsx#makeConversation(tabCounter)` 负责造对象与序号，`CONV_ADD` 只负责插到头部并激活。
 - **按钮顺序即需求**：`新对话发送 - 当前对话发送 - 复制 - 编辑 - 删除`；图标 `chatPlus` / `send`
   （`assets/icons/chat-plus.svg` / `send.svg`，新增图标要走 `npm run check:icons`）。
-- **防连点**：提交期间两个按钮 `disabled`（`.icon-btn:disabled` 置灰），避免同一次点击发出两遍。
+- **防连点**：提交期间两个按钮走 `.is-pending`（视觉置灰，但不是 `disabled`，理由见下一节）。
+
+### 4.13.1 按住 Ctrl / Shift 点击 = 只复制到输入框，不发送
+
+两个按钮在**按住修饰键**（`Ctrl` / `Cmd` / `Shift`，判定见 `lib/composerDraft.js#isCloneClick`）
+点击时换一条语义：**不发请求**，把这条气泡的文字 + 输入图**原封不动**拷进输入框，等用户自己改完再发。
+
+```
+[UserMessage] 按住 Ctrl / Shift 点击
+   ├─ contentOfMessage(msg)（lib/send.js）读取文字 + 输入图 → dataUrl
+   │     · 图文件已被清理的照片跳过，并在提示里报「另有 N 张已丢失」；文字照拷
+   │     · 文字与图都拿不到 → 提示「内容已经不可用」，什么都不做（不新建会话、不发请求）
+   ├─ 'current' → pushComposerDraft(当前会话, 内容) + announceComposerDraft(当前会话)
+   └─ 'new'     → makeConversation() → pushComposerDraft(新会话 id, 内容)
+                  → dispatch CONV_ADD（新标签立刻成为当前标签）→ announceComposerDraft(新会话 id)
+[Composer] 落地（两条路都走 applyDraft）
+   ├─ convId 变化时：takeComposerDraft(convId)（切换 effect 的下一拍）
+   └─ 同一拍广播：监听 window 的 'stabstab:bubble-draft'，convId 命中就当场认领
+[applyDraft] 算「输入区已有内容」而不是「用户正在打字」：silentTextRef 打上程序化写入标记，
+  不改动「待复用提示词」，也不作废进行中的解析（与「插入」同一套口径，见 §4.7.1）
+```
+
+- **为什么要有过路通道**：写的一方（`UserMessage`，消息列表里）与读的一方（`Composer`，底部）
+  之间隔着 `ChatView`，「新对话发送」那一支的目标还是**另一个**输入区 —— 一次性事件不够用。
+  于是 `lib/composerDraft.js` 存「按会话 id 排队的待落草稿」，谁（哪个标签的输入区）认领谁消费；
+  纯内存、进程内单例，超过 8 份时淘汰最旧的，不会无限增长。
+- **与草稿机制的关系**：拷进来的内容**就是**普通的输入区草稿 —— 切走标签再切回来还在（§4.6），
+  被删除标签时一并清掉，按发送后随 `CONV_DRAFT_DROP` 消费掉。
+- **与重发同一套设置口径**：克隆本身不带模型 / 尺寸 / 参数（它只是把内容放进输入框），
+  之后用户按发送时用的自然是**输入区当前设置**，与 §4.7 / §4.13 的重发口径一致。
+- **按钮样式**：`is-pending` 给的是「正在提交」的置灰观感，但**按钮仍可点**：
+  普通点击会被逻辑挡掉（不会重复发请求），按住修饰键的克隆照常生效（`app.css`）。
+  纯函数 `isCloneClick` 与过路通道 `lib/composerDraft.js` 都可以单独断言（模块无 React 依赖）。
 
 ### 4.14 用户气泡底部的「模型 + 时间」
 
@@ -1159,7 +1192,11 @@ ss-export/
 30. **用户气泡的两个重发按钮不得改动原消息**：「新对话发送 / 当前对话发送」只新增一条用户消息 + 它自己的
     助手结果（`sendBubbleAgain`），**不得**走 `MSG_EDIT_PREPARE`（那是编辑重发的原地覆盖）；
     内容只取该气泡的 `text` + 全部输入图（`readAttachment` 读回，缺文件跳过，内容全空则报错不发）；
-    新对话必须先 `makeConversation()` + `CONV_ADD`（拿到 conv 对象才能发请求），**不得**用 `CONV_NEW`。见 §4.13。
+    新对话必须先 `makeConversation()` + `CONV_ADD`（拿到 conv 对象才能发请求），**不得**用 `CONV_NEW`。
+    **按住 Ctrl / Shift 点击是另一条分支**（`isCloneClick`）：**不得**发任何请求、**不得**新建会话后再自己发，
+    只能把内容原封不动拷进输入框草稿（`pushComposerDraft` + `announceComposerDraft`，落到 Composer 的
+    `applyDraft`），并保持两个按钮可点（提交中只做视觉置灰 `.is-pending`，不用 `disabled` ——
+    否则按住修饰键的克隆会被一起挡掉）。见 §4.13 / §4.13.1。
 31. **导出包名 + 包内目录协议是导入的两道硬校验**：包名必须 `ss-YYYYMMDD-HHmm.zip`（`BAD_NAME`），
     解压后 `ss-export/` 里必须齐备 manifest 与允许的条目（`BAD_STRUCTURE`），**分别报错、不得合并成一类**；
     导出时若用户在「另存为」里改了名，必须写回协议名（否则这个包以后导不回来）。解压只能落在

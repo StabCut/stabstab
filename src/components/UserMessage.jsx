@@ -1,8 +1,9 @@
 import React, { useRef, useState } from 'react';
-import { useApp, useToast } from '../lib/store.jsx';
+import { useApp, useToast, makeConversation } from '../lib/store.jsx';
 import { uploadUrl, formatClock } from '../lib/util.js';
-import { resendEdited, resolveResendTarget, sendBubbleAgain, sendBubbleToNewConversation } from '../lib/send.js';
+import { contentOfMessage, resendEdited, resolveResendTarget, sendBubbleAgain, sendBubbleToNewConversation } from '../lib/send.js';
 import { useComposerSelection, getComposerSelection } from '../lib/composerSelection.js';
+import { pushComposerDraft, announceComposerDraft, isCloneClick } from '../lib/composerDraft.js';
 import { missingImageMessage } from '../lib/imageActions.js';
 import { fileToDataUrl, readImageMeta, isImageFile, sourceFileName } from '../lib/images.js';
 import { usePromptReuse } from '../lib/promptReuse.jsx';
@@ -217,6 +218,7 @@ export default function UserMessage({ conv, msg, marks = null, flash = false }) 
    *
    * @param {'new'|'current'} where 'new' = 新开一个对话发送；'current' = 在当前对话里再发一次。
    *   两者在等待上完全等价 —— 每个请求各占一个 jobId，同一个对话里可以同时等多个互不干扰的结果。
+   *   注意：按住 Ctrl / Shift 点击走的是另一条路（cloneBubble：只拷进输入框、不发请求）。
    */
   const resendBubble = async (where) => {
     if (resendingAgain) return;
@@ -249,6 +251,75 @@ export default function UserMessage({ conv, msg, marks = null, flash = false }) 
     } finally {
       setResendingAgain(false);
     }
+  };
+
+  /**
+   * 把这条气泡的**文字 + 输入图原封不动**拷进底部输入框，但**不发**（等用户自己改 / 自己发）。
+   * 触发方式：在「当前对话发送 / 新对话发送」按钮上**按住 Ctrl（或 Cmd / Shift）点击**。
+   *
+   * @param {'new'|'current'} where 'current' = 拷进当前标签的输入框（不切标签、不新建会话）；
+   *   'new' = 先新开一个对话标签（立刻成为当前标签，与点「新建对话」一致），再拷进它的输入框。
+   *   两者都只写「草稿」：文字与图片可随意编辑，按发送键才真正发出去。
+   *   是否进入克隆分支由调用方判定（onSendButtonClick），这里只管拷。
+   */
+  const cloneBubble = async (where) => {
+    if (!String(msg.text || '').trim() && !(msg.images || []).length) { toast('这条消息没有可复制的内容', 'warn'); return; }
+    setResendingAgain(true);
+    try {
+      // 先把图片读回来再落草稿：输入框一次性拿到「文字 + 图片」，不会先闪一下纯文字。
+      // 图读不回来（文件被清理）时不算失败：文字照样拷，缺几张在提示里说清楚。
+      const content = await contentOfMessage(msg);
+      if (!content.text.trim() && !content.attachments.length) {
+        toast('这条消息的内容已经不可用（图片文件可能已被清理），无法复制。', 'warn');
+        return;
+      }
+
+      let targetConv = conv;
+      let targetName = '';
+      if (where === 'new') {
+        // 与「新对话发送」同一套：先造会话对象再 CONV_ADD（新标签立刻成为当前标签，见 AIDEV.md §4.13）
+        const { conv: next, counter } = makeConversation(state.conversations.tabCounter);
+        targetConv = next;
+        targetName = next.name;
+        // 顺序要紧：先把草稿挂到新标签名下，再激活它 —— 切换会话时 Composer 正好取走这一份
+        pushComposerDraft(next.id, { text: content.text, attachments: content.attachments });
+        dispatch({ type: 'CONV_ADD', conv: next, counter });
+        announceComposerDraft(next.id);   // 同一拍里 push + 激活：喊一声让已经在眼前的输入区立刻认领
+      } else {
+        // 读图是异步的：等回来的这一拍，标签可能已经被删掉（相当于没点过），别往不存在的标签塞草稿
+        if (!state.conversations.conversations.some((c) => c.id === conv.id)) return;
+        pushComposerDraft(conv.id, { text: content.text, attachments: content.attachments });
+        announceComposerDraft(conv.id);
+      }
+
+      const lost = content.missing ? `，另有 ${content.missing} 张图片文件已丢失` : '';
+      toast(where === 'new'
+        ? `已把内容复制到新对话「${targetName}」的输入框${lost}，可编辑后自行发送`
+        : `已把内容复制到输入框${lost}，可编辑后自行发送`, 'info');
+      window.stab.log('info', '按住 Ctrl/Shift 复制气泡内容到输入框', {
+        where, convId: targetConv.id, images: content.attachments.length, missing: content.missing
+      });
+    } catch (e) {
+      toast('复制失败: ' + e.message, 'error');
+      window.stab.log('error', '复制气泡内容到输入框失败', { error: e.message });
+    } finally {
+      setResendingAgain(false);
+    }
+  };
+
+  /**
+   * 两个按钮共用的点击处理：普通点击 = 直接发送；按住 Ctrl / Shift = 拷进输入框等用户自己发。
+   * 「按住修饰键了吗」由 lib/composerDraft.js#isCloneClick 判定（纯函数，便于断言）。
+   *
+   * 克隆只做「读文件 + 填输入框」，不发任何请求（见 AIDEV.md §4.13.1），因此它**不受**
+   * 「正在再发一遍」的拦截：`resendingAgain` 只挡普通点击（防一次点击发出两个请求）。
+   * 否则上一拍还在提交时，用户按住修饰键点下去会毫无反应 —— 而按钮并没有真的 disabled。
+   */
+  const onSendButtonClick = (where) => (e) => {
+    if (e.button !== 0) return;              // 只认左键（中键 / 右键另有系统行为）
+    if (isCloneClick(e)) { cloneBubble(where); return; }
+    if (resendingAgain) return;              // 上一拍还在提交：不得再发一个请求
+    resendBubble(where);
   };
 
   const copyImage = async (im) => {
@@ -388,17 +459,22 @@ export default function UserMessage({ conv, msg, marks = null, flash = false }) 
         </div>
       </div>
       <div className="msg-actions">
+        {/* 两个发送按钮：普通点击 = 原样再发一遍；按住 Ctrl / Shift 点击 = 只把内容复制到输入框
+            （新对话那一支先开一个标签再放进去），等用户编辑后自己发。
+            所以这里**不用** disabled 属性：置灰只表示「上一拍还在提交、普通点击会再发一个请求」，
+            按住修饰键的克隆不受影响（保留响应性），样式见 .icon-btn.is-pending。
+            aria-disabled 只是给辅助技术一个提示（不改变可点性，克隆仍然可用）。 */}
         <button
-          className="icon-btn"
-          title="新对话发送"
-          disabled={resendingAgain}
-          onClick={() => resendBubble('new')}
+          className={`icon-btn${resendingAgain ? ' is-pending' : ''}`}
+          title="新对话发送（按住 Ctrl / Shift 点击 = 把文字与图片复制到新对话的输入框，先不发送）"
+          aria-disabled={resendingAgain ? 'true' : 'false'}
+          onClick={(e) => onSendButtonClick('new')(e)}
         ><Icon name="chatPlus" size={16} /></button>
         <button
-          className="icon-btn"
-          title="当前对话发送"
-          disabled={resendingAgain}
-          onClick={() => resendBubble('current')}
+          className={`icon-btn${resendingAgain ? ' is-pending' : ''}`}
+          title="当前对话发送（按住 Ctrl / Shift 点击 = 把文字与图片复制到下方输入框，先不发送）"
+          aria-disabled={resendingAgain ? 'true' : 'false'}
+          onClick={(e) => onSendButtonClick('current')(e)}
         ><Icon name="send" size={16} /></button>
         {msg.text && <button className="icon-btn" title="复制文字" onClick={copyText}><Icon name="copy" size={16} /></button>}
         <button className="icon-btn" title="编辑并重新发送" onClick={startEdit}><Icon name="pencil" size={16} /></button>

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp, useToast } from '../lib/store.jsx';
 import { fileToDataUrl, readImageMeta, isImageFile, sourceFileName } from '../lib/images.js';
 import { readFirstPromptFromFiles, usePromptReuse } from '../lib/promptReuse.jsx';
@@ -6,6 +6,7 @@ import { formatBytes } from '../lib/util.js';
 import { sendNew, buildParams, defaultParams } from '../lib/send.js';
 import { allModels, resolveModel, parseSizeDims, sizeSeparator } from '../lib/models.js';
 import { setComposerSelection } from '../lib/composerSelection.js';
+import { takeComposerDraft } from '../lib/composerDraft.js';
 import Icon from './Icon.jsx';
 import SizePicker from './SizePicker.jsx';
 
@@ -212,6 +213,50 @@ export default function Composer({ conv, busy }) {
   }, [convId]);
 
   const log = (level, message, extra) => window.stab.log(level, message, extra);
+
+  /* ---------------- 按住 Ctrl / Shift 点气泡按钮 → 内容原封不动搬进这里 ----------------
+   * 写的一方是消息列表里的 UserMessage（见 lib/composerDraft.js 的说明）：
+   *   · 当前对话：直接落到**这个**输入区；
+   *   · 新对话：先 CONV_ADD 新标签，再把草稿挂到新标签名下 —— 上面的切换 effect 正好取走它。
+   * 两条路都在这里的 applyDraft 落地：写入的算「输入区已有内容」而不是用户正在打字，
+   * 于是不会清掉待复用提示词、也不会让上半段的解析结果作废（与「插入」同一套口径）。
+   */
+  const applyDraft = useCallback((draft) => {
+    const nextText = draft ? (draft.text || '') : '';
+    const nextAttachments = (draft && draft.attachments) || [];
+    // 程序化写入：标记成「不算用户编辑」，改由用户真正敲键时才按用户编辑处理
+    silentTextRef.current = nextText;
+    lastEditRef.current = nextText;
+    parseRef.current = 0;                    // 作废未完成的解析：它属于上一批图片
+    dispatch({ type: 'CONV_REUSE_CLEAR' });
+    setText(nextText);
+    setAttachments(nextAttachments);
+    draftRef.current = { text: nextText, attachments: nextAttachments };
+    if (nextAttachments.length) {
+      toast(`已把这条消息的图片（${nextAttachments.length} 张）填到输入框，可编辑后自行发送`, 'info');
+    }
+    log('info', '气泡内容已复制到输入框', { convId: convIdRef.current, images: nextAttachments.length });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dispatch, toast]);
+
+  // 认领本标签的待落草稿（「新对话发送」Ctrl 点击：push 与激活标签同一拍完成，正常走上面那条路）
+  useEffect(() => {
+    const pending = takeComposerDraft(convId);
+    if (pending) applyDraft(pending);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [convId]);
+
+  // push 与激活同一拍时补一声通知：本轮 effect 已经跑过了，靠它当场认领，不必等下次切标签。
+  useEffect(() => {
+    const onDraft = (e) => {
+      const id = (e && e.detail && e.detail.convId) || '';
+      if (!id || id !== convIdRef.current) return;      // 不是给这个标签的草稿：留给它自己的输入区
+      const pending = takeComposerDraft(id);
+      if (pending) applyDraft(pending);
+    };
+    window.addEventListener('stabstab:bubble-draft', onDraft);
+    return () => window.removeEventListener('stabstab:bubble-draft', onDraft);
+  }, [applyDraft]);
 
   /**
    * 用户主动修改输入框文字 → 清理待复用提示词与两个临时按钮。

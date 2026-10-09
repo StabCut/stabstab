@@ -7,6 +7,9 @@
  *
  * 重发不是「照原样再发一次」：模型 / 尺寸 / 参数取**输入区当前设置**（resolveResendTarget），
  * 用户在下方把模型换成 B、改了分辨率，编辑重发 / 气泡重发就用 B 与当前分辨率（见 AIDEV.md §4.7）。
+ * 气泡上的两个按钮**按住 Ctrl / Shift 点击**时不该发请求，而是把内容拷进输入框等用户自己改
+ * （见 §4.13「按住 Ctrl / Shift」）—— 那一支只用到 contentOfMessage（读回文字 + 输入图），
+ * 不经过这里任何一条发送路径。
  *
  * 模型相关：渲染进程只把「模型 id」交给主进程，协议 / 来源 / 密钥
  *          一律由主进程按当前设置解析（见 electron/src/modelSeries.js#resolveModel）。
@@ -204,6 +207,40 @@ async function attachmentsOfMessage(images) {
     } catch (e) { /* 缺失则跳过 */ }
   }
   return out;
+}
+
+/**
+ * 一条用户消息的「可复用内容」：文字 + 能读回来的输入图。
+ *
+ * 与「编辑并重新发送」用的 attachmentsOfMessage 同一口径，区别只在于**失败时的态度**：
+ *   · attachmentsOfMessage 给「要发的请求」用 —— 图读不回来就跳过；
+ *   · 这里给「拷进输入框的草稿」用 —— 顺带把丢掉的张数与原因报给调用方，好让用户知道
+ *     「这次克隆少了几张图」，而不是无声无息地少图。
+ *
+ * 不在这里做压缩：压缩发生在真正的发送路径上（sendNew / resendEdited），那时才需要
+ * 按当时的设置压；草稿保持原字节，用户看到的就是原图。
+ *
+ * @param {object} msg 用户消息（只用它的 text / images）
+ * @returns {Promise<{text:string, attachments:Array, missing:number}>}
+ *          attachments 形态 = 输入区待发送图片：{file,name,srcName,mime,width,height,dataUrl}
+ *          （file 仍指向 uploads 里的原文件，输入区删除 / 发送都按既有流程走）
+ */
+export async function contentOfMessage(msg) {
+  const text = (msg && msg.text) || '';
+  const images = (msg && msg.images) || [];
+  const out = [];
+  let missing = 0;
+  for (const im of images) {
+    if (!im || !im.file) { missing += 1; continue; }
+    try {
+      const r = await window.stab.readAttachment(im.file);
+      if (!r || !r.ok) { missing += 1; continue; }
+      out.push({ ...im, mime: r.mime || im.mime, dataUrl: r.dataUrl });
+    } catch (e) {
+      missing += 1;      // 文件已被清理 / 读失败：跳过这一张，其余照常
+    }
+  }
+  return { text, attachments: out, missing };
 }
 
 /**
