@@ -106,7 +106,7 @@ function modelRef(resolved) {
 
 function pickModel(settings, modelSeries, protocols, modelId) {
   const resolved = resolveModel(settings, modelSeries, protocols, modelId);
-  if (!resolved) throw new Error('没有可用的模型，请先在「设置 → 模型设置」中添加模型系列与模型。');
+  if (!resolved) throw new Error('没有可用的模型，请先在「设置 → 图像模型」中添加模型系列与模型。');
   if (!resolved.hasKey) {
     throw new Error(`「${resolved.seriesLabel} · ${resolved.sourceLabel}」尚未配置 API Key，请先在设置中填写。`);
   }

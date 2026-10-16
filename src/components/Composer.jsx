@@ -491,9 +491,9 @@ export default function Composer({ conv, busy }) {
   }
 
   const placeholder = !models.length
-    ? '尚未添加模型：请在 设置 → 模型设置 中添加模型系列与模型'
+    ? '尚未添加模型：请在 设置 → 图像模型 中添加模型系列与模型'
     : (current && !current.hasKey
-      ? `尚未配置 API Key：请在 设置 → 模型设置 → ${current.seriesLabel} 中填写`
+      ? `尚未配置 API Key：请在 设置 → 图像模型 → ${current.seriesLabel} 中填写`
       : '描述你想生成的图片，或输入图片编辑指令…（Enter 发送，Shift+Enter 换行，可粘贴/拖入图片）');
 
   return (

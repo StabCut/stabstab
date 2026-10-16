@@ -641,7 +641,7 @@ function registerIpc() {
     if (!resolved) {
       sendEvent({
         ...base, type: 'error', ok: false,
-        error: { code: 'NO_MODEL', message: '未找到该模型：它可能已被删除。请在「设置 → 模型设置」中重新添加或改选模型。' }
+        error: { code: 'NO_MODEL', message: '未找到该模型：它可能已被删除。请在「设置 → 图像模型」中重新添加或改选模型。' }
       });
       return { jobId: opts.messageId };
     }
@@ -657,7 +657,7 @@ function registerIpc() {
       const srcLabel = (resolved.source && resolved.source.label) || resolved.sourceId;
       sendEvent({
         ...base, type: 'error', ok: false,
-        error: { code: 'NO_API_KEY', message: `尚未配置 API Key：请在「设置 → 模型设置 → ${sLabel} → ${srcLabel}」中填写。` }
+        error: { code: 'NO_API_KEY', message: `尚未配置 API Key：请在「设置 → 图像模型 → ${sLabel} → ${srcLabel}」中填写。` }
       });
       return { jobId: opts.messageId };
     }

@@ -189,9 +189,9 @@ stabstab-data/
 
 ---
 
-## Model Settings, Series & Protocol Extension
+## Image Model Settings, Series & Protocol Extension
 
-Settings → Model is organised by **model series** and starts empty:
+Settings → Image model is organised by **model series** and starts empty:
 
 1. Pick a **built-in series** from the "Add model series" dropdown (series and their API sources are built in; the definitions live in `model-series.json` inside the data directory) and click Add;
 2. Inside the series card, click "Add model", type the **model id** (the grey placeholder shows examples such as `gpt-image-2` or `doubao-seedream-5-0-pro-260628`) and choose its **API source**;

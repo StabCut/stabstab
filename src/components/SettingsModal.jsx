@@ -14,10 +14,14 @@ import {
 import Icon from './Icon.jsx';
 import ShortcutRecorder from './ShortcutRecorder.jsx';
 
+/** 设置页左侧导航：**只有这个数组决定导航的顺序与名称**。
+ *  各页正文是并列的 `tab === 'x'` 分支，同一时刻只渲染一段，所以正文在文件里的先后不影响显示 ——
+ *  要调顺序 / 改名只改这里，不要去搬正文。 */
 const TABS = [
-  { id: 'model', label: '模型设置' },
-  { id: 'rename', label: '重命名模型' },
+  { id: 'model', label: '图像模型' },
+  { id: 'text', label: '文本模型' },
   { id: 'basic', label: '基础设置' },
+  { id: 'rename', label: '重命名模型' },
   { id: 'advanced', label: '高级设置' },
   { id: 'data', label: '数据管理' }
 ];
@@ -55,7 +59,7 @@ export default function SettingsModal({ initialTab = 'model' }) {
   const toast = useToast();
   const [tab, setTab] = useState(initialTab);
   const [draft, setDraft] = useState(() => clone(state.settings));
-  // 系列配置草稿（可写字段：hidden —— 从「模型设置」列表移除；请求模式只有同步一种，没有开关）
+  // 系列配置草稿（可写字段：hidden —— 从「图像模型」列表移除；请求模式只有同步一种，没有开关）
   const [draftSeries, setDraftSeries] = useState(() => clone(state.modelSeries || { series: [] }));
   // 重命名模型配置草稿（可写字段：temperature / topP / 提示模板等，存数据目录的 rename-model.json）
   const [draftRename, setDraftRename] = useState(() => (
@@ -411,7 +415,7 @@ export default function SettingsModal({ initialTab = 'model' }) {
           </nav>
 
           <div className="settings-content">
-            {/* ---------- 模型设置 ---------- */}
+            {/* ---------- 图像模型 ---------- */}
             {tab === 'model' && (
               <div className="settings-section">
                 {!addedSeries.length && (
@@ -558,6 +562,17 @@ export default function SettingsModal({ initialTab = 'model' }) {
                   API Key 只保存在本机数据目录的 <code>settings.json</code>；模型系列与 API 来源的定义保存在
                   <code>model-series.json</code>（可手工编辑后重启生效）。
                 </p>
+              </div>
+            )}
+
+            {/* ---------- 文本模型（设置内容待定，先占位） ---------- */}
+            {tab === 'text' && (
+              <div className="settings-section">
+                <div className="empty-hint">
+                  本页设置项<strong>待定</strong>，先占位：以后在这里配置文本（LLM）相关能力
+                  （例如文本模型系列、API Key / API 地址、模型 id）。
+                  目前不读写任何设置字段，也不影响已有功能。
+                </div>
               </div>
             )}
 

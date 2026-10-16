@@ -113,7 +113,7 @@ stabstab/
 │   │   ├── Composer.jsx               # 输入框：粘贴/拖入/多选、size/高级参数、发送（等待中也能发）/停止等待、附加提示词解析、逐标签草稿搬运、接收气泡拷来的草稿（见 §4.13.1）
 │   │   ├── SizePicker.jsx             # ★ 尺寸选择器：候选尺寸（sizeOptions）+ 末尾「自定义…」（两个数字 + 可点的 ×⇄: + 比例与方框示例，见 §4.10）
 │   │   ├── PromptDrop.jsx             # ★ 全窗口左右解析分区（曲线分隔）+ 「图片提示词」查看弹窗
-│   │   ├── SettingsModal.jsx          # 设置：模型 / 重命名模型 / 基础 / 高级 / 数据管理 五页（基础页含「全局快捷键」，见 §4.17）
+│   │   ├── SettingsModal.jsx          # 设置：图像模型 / 文本模型 / 基础 / 重命名模型 / 高级 / 数据管理 六页（导航顺序只由文件顶部 TABS 决定；基础页含「全局快捷键」，见 §4.17；文本模型页设置内容待定）
 │   │   ├── ShortcutRecorder.jsx       # ★ 全局快捷键录制框（点一下再按键；Esc 取消录制、退格清除）+ 状态行
 │   │   ├── ConfirmDialog.jsx          # ★ 二次确认弹窗（Enter 确定 / Esc 取消；图标沿用调用方那一个），见 §4.18
 │   │   ├── Lightbox.jsx               # 全屏图片预览：滚轮缩放/拖动/ESC
@@ -136,7 +136,9 @@ stabstab/
 │   ├── test-api.js                    # 后端端到端测试（mock HTTP 服务 + 真实 runner/适配器）
 │   ├── gen-logo.js                    # 生成彭罗斯三角 Logo（需 ImageMagick）
 │   ├── package.sh                     # Ubuntu 一键打包（deb + 便携 tar.gz；给便携包放 stabstab-portable.txt 标记）
-│   └── package.cmd                    # Windows 一键打包（nsis + portable）
+│   ├── package.cmd                    # Windows 一键打包（nsis + portable；打包前先跑 clean-release.ps1）
+│   ├── clean-release.ps1              # 打包前清理 release\win-unpacked 与 win-unpacked.tmp 残留；被占用时报出持锁进程
+│   └── lib/RmFileLock.cs              # 用 Restart Manager 查「谁锁着这个文件」（clean-release.ps1 的 C# 辅助）
 ├── index.html                         # Vite 入口
 ├── vite.config.mjs                    # Vite 配置（base:'./' 必须保留）
 ├── electron-builder.yml               # 打包配置
@@ -763,7 +765,7 @@ settings.closeAction                      'tray' | 'quit' | ''（'' = 从未设�
 
 设置弹窗的高度是**固定值**：`src/styles/app.css` 里 `.settings-modal { height: 86vh; }`（= `.modal` 的上限 86vh）。
 
-- 目的：在「模型设置 / 重命名模型 / 基础设置 / 高级设置 / 数据管理」之间切换时，弹窗**不再忽高忽低**
+- 目的：在「图像模型 / 文本模型 / 基础设置 / 重命名模型 / 高级设置 / 数据管理」之间切换时，弹窗**不再忽高忽低**
   （以前只有 `max-height`，内容一变高度就跟着变）。内容比内容区高的页面由 `.settings-content` 自己出下拉条，
   内容矮的页面留白 —— 高度只跟窗口大小有关，与内容多少无关。
 - 布局链：`.modal`（column）→ `.settings-body`（`flex: 1; min-height: 0`）→ `.settings-content`（`flex: 1; overflow-y: auto`）；
@@ -1294,7 +1296,7 @@ module.exports = {
 **接入一套新 API 规则**：
 1. 在 `electron/src/api/` 新建适配器文件（可复用 `api/util.js` 的 `endpoint / collectImages / normalizeError…`）；
 2. 在 `electron/src/api/registry.js` 的 `adapters` 对象中注册（键 = id）；
-3. **在 `electron/assets/model-series.json` 里挂到某个系列**（新建系列，或给现有系列加一个 `sources[]` 条目，`protocol` 填适配器 id）——这一步才让它在「设置 → 模型设置」中可选；
+3. **在 `electron/assets/model-series.json` 里挂到某个系列**（新建系列，或给现有系列加一个 `sources[]` 条目，`protocol` 填适配器 id）——这一步才让它在「设置 → 图像模型」中可选；
 4. （可选）把未实现的协议放入 `reserved` 数组，会显示为「预留/禁用」。
 5. 跑 `npm run test:api`，在 `scripts/test-api.js` 里补一个 mock 端点 + 场景。
 
@@ -1491,7 +1493,9 @@ node_modules\.bin\electron dev-data\qa\search-dom-test.js  # 搜索面板真实�
 | 加一个 API 参数到输入区 | 对应适配器的 `paramSchema` + `buildBody`；参数面板与 `buildParams` 都是 schema 驱动，无需改 UI |
 | 改 size 列表 | `electron/assets/model-series.json` 的 `sources[].sizeOptions`（或适配器的 `sizeOptions` 兜底）；老用户的数据目录副本靠 `mergeSizeOptions` 的并集自动看到新项（只能增不能删，见 §5.2） |
 | 改比例 / 方框示例、比例模式 | `src/components/SizePicker.jsx`（`SizeRatioPreview` / `toggleRatioMode` / `counterpart`）+ `src/lib/models.js` 的 `ratioText` / `sizeRatioOf` / `sizeLabel`；回归 `dev-data/qa/size-picker-test/` |
-| 改「模型设置」页结构 | `src/components/SettingsModal.jsx`（系列卡片 / 模型行 / 来源级 API Key 与地址） |
+| 改「图像模型」页结构 | `src/components/SettingsModal.jsx`（系列卡片 / 模型行 / 来源级 API Key 与地址） |
+| 改「文本模型」页结构（**设置内容待定**） | `src/components/SettingsModal.jsx` 里 `tab === 'text'` 那段：目前只是占位说明，**不读写任何设置字段** |
+| 改设置页左侧导航的顺序 / 名称 | `src/components/SettingsModal.jsx` 顶部的 `TABS` 数组 —— **只有它决定导航顺序与名称**（各页正文是并列的 `tab === 'x'` 分支，同一时刻只渲染一段，正文在文件里的先后不影响显示） |
 | 改标题生成提示模板 / 温度 / Top-P / 默认地址 | `electron/assets/rename-model.json`（随包默认）或数据目录的 `rename-model.json`（可手工编辑，重启生效；设置页滑动条也写它） |
 | 改标签命名时机与回退 | `src/lib/title.js#maybeAutoTitle/fallbackTitle` + `src/lib/send.js`（触发点）+ `src/lib/store.jsx` 的 `CONV_RENAME_AUTO` 守卫 |
 | 改手动「生成重命名」（标签菜单） | `src/lib/title.js#regenerateTitle/conversationText`（收全部用户文字 + 失败不改名）+ `src/lib/store.jsx` 的 `CONV_RENAME_AI` + `src/components/Sidebar.jsx#generateName`（菜单项 / 生成中状态 / toast，见 §4.4） |

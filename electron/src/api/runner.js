@@ -63,7 +63,7 @@ function start(opts, sendEvent) {
     return { jobId };
   }
   if (!opts.apiKey || !String(opts.apiKey).trim()) {
-    sendEvent({ ...base, type: 'error', ok: false, error: { code: 'NO_API_KEY', message: '尚未配置 API Key，请先在「设置 → 模型设置」中填写。' } });
+    sendEvent({ ...base, type: 'error', ok: false, error: { code: 'NO_API_KEY', message: '尚未配置 API Key，请先在「设置 → 图像模型」中填写。' } });
     return { jobId };
   }
 
