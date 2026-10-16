@@ -40,16 +40,25 @@ function Shell() {
       const convId = ev.conversationId;
       const msgId = ev.messageId;
       if (ev.type === 'status') {
-        // 只可能来自协议内部的任务兜底（Grsai 某些节点只回任务 id）；不是可切换的「异步模式」
+        // 图像：只可能来自协议内部的任务兜底（Grsai 某些节点只回任务 id）；不是可切换的「异步模式」
+        // 文本对话：ev.streaming = 一次流式生成的开始 —— 只把气泡切成「生成中」，
+        //           它没有任务 id，也不该显示那边才有的任务状态徽标
         dispatch({
           type: 'MSG_UPDATE', convId, msgId,
-          patch: { status: 'running', taskStatus: ev.status, taskId: ev.taskId }
+          patch: ev.streaming
+            ? { status: 'running', streaming: true }
+            : { status: 'running', taskStatus: ev.status, taskId: ev.taskId }
         });
+      } else if (ev.type === 'delta') {
+        // 流式对话的增量正文：**追加必须在 reducer 里做**（见 store.jsx#MSG_APPEND_TEXT）——
+        // 这里绝不能读 state 自己拼新文本：同一 tick 到达的多个 delta 各自基于同一份旧 state，会互相覆盖。
+        dispatch({ type: 'MSG_APPEND_TEXT', convId, msgId, text: ev.text });
       } else if (ev.type === 'result') {
         dispatch({
           type: 'MSG_UPDATE', convId, msgId,
           patch: {
             status: 'success',
+            streaming: false,          // 流式结束：光标收起；正文以本次 result 的全文为准（丢掉过增量也不怕）
             images: ev.images || [],
             texts: ev.texts || [],
             usage: ev.usage || null,

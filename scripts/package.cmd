@@ -6,6 +6,12 @@ REM Artifacts are written to release\:
 REM   1) StabStab-<version>-x64-setup.exe     - NSIS installer
 REM   2) StabStab-<version>-x64-portable.exe  - portable executable
 REM See README.md for usage.
+REM
+REM Before packaging it runs clean-release.ps1, which deletes the staging
+REM directories left behind by an earlier run and, when a file is still open
+REM in them, reports the holding process and stops. Without that check
+REM electron-builder dies with a bare, hard-to-diagnose message:
+REM   EBUSY: resource busy or locked, unlink ...\default_app.asar
 REM ============================================================
 setlocal EnableExtensions
 cd /d "%~dp0\.."
@@ -38,6 +44,17 @@ if errorlevel 1 (
 echo ==^> Building renderer ^(Vite^)
 call npm run build
 if errorlevel 1 exit /b 1
+
+echo ==^> Cleaning previous staging directories
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\clean-release.ps1"
+if errorlevel 1 (
+  echo.
+  echo ERROR: a file under release\ is still held open. See the process named above.
+  echo        Packaging was NOT started, because electron-builder would fail with:
+  echo          EBUSY: resource busy or locked, unlink ...
+  echo        Close that process ^(or stop the service^) and run this script again.
+  exit /b 1
+)
 
 echo ==^> Packaging with electron-builder ^(nsis + portable^)
 call npx electron-builder --win nsis portable

@@ -1,6 +1,6 @@
 'use strict';
 /*
- * 数据根目录解析（会话 / 设置 / 模型系列 / 重命名模型 / 缓存 / 上传 / 日志 / 下载）
+ * 数据根目录解析（会话 / 设置 / 模型系列 / 重命名模型 / 文本模型系列 / 缓存 / 上传 / 日志 / 下载）
  * =====================================================================
  * 铁律：**打包后的数据绝不放在安装目录里。**
  *   NSIS 覆盖安装时会先调用旧版卸载器（app-builder-lib/templates/nsis/installSection.nsh
@@ -34,7 +34,7 @@ const PORTABLE_MARKER = 'stabstab-portable.txt';
 /** 迁移记录：写在新数据根里，既告诉用户「数据是从哪儿搬来的」，也用来断点续搬 */
 const MIGRATION_FILE = '.migration.json';
 /** 小配置：迁移时同步拷贝（毫秒级，本次启动就要读） */
-const CONFIG_FILES = ['settings.json', 'conversations.json', 'model-series.json', 'rename-model.json'];
+const CONFIG_FILES = ['settings.json', 'conversations.json', 'model-series.json', 'rename-model.json', 'text-model-series.json'];
 /** 大目录：可能几个 G（历史结果图 / 上传图），后台异步拷，不阻塞窗口 */
 const MEDIA_DIRS = ['cache', 'uploads', 'downloads', 'log'];
 
@@ -249,6 +249,7 @@ function getPaths(app) {
     settings: path.join(root, 'settings.json'),
     modelSeries: path.join(root, 'model-series.json'),   // 内置模型系列配置（数据目录副本，可写）
     renameModel: path.join(root, 'rename-model.json'),   // 重命名模型配置：提示模板 / 温度 / Top-P（可写）
+    textModelSeries: path.join(root, 'text-model-series.json'), // 文本模型系列配置（「对话生成」模式，与图像模型完全隔离）
     cache: path.join(root, 'cache'),
     uploads: path.join(root, 'uploads'),
     log: path.join(root, 'log'),

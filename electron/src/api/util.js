@@ -73,6 +73,76 @@ function collectImages(json) {
   return Array.from(new Set(out));
 }
 
+/**
+ * 增量 SSE 解码器：把 HTTP 分块（chunk）喂进来，吐出其中**完整**的 `data:` 负载对象。
+ *
+ * 只负责「分帧」，不解释负载内容 —— 负载怎么变成增量文本由各适配器决定
+ * （当前只有对话生成的 grsai-chat 走流式，见 grsai-chat.js#createStreamParser）。
+ *
+ * 为什么要单独抽出来：流式的难点不在解析，而在**跨 chunk 的半行**。网络分块不按行切，
+ * 一行 `data: {...}` 常常被切成两半，所以必须持有缓冲区，只处理遇到换行的完整行。
+ *
+ * 约定（OpenAI 兼容 SSE 的通用写法）：
+ *   · `data: {...}`        → 一个负载
+ *   · `data: [DONE]`       → 流结束标记（不再产出负载）
+ *   · 空行 / `:` 开头的注释（心跳）/ `event:` 行 → 忽略
+ *   · 裸 JSON 行（有些中转站不打 `data:` 前缀）→ 也当负载处理
+ */
+function createSseDecoder() {
+  let buf = '';
+  let finished = false;
+
+  const payloadOf = (line) => {
+    const t = line.trim();
+    if (!t || t.startsWith(':')) return null;
+    if (t.startsWith('event:')) return null;              // 事件名另有字段，负载在同行的 data 里
+    const body = t.startsWith('data:') ? t.slice(5).trim() : (t.startsWith('{') || t.startsWith('[') ? t : '');
+    if (!body) return null;
+    if (body === '[DONE]') { finished = true; return null; }
+    try {
+      const o = JSON.parse(body);
+      return (o && typeof o === 'object') ? o : null;
+    } catch (e) {
+      return null;                                       // 非 JSON 行：心跳或半行，丢掉即可
+    }
+  };
+
+  return {
+    /** 喂一个分块，返回其中解析出的负载数组（可能为空） */
+    push(chunk) {
+      if (finished) return [];
+      buf += String(chunk == null ? '' : chunk);
+      const out = [];
+      let idx;
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx).replace(/\r$/, '');
+        buf = buf.slice(idx + 1);
+        const o = payloadOf(line);
+        if (o) out.push(o);
+      }
+      return out;
+    },
+    /** 流结束时把残留的半行也解析掉（有的服务端最后一行不带换行） */
+    flush() {
+      if (finished) return [];
+      const rest = buf.trim();
+      buf = '';
+      if (!rest) return [];
+      const o = payloadOf(rest);
+      if (o) return [o];
+      // 整包 JSON（服务端忽略了 stream:true）：按一次性响应处理，交给适配器兜底
+      if (rest.startsWith('{') || rest.startsWith('[')) {
+        try {
+          const o2 = JSON.parse(rest);
+          return (o2 && typeof o2 === 'object') ? [o2] : [];
+        } catch (e) { return []; }
+      }
+      return [];
+    },
+    get done() { return finished; }
+  };
+}
+
 /** 尽量从错误响应里挖出一句人话 */
 function errorMessage(json, httpStatus) {
   if (!json) return `HTTP ${httpStatus}`;
@@ -107,6 +177,7 @@ module.exports = {
   endpoint,
   b64ToDataUrl,
   collectImages,
+  createSseDecoder,
   errorMessage,
   errorCode,
   isHttpError,

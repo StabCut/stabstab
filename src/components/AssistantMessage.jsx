@@ -84,7 +84,22 @@ export default function AssistantMessage({ conv, msg, marks = null, flash = fals
       </div>
     );
   } else if (msg.status === 'running') {
-    body = (
+    // 对话生成（流式）：已经收到正文时直接显示正文 + 光标，而不是「正在生成，请稍候…」的转圈卡片 ——
+    // 逐字显示正是这个模式存在的意义。图像那边此刻 texts 一定是空的，渲染完全不变。
+    const streamingText = (msg.texts || []).join('\n');
+    body = streamingText ? (
+      <div className="result-card streaming">
+        <HighlightText className="msg-text assistant-text" text={streamingText} marks={marks} />
+        <span className="stream-cursor" aria-hidden="true" />
+        <div className="result-meta">
+          <button
+            className="ghost-btn small"
+            onClick={stopWaiting}
+            title="停止这一次生成（已经收到的内容会保留在气泡里）"
+          >停止生成</button>
+        </div>
+      </div>
+    ) : (
       <div className="result-card waiting">
         <span className="spinner" />
         <span>
@@ -154,7 +169,14 @@ export default function AssistantMessage({ conv, msg, marks = null, flash = fals
       </div>
     );
   } else if (msg.status === 'cancelled') {
-    body = (
+    // 流式对话中途「停止生成」：已经收到的正文要留着（停止 = 保留已生成的部分，而不是把它变成一张空卡片）
+    const partialText = (msg.texts || []).join('\n');
+    body = partialText ? (
+      <div className="result-card cancelled">
+        <HighlightText className="msg-text assistant-text" text={partialText} marks={marks} />
+        <div className="result-meta">⏹ {(msg.error && msg.error.message) || '已停止生成'}</div>
+      </div>
+    ) : (
       <div className="result-card cancelled">
         ⏹ {(msg.error && msg.error.message) || '已取消 / 已停止等待'}
       </div>

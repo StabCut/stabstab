@@ -10,11 +10,17 @@
  * 没有开关、没有状态徽标，也不参与重启恢复。
  *
  * 通过 sendEvent(payload) 向渲染进程推送事件：
- *   {type:'status'|'result'|'error'|'cancelled', conversationId, messageId, ...}
+ *   {type:'status'|'delta'|'result'|'error'|'cancelled', conversationId, messageId, ...}
+ *   · 'delta' 只有**流式协议**会发（文本对话，见 grsai-chat.js）：一段新增正文，界面把它追加到气泡上；
+ *     收尾仍然是 'result'（带着完整正文），所以渲染进程不需要为文本模式再搭一套事件管道。
  */
 const log = require('../logger');
 const { getAdapter } = require('./registry');
 const { downloadImage } = require('../imageutil');
+const { isHttpError, errorMessage, errorCode } = require('./util');
+
+/** 流式增量的节流间隔：模型一块一块地吐字，每块都发事件会把渲染进程刷爆（这里约 16 次/秒） */
+const STREAM_FLUSH_MS = 60;
 
 // 活动任务表：jobId -> job
 const activeJobs = new Map();
@@ -63,7 +69,10 @@ function start(opts, sendEvent) {
     return { jobId };
   }
   if (!opts.apiKey || !String(opts.apiKey).trim()) {
-    sendEvent({ ...base, type: 'error', ok: false, error: { code: 'NO_API_KEY', message: '尚未配置 API Key，请先在「设置 → 图像模型」中填写。' } });
+    // 文本对话的 Key 在「文本模型」页、图像的在「图像模型」页：这条兜底提示要指对地方
+    // （正常不会走到这里：两个入口都各自先校验过一次）
+    const where = opts.text ? '文本模型' : '图像模型';
+    sendEvent({ ...base, type: 'error', ok: false, error: { code: 'NO_API_KEY', message: `尚未配置 API Key，请先在「设置 → ${where}」中填写。` } });
     return { jobId };
   }
 
@@ -82,10 +91,16 @@ function start(opts, sendEvent) {
   activeJobs.set(jobId, job);
 
   const startedAt = Date.now();
-  log.info('开始生成请求', {
+  log.info(opts.text ? '开始对话生成请求' : '开始生成请求', {
     jobId, model: opts.model, protocol: opts.protocol,
     series: opts.seriesId, source: opts.sourceId,
-    images: (opts.images || []).length, hasPrompt: !!(opts.prompt && opts.prompt.trim()),
+    // 文本请求没有 prompt / images，改报「上下文条数 + 总字数」（无最大上下文限制，全量发送）
+    messages: opts.text ? (opts.messages || []).length : undefined,
+    chars: opts.text
+      ? (opts.messages || []).reduce((n, m) => n + String((m && m.text) || '').length, 0)
+      : undefined,
+    images: opts.text ? undefined : (opts.images || []).length,
+    hasPrompt: opts.text ? undefined : !!(opts.prompt && opts.prompt.trim()),
     timeoutSec: opts.timeoutSec, size: opts.params && opts.params.size,
     n: opts.params && opts.params.n
   });
@@ -117,12 +132,19 @@ function start(opts, sendEvent) {
     try {
       const ctx = {
         apiKey: opts.apiKey, baseUrl: opts.baseUrl, model: opts.model,
-        prompt: opts.prompt, images: opts.images, params: opts.params
+        prompt: opts.prompt, images: opts.images, params: opts.params,
+        messages: opts.messages            // 文本对话的上下文（只有文本协议用得到）
       };
 
       // 1) 提交
       const sub = adapter.buildSubmitRequest(ctx);
       log.info('提交请求', { jobId, url: sub.url });
+
+      // 流式协议（文本对话）：一次请求要边收边发，读 body 的方式与一次性请求不同
+      if (adapter.stream && opts.stream) {
+        return await runStream(adapter, sub, job, opts, finish, sendEvent);
+      }
+
       const res = await fetchWithTimeout(sub.url, { method: sub.method, headers: sub.headers, body: sub.body }, timeoutMs, controller.signal);
       const json = await readJsonSafe(res);
       const parsed = adapter.parseSubmit(json, res.status);
@@ -148,6 +170,145 @@ function start(opts, sendEvent) {
   })();
 
   return { jobId };
+}
+
+/**
+ * 流式请求：边收边把增量文本推给界面（当前只有文本对话的 grsai-chat 走这里）。
+ *
+ * 与一次性请求的区别只有「怎么读 body」—— 提交、超时（job.deadline）、取消（job.controller.abort）、
+ * 错误文案的口径全部一致，所以渲染进程不需要为文本模式再搭一套事件管道：
+ * 增量走 type:'delta'，收尾仍是 type:'result'（带着完整正文）。
+ *
+ * 两个容易踩的点：
+ *   1) **不能**用 fetchWithTimeout：它的计时器在响应头到手时就清掉了，管不到后面的流。
+ *      这里直接把 job 的 controller 交给 fetch，超时与「停止」才能真正中断一个**已经开始的**流。
+ *   2) 收尾时总把完整正文放进 result.texts[0]：万一某个增量事件被节流掉 / 丢了，
+ *      界面以 result 为准覆盖一次，显示出来的一定是全文。
+ */
+async function runStream(adapter, sub, job, opts, finish, sendEvent) {
+  const base = { conversationId: job.conversationId, messageId: job.messageId };
+  const res = await fetch(sub.url, {
+    method: sub.method, headers: sub.headers, body: sub.body,
+    signal: job.controller.signal, redirect: 'follow'
+  });
+
+  if (isHttpError(res.status)) {
+    const raw = await res.text();
+    let json = null;
+    try { json = JSON.parse(raw); } catch (e) { json = { __raw: raw }; }
+    const error = { code: errorCode(json, res.status), message: `HTTP ${res.status}：${errorMessage(json, res.status)}` };
+    log.warn('流式请求返回错误', { jobId: job.messageId, status: res.status, code: error.code });
+    return finish({ type: 'error', ok: false, error });
+  }
+  if (!res.body) {
+    return finish({ type: 'error', ok: false, error: { code: 'BAD_RESPONSE', message: '响应没有正文，无法流式读取。' } });
+  }
+
+  const parser = adapter.createStreamParser();
+  const decoder = new TextDecoder('utf-8');
+  const reader = res.body.getReader();
+  let full = '';              // 已积累的正文
+  let pending = '';           // 还没下发的增量（节流用）
+  let raw = '';               // 响应原文：服务端忽略 stream:true 时的整包兜底
+  let usage = null;
+  let requestId = null;
+  let lastFlush = Date.now();
+  let readError = null;
+
+  // streaming:true = 告诉界面「这是一次流式生成」：把气泡切成“生成中”，但不要显示任务状态徽标
+  // （任务徽标是图像那边「服务端只回任务 id」才有的东西）
+  sendEvent({ ...base, type: 'status', streaming: true, status: 'RUNNING' });
+
+  const flush = () => {
+    if (!pending) return;
+    const text = pending;
+    pending = '';
+    lastFlush = Date.now();
+    sendEvent({ ...base, type: 'delta', ok: true, text });
+  };
+
+  // 定时把攒下的增量发出去：只靠「下一块到达时再判断」是不够的 —— 服务端一旦停顿（模型在思考），
+  // 已经收到的正文就会一直压在手里不显示。60ms 一次既够顺滑，也不会把渲染进程刷爆。
+  const flushTimer = setInterval(flush, STREAM_FLUSH_MS);
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value, { stream: true });
+      raw += chunk;
+      const r = parser.push(chunk);
+      if (r.error) {
+        log.warn('流式响应中途报错', { jobId: job.messageId, error: r.error });
+        return finish({ type: 'error', ok: false, error: r.error });
+      }
+      if (r.usage) usage = r.usage;
+      if (r.requestId) requestId = r.requestId;
+      if (r.deltas.length) {
+        const t = r.deltas.join('');
+        full += t;
+        pending += t;
+      }
+      if (pending && Date.now() - lastFlush >= STREAM_FLUSH_MS) flush();
+    }
+    const tail = parser.end(raw);
+    if (tail.deltas.length) {
+      const t = tail.deltas.join('');
+      full += t;
+      pending += t;
+    }
+    if (tail.usage) usage = tail.usage;
+    if (tail.requestId) requestId = requestId || tail.requestId;
+    if (tail.error && !full) {
+      return finish({ type: 'error', ok: false, error: tail.error });
+    }
+  } catch (e) {
+    readError = e;      // 取消 / 超时 / 断网：下面按「收到了多少」决定怎么收场
+  } finally {
+    clearInterval(flushTimer);      // 计时器随本次请求一起收掉（否则它会一直往一个已经结束的流上 flush）
+  }
+
+  // 服务端可能压根没走 SSE（忽略了 stream:true，直接回一整包 JSON，甚至带缩进换行）。
+  // 这种情况下 SSE 分帧一行都认不出来，但正文其实就在 body 里 —— 再按一次性响应解析一次。
+  if (!readError && !full && raw && raw.trim()) {
+    let json = null;
+    try { json = JSON.parse(raw); } catch (e) { json = null; }
+    if (json) {
+      const parsed = adapter.parseSubmit(json, res.status);
+      if (parsed.kind === 'error') {
+        log.warn('流式请求按整包 JSON 兜底解析：失败', { jobId: job.messageId, error: parsed.error });
+        return finish({ type: 'error', ok: false, error: parsed.error });
+      }
+      if (parsed.kind === 'result') {
+        const t = (parsed.texts || []).join('').trim();
+        if (t) {
+          full = t;
+          usage = usage || parsed.usage || null;
+          requestId = requestId || parsed.requestId || null;
+        }
+      }
+    }
+  }
+
+  if (job.cancelled) {
+    // 用户按了「停止」：cancel() 已经发过 cancelled 事件，这里不再发任何事件。
+    // 已经推给界面的增量照旧留在气泡里（停止 = 保留已生成的部分，而不是把它变成错误）
+    log.info('对话生成已停止', { jobId: job.messageId, chars: full.length });
+    return;
+  }
+
+  const text = full.trim();
+  if (!text) {
+    if (readError) throw readError;        // 一个字都没收到 → 交给上层按请求失败 / 超时处理
+    return finish({ type: 'error', ok: false, error: { code: 'EMPTY_REPLY', message: '模型没有返回任何内容。' } });
+  }
+  if (readError) {
+    log.warn('流式读取中断，保留已收到的正文', {
+      jobId: job.messageId, chars: text.length, error: readError && readError.message
+    });
+  }
+  flush();
+  log.info('对话生成完成', { jobId: job.messageId, model: opts.model, chars: text.length, requestId });
+  return finish({ type: 'result', ok: true, images: [], texts: [full.trimEnd()], usage, requestId });
 }
 
 /**

@@ -3,8 +3,9 @@ import { useApp, useToast } from '../lib/store.jsx';
 import { fileToDataUrl, readImageMeta, isImageFile, sourceFileName } from '../lib/images.js';
 import { readFirstPromptFromFiles, usePromptReuse } from '../lib/promptReuse.jsx';
 import { formatBytes } from '../lib/util.js';
-import { sendNew, buildParams, defaultParams } from '../lib/send.js';
+import { sendNew, sendNewText, isTextMode, buildParams, defaultParams } from '../lib/send.js';
 import { allModels, resolveModel, parseSizeDims, sizeSeparator } from '../lib/models.js';
+import { allTextModels, resolveTextModel } from '../lib/textModels.js';
 import { setComposerSelection } from '../lib/composerSelection.js';
 import { takeComposerDraft } from '../lib/composerDraft.js';
 import Icon from './Icon.jsx';
@@ -120,30 +121,44 @@ export default function Composer({ conv, busy }) {
   const convIdRef = useRef(conv ? conv.id : null);
   convIdRef.current = conv ? conv.id : null;
 
+  // 生成模式（设置 → 基础设置）：图片生成 / 对话生成。模型列表、尺寸与参数面板都按它切换 ——
+  // 这就是「文本模型与图像模型不在同一个选择器里混杂」的实现点。
+  const textMode = isTextMode(settings);
+
   const models = useMemo(
-    () => allModels(settings, state.modelSeries),
-    [settings.modelGroups, state.modelSeries]
+    () => (textMode
+      ? allTextModels(settings, state.textModelSeries)
+      : allModels(settings, state.modelSeries)),
+    [textMode, settings.modelGroups, settings.textModelId, settings.textSourceConfig,
+      state.modelSeries, state.textModelSeries]
   );
 
+  // 对话生成模式下尺寸与参数都没有意义：它们的来源一律置空，下面的渲染 / 发送据此短路
   const current = useMemo(
-    () => resolveModel(settings, state.modelSeries, state.protocols, modelId),
-    [settings, state.modelSeries, state.protocols, modelId]
+    () => (textMode
+      ? resolveTextModel(settings, state.textModelSeries, selectedTextModelId(models, modelId))
+      : resolveModel(settings, state.modelSeries, state.protocols, modelId)),
+    [textMode, settings, state.modelSeries, state.textModelSeries, state.protocols, modelId, models]
   );
 
-  const schema = (current && current.paramSchema) || {};
-  const sizeOptions = (current && current.sizeOptions) || ['auto'];
+  const schema = textMode ? {} : ((current && current.paramSchema) || {});
+  const sizeOptions = textMode ? [] : ((current && current.sizeOptions) || ['auto']);
   const protocol = current ? current.protocol : null;
-  // 这个对话此刻还有几个请求在等返回（可以同时等多个：等待中也能继续发送，见 AIDEV.md §4.12）
+  // 这个对话此刻还有几个请求在等返回（图像模式下可以同时等多个：等待中也能继续发送，见 AIDEV.md §4.12）
   const waiting = busy ? Object.keys(busy).length : 0;
 
-  // 模型列表变化时纠正选择
+  // 模型列表变化（含**切换生成模式**）时纠正选择。
+  // 两种模式的「默认模型」不是一个字段：图像看 settings.defaultModelId，文本看
+  // settings.textModelId → 系列内置的 defaultModelId（用户从没选过时该落在 gemini-3.5-flash 上）。
   useEffect(() => {
     if (!models.length) return;
     if (!models.find((m) => m.id === modelId)) {
-      const def = models.find((m) => m.id === settings.defaultModelId);
+      const wanted = textMode ? (settings.textModelId || '') : settings.defaultModelId;
+      const def = models.find((m) => (textMode ? m.modelId === wanted : m.id === wanted))
+        || (textMode ? models.find((m) => m.modelId === m.seriesDefaultModelId) : null);
       setModelId(def ? def.id : models[0].id);
     }
-  }, [models, settings.defaultModelId, modelId]);
+  }, [models, textMode, settings.defaultModelId, settings.textModelId, modelId]);
 
   // 换模型/换协议时重置参数面板（保留尺寸选择）
   useEffect(() => {
@@ -425,24 +440,39 @@ export default function Composer({ conv, busy }) {
     if (e.dataTransfer && e.dataTransfer.files) addFiles(e.dataTransfer.files, true);   // 拖入：File.name 即真实文件名
   };
 
-  // 等待返回中也能继续发送：同一个对话可以有多个互相独立的请求同时等待（见 AIDEV.md §4.12）
-  const canSend = !!conv && !sending && !!current && (text.trim().length > 0 || attachments.length > 0);
+  // 图像模式：等待返回中也能继续发送：同一个对话可以有多个互相独立的请求同时等待（见 AIDEV.md §4.12）。
+  // 对话生成模式：**严格串行** —— 上一条没回来就不允许再发，否则整段对话的上下文会乱（用户明确要求）。
+  const serialBlocked = textMode && waiting > 0;
+  const canSend = !!conv && !sending && !serialBlocked && !!current
+    && (text.trim().length > 0 || attachments.length > 0);
 
   const doSend = async () => {
     if (!conv) { toast('请先新建一个对话', 'warn'); return; }
     if (!text.trim() && attachments.length === 0) { toast('请输入文字或添加图片', 'warn'); return; }
+    if (serialBlocked) { toast('对话生成模式要等这一条生成完才能继续发送（否则上下文会乱）', 'warn'); return; }
     // 发送期间用户可能切走：收尾只允许动这条草稿自己的标签，别清掉别的标签正在编辑的内容
     const sentConvId = conv.id;
     setSending(true);
     try {
-      await sendNew({
-        dispatch, state, conv,
-        text: text.trim(),
-        attachments,
-        params: buildParams(params, schema),
-        modelId,
-        log
-      });
+      if (textMode) {
+        // 对话生成：不带尺寸 / 参数，改带整段对话的文本上下文（见 lib/send.js#sendNewText）
+        await sendNewText({
+          dispatch, state, conv,
+          text: text.trim(),
+          attachments,
+          modelId: selectedTextModelId(models, modelId),
+          log
+        });
+      } else {
+        await sendNew({
+          dispatch, state, conv,
+          text: text.trim(),
+          attachments,
+          params: buildParams(params, schema),
+          modelId,
+          log
+        });
+      }
       // 已发送：这条草稿被消费掉（仓库里同步删除，切走再切回来不会恢复已发送的内容）
       dispatch({ type: 'CONV_DRAFT_DROP', convId: sentConvId });
       if (draftOwnerRef.current === sentConvId) {
@@ -491,10 +521,14 @@ export default function Composer({ conv, busy }) {
   }
 
   const placeholder = !models.length
-    ? '尚未添加模型：请在 设置 → 图像模型 中添加模型系列与模型'
+    ? (textMode
+      ? '尚未添加文本模型：请先在 设置 → 文本模型 中配置 Grsai 系列'
+      : '尚未添加模型：请在 设置 → 图像模型 中添加模型系列与模型')
     : (current && !current.hasKey
-      ? `尚未配置 API Key：请在 设置 → 图像模型 → ${current.seriesLabel} 中填写`
-      : '描述你想生成的图片，或输入图片编辑指令…（Enter 发送，Shift+Enter 换行，可粘贴/拖入图片）');
+      ? `尚未配置 API Key：请在 设置 → ${textMode ? '文本模型' : '图像模型'} → ${current.seriesLabel} 中填写`
+      : (textMode
+        ? '问点什么…（Enter 发送，Shift+Enter 换行；可粘贴 / 拖入图片一起问，支持多图）'
+        : '描述你想生成的图片，或输入图片编辑指令…（Enter 发送，Shift+Enter 换行，可粘贴/拖入图片）'));
 
   return (
     <div
@@ -552,25 +586,30 @@ export default function Composer({ conv, busy }) {
           ))}
         </select>
 
-        <SizePicker
-          className="size-select"
-          value={params.size}
-          options={sizeOptions}
-          model={current}
-          onChange={(size) => setParams((p) => ({ ...p, size }))}
-          selectTitle="输出尺寸 / 比例（最后一项可自定义：填两个数字即可）"
-        />
+        {!textMode && (
+          <SizePicker
+            className="size-select"
+            value={params.size}
+            options={sizeOptions}
+            model={current}
+            onChange={(size) => setParams((p) => ({ ...p, size }))}
+            selectTitle="输出尺寸 / 比例（最后一项可自定义：填两个数字即可）"
+          />
+        )}
 
-        <div className="params-wrap" ref={paramsWrapRef}>
-          <button
-            className={`ghost-btn ${paramsOpen ? 'active' : ''}`}
-            onClick={() => setParamsOpen((v) => !v)}
-            title="高级参数（随模型系列不同而不同）"
-          >
-            <Icon name="sliders" size={15} /> 参数
-          </button>
-          {paramsOpen && <ParamsPanel params={params} setParams={setParams} schema={schema} />}
-        </div>
+        {/* 对话生成模式没有尺寸与模型参数：两个控件一律不渲染（不是禁用） */}
+        {!textMode && (
+          <div className="params-wrap" ref={paramsWrapRef}>
+            <button
+              className={`ghost-btn ${paramsOpen ? 'active' : ''}`}
+              onClick={() => setParamsOpen((v) => !v)}
+              title="高级参数（随模型系列不同而不同）"
+            >
+              <Icon name="sliders" size={15} /> 参数
+            </button>
+            {paramsOpen && <ParamsPanel params={params} setParams={setParams} schema={schema} />}
+          </div>
+        )}
 
         <div className="toolbar-spacer" />
 
@@ -603,4 +642,14 @@ function groupBySeries(models) {
     map.get(key).push(m);
   }
   return Array.from(map.entries());
+}
+
+/**
+ * 文本模型选择器的值（`<seriesId>.<sourceId>::<modelId>`）→ 文本模型的**真实 id**。
+ * 选择器要按「系列·来源」区分（以后可能多一个来源），而请求只需要模型 id；
+ * 找不到（例如刚切换生成模式的那一拍）就返回空串，让 resolveTextModel 走「当前默认」兜底。
+ */
+function selectedTextModelId(models, selectorValue) {
+  const hit = (models || []).find((m) => m.id === selectorValue);
+  return hit && hit.modelId ? hit.modelId : '';
 }

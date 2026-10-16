@@ -15,6 +15,7 @@
  *     settings.json        settings.json 原样（含各「系列·来源」的 API Key）
  *     conversations.json   会话 + 消息（含标签名 / 模型引用 / 参数）
  *     model-series.json    模型系列定义（用户自定义系列会被带到新机器）
+ *     text-model-series.json 文本模型系列定义（「对话生成」模式；与图像模型完全隔离，用户追加的模型也一起带走）
  *     rename-model.json    重命名模型（提示模板 / 温度 / Top-P / 默认地址）
  *     cache/<file>         仅导出「聊天记录里引用到的」结果图
  *     uploads/<file>       仅导出「聊天记录里引用到的」用户输入图
@@ -28,6 +29,9 @@
  *       「选项」按导入的值改动（含 defaultModelId：导入值在合并后的模型列表里存在就用它）；
  *     · defaultSavePath 是机器相关的绝对路径：只有本机确实存在该目录才采用，否则保留当前值；
  *     · renameModel（凭据）：导入的非空字段覆盖，留空的保留当前；
+ *     · generationMode / textModelId：「选项」按导入的值改动；textModelId 合并后不存在时清空（回落到系列默认模型）；
+ *     · textSourceConfig（文本模型的凭据）：与 sourceConfig 同口径 —— 只补空缺，本机已配好的不被覆盖；
+ *     · text-model-series.json（文本模型系列）：与 model-series.json 同口径 —— 当前没有的系列自动新增，内置结构不动；
  *     · modelGroups：同一模型 id = 忽略；同系列同来源同名（不同机器上 id 不同）= 认作同一个模型，
  *       忽略并记下 id 映射（导入会话里的模型引用会改指本机这个模型）；其余追加；
  *       当前配置里没有的系列自动新增（并把它从 hidden 里放出来）；
@@ -53,11 +57,12 @@ const FORMAT_VERSION = 1;
 const SETTINGS_FILE = 'settings.json';
 const CONVERSATIONS_FILE = 'conversations.json';
 const SERIES_FILE = 'model-series.json';
+const TEXT_SERIES_FILE = 'text-model-series.json';
 const RENAME_FILE = 'rename-model.json';
 /** 媒体目录：包内 `ss-export/<目录>/<文件名>` ↔ 数据目录 `<dataRoot>/<目录>/<文件名>` */
 const MEDIA_DIRS = ['cache', 'uploads'];
 const ZIP_NAME_RE = /^ss-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})\.zip$/i;
-const ROOT_ALLOWED = new Set([MANIFEST_FILE, SETTINGS_FILE, CONVERSATIONS_FILE, SERIES_FILE, RENAME_FILE, ...MEDIA_DIRS]);
+const ROOT_ALLOWED = new Set([MANIFEST_FILE, SETTINGS_FILE, CONVERSATIONS_FILE, SERIES_FILE, TEXT_SERIES_FILE, RENAME_FILE, ...MEDIA_DIRS]);
 const MEDIA_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.tiff']);
 /** 「选项类」设置：按导入的值改动（见文件头合并规则） */
 const OPTION_KEYS = ['theme', 'requestTimeoutSec', 'compressEnabled', 'compressMaxMB', 'saveNamePromptChars', 'closeAction'];
@@ -152,6 +157,7 @@ function referencedImages(conversations) {
  * @param {object} o.settings       当前设置（含密钥）
  * @param {object} o.conversations  当前会话
  * @param {object} o.modelSeries    当前模型系列配置
+ * @param {object} o.textModelSeries 当前文本模型系列配置（「对话生成」模式）
  * @param {object} o.renameConfig   当前重命名模型配置
  * @param {object} o.paths          数据目录（{cache, uploads}）
  * @param {string} [o.appVersion]
@@ -200,6 +206,7 @@ async function exportData(o) {
   json(SETTINGS_FILE, opts.settings || {});
   json(CONVERSATIONS_FILE, conversations);
   json(SERIES_FILE, opts.modelSeries || { series: [] });
+  json(TEXT_SERIES_FILE, opts.textModelSeries || { series: [] });
   json(RENAME_FILE, opts.renameConfig || {});
 
   try {
@@ -281,12 +288,13 @@ function inspectDir(workDir) {
   return { ok: true, root, manifest, media };
 }
 
-/** 读包里的四份数据（缺哪份算哪份没有，至少要有一份能合） */
+/** 读包里的几份数据（缺哪份算哪份没有，至少要有一份能合） */
 function readBundle(root) {
   const wanted = [
     ['settings', SETTINGS_FILE],
     ['conversations', CONVERSATIONS_FILE],
     ['modelSeries', SERIES_FILE],
+    ['textModelSeries', TEXT_SERIES_FILE],
     ['renameConfig', RENAME_FILE]
   ];
   const data = {};
@@ -406,6 +414,58 @@ function mergeRenameConfig(current, imported) {
     if (Number.isFinite(n)) out[k] = n;
   }
   return out;
+}
+
+/**
+ * 文本模型系列定义（text-model-series.json）的合并 —— 与图像侧的 mergeSeriesDefs 同口径，
+ * 外加一条「模型清单只增不删」：已存在的系列（含内置）把导入包里多出来的模型 id 追加进来，
+ * 与 text-model-series.json 自身的合并规则（内置在前、副本只能追加）保持一致。
+ * @returns {{config:object, added:string[], addedModels:number}}
+ */
+function mergeTextSeriesConfig(currentConfig, importedConfig) {
+  const out = clone(currentConfig && typeof currentConfig === 'object' ? currentConfig : { series: [] });
+  out.series = Array.isArray(out.series) ? out.series : [];
+  const byId = new Map(out.series.filter((s) => s && s.id).map((s) => [s.id, s]));
+  const added = [];
+  let addedModels = 0;
+
+  for (const s of ((importedConfig && Array.isArray(importedConfig.series)) ? importedConfig.series : [])) {
+    if (!s || !s.id) continue;
+    if (!s.protocol || !Array.isArray(s.sources) || !s.sources.length) continue;   // 结构不全：没法用，忽略
+    const cur = byId.get(s.id);
+    if (!cur) {                                                                   // 当前没有的系列：整条带过来
+      const item = { ...clone(s), builtin: false, custom: true, hidden: !!s.hidden };
+      out.series.push(item);
+      byId.set(s.id, item);
+      added.push(s.id);
+      continue;
+    }
+    const models = Array.isArray(cur.models) ? clone(cur.models) : [];
+    const seen = new Set(models.map(textModelIdOf).filter(Boolean));
+    for (const m of (Array.isArray(s.models) ? s.models : [])) {
+      const id = textModelIdOf(m);
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      models.push(clone(m));
+      addedModels++;
+    }
+    if (models.length) cur.models = models;
+    const sources = Array.isArray(cur.sources) ? cur.sources : [];
+    const haveSrc = new Set(sources.map((x) => x && x.id));
+    for (const src of s.sources) {
+      if (!src || !src.id || haveSrc.has(src.id)) continue;                       // 本机已有的来源不被导入改掉
+      sources.push({ ...clone(src), custom: true });
+    }
+    cur.sources = sources;
+  }
+  return { config: out, added, addedModels };
+}
+
+/** 文本模型条目 → id（与 textModelSeries.js 的 modelIdOf 同口径） */
+function textModelIdOf(m) {
+  if (typeof m === 'string') return m.trim();
+  if (m && typeof m === 'object' && m.id !== undefined && m.id !== null) return String(m.id).trim();
+  return '';
 }
 
 /** settings.renameModel（凭据）：导入的非空字段覆盖 */
@@ -534,10 +594,10 @@ function mergeConversations(current, imported, idRemap) {
 /**
  * 合并整包（纯函数：只算不写盘）。回归脚本可直接断言。
  * @param {object} o
- * @param {object} o.current   {settings, modelSeries, renameConfig, conversations}
+ * @param {object} o.current   {settings, modelSeries, textModelSeries, renameConfig, conversations}
  * @param {object} o.imported  同上（可缺项）
  * @param {(dir:string)=>boolean} [o.dirExists] 判断目录是否存在（defaultSavePath 用）
- * @returns {{settings:object, modelSeries:object, renameConfig:object, conversations:object, summary:object, notes:string[]}}
+ * @returns {{settings:object, modelSeries:object, textModelSeries:object, renameConfig:object, conversations:object, summary:object, notes:string[]}}
  */
 function mergeImport(o) {
   const current = (o && o.current) || {};
@@ -547,9 +607,13 @@ function mergeImport(o) {
   const impSettings = imported.settings || null;
   const notes = [];
 
-  // 1) 系列定义：先带上「当前没有的自定义系列」，否则第 2 步找不到系列就没法归位模型
+  // 1) 系列定义（图像 / 文本各一份）：先带上「当前没有的自定义系列」，否则第 2 步找不到系列就没法归位模型
   const seriesStep = mergeSeriesDefs(current.modelSeries, imported.modelSeries);
   if (seriesStep.added.length) notes.push(`新增模型系列 ${seriesStep.added.length} 个：${seriesStep.added.join('、')}`);
+  // 文本模型系列：与图像侧互不相干，各自合并（改一边不会影响另一边）
+  const textSeriesStep = mergeTextSeriesConfig(current.textModelSeries, imported.textModelSeries);
+  if (textSeriesStep.added.length) notes.push(`新增文本模型系列 ${textSeriesStep.added.length} 个：${textSeriesStep.added.join('、')}`);
+  if (textSeriesStep.addedModels) notes.push(`文本模型清单新增 ${textSeriesStep.addedModels} 个模型`);
 
   // 2) 模型列表：追加 / 查重 / id 映射
   const groupsStep = mergeModelGroups(
@@ -579,6 +643,11 @@ function mergeImport(o) {
     settings.sourceConfig = sc.config;
     filledSecrets = sc.filled;
     if (sc.kept) notes.push(`保留本机已有的 ${sc.kept} 组「系列·来源」密钥 / 地址（不被导入覆盖）`);
+    // 文本模型（「对话生成」模式）：密钥同样只补空缺（与图像侧 sourceConfig 同一套规则），
+    // 选中的模型按导入的值改动，随后由 store 规整（本机没有这个模型时自动清空）
+    settings.textSourceConfig = mergeSourceConfig(curSettings.textSourceConfig, impSettings.textSourceConfig).config;
+    const importedTextModel = String(impSettings.textModelId || '').trim();
+    if (importedTextModel) settings.textModelId = importedTextModel;
   }
   settings.modelGroups = groupsStep.groups;
 
@@ -589,20 +658,21 @@ function mergeImport(o) {
   if (exists(importedDefault)) settings.defaultModelId = importedDefault;
   else if (!exists(settings.defaultModelId)) settings.defaultModelId = allModels.length ? allModels[0].id : '';
 
-  // 5) 规整（未知系列 / 重复 id / 未知来源统一在这里被清掉）
-  const normalized = store.normalizeModelGroups(settings, seriesStep.config);
+  // 5) 规整（未知系列 / 重复 id / 未知来源统一在这里被清掉；文本侧的未知系列 / 未知模型同批清掉）
+  const normalized = store.normalizeModelGroups(settings, seriesStep.config, textSeriesStep.config);
 
   // 6) 系列定义：合并后确实有模型的系列一律放出来（hidden=false）
   const usedSeries = new Set(normalized.modelGroups.filter((g) => g.models.length).map((g) => g.seriesId));
   const modelSeries = unhideSeries(seriesStep.config, usedSeries);
 
-  // 7) 重命名模型配置 + 会话
+  // 7) 重命名模型配置 + 文本模型系列定义 + 会话
   const renameConfig = mergeRenameConfig(current.renameConfig, imported.renameConfig);
   const convStep = mergeConversations(current.conversations, imported.conversations, groupsStep.idRemap);
 
   return {
     settings: normalized,
     modelSeries,
+    textModelSeries: textSeriesStep.config,
     renameConfig,
     conversations: convStep.conversations,
     notes,
@@ -614,6 +684,8 @@ function mergeImport(o) {
       addedModels: groupsStep.addedModels,
       ignoredModels: groupsStep.ignoredModels,
       addedSeries: seriesStep.added.length,
+      addedTextSeries: textSeriesStep.added.length,
+      addedTextModels: textSeriesStep.addedModels,
       filledSecrets
     }
   };
@@ -731,6 +803,7 @@ module.exports = {
   SETTINGS_FILE,
   CONVERSATIONS_FILE,
   SERIES_FILE,
+  TEXT_SERIES_FILE,
   RENAME_FILE,
   MEDIA_DIRS,
   ZIP_NAME_RE,
@@ -749,6 +822,7 @@ module.exports = {
   mergeImport,
   mergeModelGroups,
   mergeSeriesDefs,
+  mergeTextSeriesConfig,
   mergeConversations,
   mergeRenameConfig,
   mergeRenameModel,

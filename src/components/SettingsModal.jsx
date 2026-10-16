@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useApp, useToast } from '../lib/store.jsx';
 import { uid } from '../lib/util.js';
 import { sourceConfigOf, sourceKey } from '../lib/models.js';
+import { textSourceConfigOf, textSourceKey } from '../lib/textModels.js';
 import { titleDefaults } from '../lib/title.js';
 import {
   SHORTCUT_ACTIONS,
@@ -61,6 +62,9 @@ export default function SettingsModal({ initialTab = 'model' }) {
   const [draft, setDraft] = useState(() => clone(state.settings));
   // 系列配置草稿（可写字段：hidden —— 从「图像模型」列表移除；请求模式只有同步一种，没有开关）
   const [draftSeries, setDraftSeries] = useState(() => clone(state.modelSeries || { series: [] }));
+  // 文本模型系列草稿（「对话生成」模式：来源级 API Key / 地址 + 选中的内置模型）。
+  // 与图像那条链完全隔离：来源 scope 是 state.textModelSeries、密钥写 settings.textSourceConfig（见 lib/textModels.js）。
+  const [draftTextSeries, setDraftTextSeries] = useState(() => clone(state.textModelSeries || { series: [] }));
   // 重命名模型配置草稿（可写字段：temperature / topP / 提示模板等，存数据目录的 rename-model.json）
   const [draftRename, setDraftRename] = useState(() => (
     state.renameConfig ? clone(state.renameConfig) : clone(titleDefaults(state))
@@ -82,6 +86,9 @@ export default function SettingsModal({ initialTab = 'model' }) {
   const set = (patch) => setDraft((d) => ({ ...d, ...patch }));
 
   const seriesList = draftSeries.series || [];
+  // 文本模型系列（设置页「文本模型」页）：没有「已添加 / 可添加」两级 —— 内置系列一律列出，
+  // 用户能改的只有来源级密钥 / 地址与「用哪个内置模型」，清单本身不能增删（见该页底部的说明）。
+  const textSeriesList = draftTextSeries.series || [];
   const groups = draft.modelGroups || [];
   const defaultClose = defaultCloseAction(state.paths);   // 基础设置：「关闭窗口时」的默认值
 
@@ -239,6 +246,21 @@ export default function SettingsModal({ initialTab = 'model' }) {
     }));
   };
 
+  // ---------- 文本模型·来源级配置（API Key / API 地址） ----------
+  // 与上面 setCfg 同一套做法，只是读写 settings.textSourceConfig、键取 textSourceKey（见 lib/textModels.js）
+  const textCfgOf = (seriesId, sourceId) => textSourceConfigOf(draft, seriesId, sourceId);
+
+  const setTextCfg = (seriesId, sourceId, patch) => {
+    const key = textSourceKey(seriesId, sourceId);
+    setDraft((d) => ({
+      ...d,
+      textSourceConfig: {
+        ...(d.textSourceConfig || {}),
+        [key]: { apiKey: '', baseUrl: '', ...((d.textSourceConfig || {})[key] || {}), ...patch }
+      }
+    }));
+  };
+
   // ---------- 重命名模型（会话标签自动命名） ----------
   const renameDef = titleDefaults(state);
   const renameCfg = { apiKey: '', baseUrl: '', modelId: '', ...(draft.renameModel || {}) };
@@ -302,6 +324,8 @@ export default function SettingsModal({ initialTab = 'model' }) {
       dispatch({ type: 'DATA_IMPORT', state: r.state });
       setDraft(clone(r.state.settings));
       setDraftSeries(clone(r.state.modelSeries));
+      // 文本那条链同样要跟着导入结果走（否则之后点「保存」会把导入进来的文本系列又盖回旧草稿）
+      if (r.state.textModelSeries) setDraftTextSeries(clone(r.state.textModelSeries));
       setDraftRename(clone(r.state.renameConfig));
       const s = r.summary || {};
       const med = r.media || { copied: 0, skipped: 0 };
@@ -364,12 +388,43 @@ export default function SettingsModal({ initialTab = 'model' }) {
     }
     cleaned.sourceConfig = kept;
 
+    // 文本模型（「对话生成」）：与图像侧同一套清理规则，只是键与字段换成文本那条链 ——
+    // 密钥/地址只留指向真实「系列·来源」的键，且两者都空的条目直接丢掉；
+    // 选中的文本模型不属于任何系列的内置清单时清空（回落到系列的 defaultModelId，主进程同口径）。
+    const textKeys = new Set();
+    const builtinTextModelIds = new Set();
+    for (const s of textSeriesList) {
+      for (const src of (s.sources || [])) if (src && src.id) textKeys.add(textSourceKey(s.id, src.id));
+      for (const m of (s.models || [])) {
+        const id = typeof m === 'string' ? m.trim() : String((m && m.id) || '').trim();
+        if (id) builtinTextModelIds.add(id);
+      }
+    }
+    const keptText = {};
+    for (const [k, v] of Object.entries(cleaned.textSourceConfig || {})) {
+      if (!textKeys.has(k)) continue;
+      const apiKey = String((v && v.apiKey) || '').trim();
+      const baseUrl = String((v && v.baseUrl) || '').trim();
+      if (apiKey || baseUrl) keptText[k] = { apiKey, baseUrl };
+    }
+    cleaned.textSourceConfig = keptText;
+    const textId = String(cleaned.textModelId || '').trim();
+    cleaned.textModelId = (textId && builtinTextModelIds.has(textId)) ? textId : '';
+    // 生成模式：只认 'image' / 'text'，其余（含老数据里没有这个字段）一律回「图片生成」
+    cleaned.generationMode = cleaned.generationMode === 'text' ? 'text' : 'image';
+
     const allModels = cleaned.modelGroups.flatMap((g) => g.models);
     if (!allModels.some((m) => m.id === cleaned.defaultModelId)) {
       cleaned.defaultModelId = allModels.length ? allModels[0].id : '';
     }
 
-    dispatch({ type: 'SETTINGS_UPDATE', settings: cleaned, modelSeries: draftSeries, renameConfig: draftRename });
+    dispatch({
+      type: 'SETTINGS_UPDATE',
+      settings: cleaned,
+      modelSeries: draftSeries,
+      textModelSeries: draftTextSeries,
+      renameConfig: draftRename
+    });
     // 保存后点名报告「不会生效」的快捷键（主进程马上会真注册一遍并按需跳过它们）：
     // 组合照旧存下来，只是不注册 —— 用户据此换一个，或等占用它的程序退出。
     const brokenShortcuts = SHORTCUT_ACTION_IDS
@@ -390,6 +445,11 @@ export default function SettingsModal({ initialTab = 'model' }) {
       series: cleaned.modelGroups.map((g) => `${g.seriesId}:${g.models.length}`).join(','),
       models: allModels.length,
       defaultModel: cleaned.defaultModelId,
+      // 文本那条链只记「选中的模型 / 系列数 / 配了几处来源」，绝不打印 Key（见 AIDEV.md §11）
+      generationMode: cleaned.generationMode,
+      textSeries: textSeriesList.map((s) => `${s.id}:${(s.models || []).length}`).join(','),
+      textModel: cleaned.textModelId || '（系列默认）',
+      textSourcesConfigured: Object.keys(cleaned.textSourceConfig).length,
       renameModel: `${cleaned.renameModel.modelId || '（默认）'}@${cleaned.renameModel.baseUrl || '（默认地址）'}`,
       renameModelConfigured: !!cleaned.renameModel.apiKey,
       renameLlm: `temperature=${renameTemp},topP=${renameTopP}`
@@ -565,14 +625,126 @@ export default function SettingsModal({ initialTab = 'model' }) {
               </div>
             )}
 
-            {/* ---------- 文本模型（设置内容待定，先占位） ---------- */}
+            {/* ---------- 文本模型（「对话生成」模式：只配来源级密钥与内置模型选择） ---------- */}
             {tab === 'text' && (
               <div className="settings-section">
-                <div className="empty-hint">
-                  本页设置项<strong>待定</strong>，先占位：以后在这里配置文本（LLM）相关能力
-                  （例如文本模型系列、API Key / API 地址、模型 id）。
-                  目前不读写任何设置字段，也不影响已有功能。
-                </div>
+                {!textSeriesList.length && (
+                  <div className="empty-hint">
+                    还没有文本模型系列：数据目录里的 <code>text-model-series.json</code> 读不到内容（或它的 <code>series</code> 是空数组）。
+                    这份配置与图像模型那条链（<code>model-series.json</code>）互不共用，专门给「对话生成」模式用；
+                    删掉数据目录里的这份副本再重启，程序会从内置配置重新生成一份。
+                  </div>
+                )}
+
+                {textSeriesList.map((s) => (
+                  <div className="series-card" key={s.id}>
+                    <div className="series-head">
+                      <div>
+                        <div className="series-title">{s.label}</div>
+                        <div className="series-sub">{s.description}</div>
+                      </div>
+                    </div>
+
+                    {/* 内置模型清单：单选 = 「对话生成」使用哪个模型（全局一个，写 settings.textModelId） */}
+                    <div className="model-list">
+                      {(s.models || []).map((m) => {
+                        const id = typeof m === 'string' ? m.trim() : String((m && m.id) || '').trim();
+                        if (!id) return null;
+                        return (
+                          <div className="model-row" key={id}>
+                            <label className="radio-label" title="设为「对话生成」使用的文本模型">
+                              <input
+                                type="radio"
+                                name="text-default-model"
+                                checked={draft.textModelId === id}
+                                onChange={() => set({ textModelId: id })}
+                              />
+                            </label>
+                            <code>{id}</code>
+                            {s.defaultModelId === id && <span className="field-hint">内置默认</span>}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div className="model-actions">
+                      <span className="field-hint">
+                        清单是程序内置的：左侧圆点选中的是「对话生成」现在用的模型，
+                        标「内置默认」（<code>{s.defaultModelId || '（未定义）'}</code>）的是你没选过时用的那个。
+                        这里<b>不能增删模型</b> —— 要调整请手工编辑数据目录的 <code>text-model-series.json</code>（重启生效）。
+                      </span>
+                    </div>
+
+                    {/* 来源级配置：API Key / API 地址（标记与交互与「图像模型」页同一套） */}
+                    <div className="source-cfgs">
+                      {(s.sources || []).map((src) => {
+                        const key = textSourceKey(s.id, src.id);
+                        const cfg = textCfgOf(s.id, src.id);
+                        const baseShown = cfg.baseUrl || src.baseUrl || '';
+                        const overridden = !!cfg.baseUrl && cfg.baseUrl !== src.baseUrl;
+                        return (
+                          <div className="source-cfg" key={src.id}>
+                            <div className="source-cfg-head">
+                              <span className="source-cfg-title">{src.label}</span>
+                              {src.apiKeyUrl && (
+                                <button
+                                  className="link-btn"
+                                  title={src.apiKeyUrl}
+                                  onClick={() => window.stab.openExternal(src.apiKeyUrl)}
+                                >获取 API Key</button>
+                              )}
+                            </div>
+                            <div className="field-inline">
+                              <label>API Key</label>
+                              <input
+                                type={showKeys[key] ? 'text' : 'password'}
+                                placeholder="sk-xxxxxxxx"
+                                value={cfg.apiKey}
+                                onChange={(e) => setTextCfg(s.id, src.id, { apiKey: e.target.value })}
+                              />
+                              <button
+                                className="ghost-btn"
+                                onClick={() => setShowKeys((v) => ({ ...v, [key]: !v[key] }))}
+                              >{showKeys[key] ? '隐藏' : '显示'}</button>
+                            </div>
+                            <div className="field-inline">
+                              <label>API 地址</label>
+                              <input
+                                type="text"
+                                value={baseShown}
+                                onChange={(e) => setTextCfg(s.id, src.id, { baseUrl: e.target.value })}
+                              />
+                              <button
+                                className="ghost-btn"
+                                title={`恢复为内置默认地址：${src.baseUrl || '（无）'}`}
+                                disabled={!overridden}
+                                onClick={() => setTextCfg(s.id, src.id, { baseUrl: '' })}
+                              >恢复默认</button>
+                            </div>
+                            {src.hint && <p className="field-hint">{src.hint}</p>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+
+                <p className="field-hint">
+                  API Key 只保存在本机数据目录 <code>settings.json</code> 的 <code>textSourceConfig</code>
+                  （键 = <code>&lt;系列&gt;.&lt;来源&gt;</code>，与图像侧的 <code>sourceConfig</code> 各存各的、互不覆盖）；
+                  请求为 <code>POST {'{地址}'}/chat/completions</code>（流式）；系列与模型清单在数据目录的
+                  <code>text-model-series.json</code>（可手工编辑后重启生效）。
+                </p>
+
+                {HAS_FOLDER_FEATURES && state.paths && state.paths.textModelFile && (
+                  <div className="input-group">
+                    <button
+                      className="ghost-btn"
+                      title={state.paths.textModelFile}
+                      onClick={() => window.stab.showInFolder(state.paths.textModelFile)}
+                    >打开配置文件位置</button>
+                  </div>
+                )}
               </div>
             )}
 
@@ -708,6 +880,42 @@ export default function SettingsModal({ initialTab = 'model' }) {
             {/* ---------- 基础设置 ---------- */}
             {tab === 'basic' && (
               <div className="settings-section">
+                {/* 生成模式：决定聊天页列哪套模型、显示哪些控件，以及上下文怎么发给 API（见 AIDEV.md §4.20） */}
+                <div className="field">
+                  <label>生成模式</label>
+                  <div className="mode-choices">
+                    <label className="radio-label">
+                      <input
+                        type="radio"
+                        name="generation-mode"
+                        checked={draft.generationMode !== 'text'}
+                        onChange={() => set({ generationMode: 'image' })}
+                      />
+                      图片生成
+                    </label>
+                    <label className="radio-label">
+                      <input
+                        type="radio"
+                        name="generation-mode"
+                        checked={draft.generationMode === 'text'}
+                        onChange={() => set({ generationMode: 'text' })}
+                      />
+                      对话生成
+                    </label>
+                  </div>
+                  <p className="field-hint">
+                    <b>图片生成</b>（默认）：聊天页的模型选择器只列图像模型，显示尺寸与参数；
+                    每次请求只带当前这一条输入，不带上下文。
+                  </p>
+                  <p className="field-hint">
+                    <b>对话生成</b>：只列文本模型（在「文本模型」页里配置与选择）、隐藏尺寸与参数；
+                    支持多图提问，上下文按<b>整段对话</b>发送（本对话里对话生成模式的消息按顺序作为 messages 发出，不做截断）；
+                    同一个对话在对话生成模式下是<b>严格串行</b>的 —— 上一条回答结束前发不出下一条。
+                    该模式下对历史气泡的「重发 / 编辑重发」不可用（会造成上下文混乱），
+                    要把某条内容再发一遍请用「新对话发送」分叉到新对话。
+                  </p>
+                </div>
+
                 <div className="field">
                   <label>外观主题</label>
                   <select value={draft.theme} onChange={(e) => set({ theme: e.target.value })}>

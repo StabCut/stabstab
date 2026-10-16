@@ -14,6 +14,9 @@ export const initialState = {
   paths: null,
   protocols: [],
   modelSeries: { version: 1, series: [] },   // 内置模型系列配置（含 API 来源 / 默认地址）
+  // 内置**文本**模型系列（对话生成模式专用）：与图像那条链完全隔离，两边互不干扰
+  // （主进程侧见 electron/src/textModelSeries.js，资产见 electron/assets/text-model-series.json）
+  textModelSeries: { version: 1, series: [] },
   renameConfig: null,                        // 重命名模型配置：提示模板 / 温度 / Top-P / 默认地址（主进程下发，可回写）
   conversations: { tabCounter: 0, activeId: null, conversations: [] },
   // 逐会话「输入区草稿」（文字 + 待发送图片）：conversationId -> {text, attachments}。
@@ -98,6 +101,7 @@ export function reducer(state, action) {
         settings: data.settings,
         paths: data.paths,
         modelSeries: data.modelSeries || state.modelSeries,
+        textModelSeries: data.textModelSeries || state.textModelSeries,
         renameConfig: data.renameConfig || state.renameConfig,
         conversations: data.conversations || state.conversations
       };
@@ -111,6 +115,7 @@ export function reducer(state, action) {
         ...state,
         settings: action.state.settings || state.settings,
         modelSeries: action.state.modelSeries || state.modelSeries,
+        textModelSeries: action.state.textModelSeries || state.textModelSeries,
         renameConfig: action.state.renameConfig || state.renameConfig,
         conversations: action.state.conversations || state.conversations
       };
@@ -119,6 +124,9 @@ export function reducer(state, action) {
         ...state,
         settings: { ...state.settings, ...action.settings },
         modelSeries: action.modelSeries ? { ...state.modelSeries, ...action.modelSeries } : state.modelSeries,
+        textModelSeries: action.textModelSeries
+          ? { ...state.textModelSeries, ...action.textModelSeries }
+          : state.textModelSeries,
         renameConfig: action.renameConfig ? { ...state.renameConfig, ...action.renameConfig } : state.renameConfig
       };
 
@@ -219,6 +227,25 @@ export function reducer(state, action) {
       return updateConv(state, action.convId, (c) => ({
         ...c,
         messages: c.messages.map((m) => (m.id === action.msgId ? { ...m, ...action.patch } : m))
+      }));
+    case 'MSG_APPEND_TEXT':
+      // 流式对话（对话生成模式）的增量正文：追加到这条助手消息的第一个文本槽。
+      // **必须在 reducer 里追加**：调用方那边读到的是渲染前的 state，同一 tick 里的多个 delta
+      // 会各自算出同一份「旧文本 + 自己的增量」，后写的把前面的覆盖掉（表现为丢字、跳字）。
+      return updateConv(state, action.convId, (c) => ({
+        ...c,
+        messages: c.messages.map((m) => {
+          if (m.id !== action.msgId) return m;
+          const texts = Array.isArray(m.texts) ? m.texts.slice() : [];
+          texts[0] = (texts[0] || '') + String(action.text || '');
+          return {
+            ...m,
+            // 第一次收到增量就把「排队中」推进到「生成中」，气泡才会切成流式样式
+            status: m.status === 'pending' ? 'running' : m.status,
+            streaming: true,
+            texts
+          };
+        })
       }));
     case 'MSG_DELETE':
       return updateConv(state, action.convId, (c) => ({
@@ -416,6 +443,7 @@ export function AppProvider({ children }) {
         settings: s.settings,
         conversations: s.conversations,
         modelSeries: s.modelSeries,
+        textModelSeries: s.textModelSeries,
         renameConfig: s.renameConfig
       }).catch(() => {});
     }
@@ -428,7 +456,7 @@ export function AppProvider({ children }) {
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(flushSave, 400);
     return () => clearTimeout(saveTimer.current);
-  }, [state.settings, state.conversations, state.modelSeries, state.renameConfig, state.ready, flushSave]);
+  }, [state.settings, state.conversations, state.modelSeries, state.textModelSeries, state.renameConfig, state.ready, flushSave]);
 
   // 关闭/失焦时立即落盘
   useEffect(() => {

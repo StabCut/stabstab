@@ -125,6 +125,52 @@ const server = http.createServer((req, res) => {
       return send(200, { code: 0, data: { id: parsed.id, status: 'succeeded', progress: 100, results: [{ url: IMG_URL() }] } });
     }
 
+    // ---------- Grsai 文本模型（对话生成：OpenAI 兼容 chat/completions，流式） ----------
+    if (req.method === 'POST' && url === '/v1/chat/completions') {
+      const model = parsed.model;
+      if (model === 'err-chat') return send(403, { error: { message: '无权访问该模型', code: 'forbidden' } });
+      // 服务端忽略 stream:true（整包 JSON）→ 验证适配器与执行器的兜底解析
+      if (parsed.stream !== true || model === 'json-model') {
+        return send(200, {
+          id: 'chatcmpl-json', object: 'chat.completion', created: 1, model,
+          choices: [{ index: 0, message: { role: 'assistant', content: '整包 JSON 也能吃下' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 2, completion_tokens: 5, total_tokens: 7 }
+        });
+      }
+      // 一块 chunk = OpenAI 的 chat.completion.chunk（与用户给的接口文档同形）
+      const chunk = (content, extra = {}) => ({
+        id: '1-chat', object: 'chat.completion.chunk', created: 1, model,
+        choices: [{
+          index: 0,
+          delta: content ? { role: 'assistant', content } : { role: 'assistant' },
+          finish_reason: extra.finish_reason || null,
+          content_filter_results: { hate: { filtered: false } }
+        }],
+        system_fingerprint: ''
+      });
+      if (model === 'slow-chat') {
+        // 先给一块，然后**不结束**：给「停止生成」留出窗口（验证取消时已收到的增量不丢、且不再发 result）
+        res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
+        res.write(`data: ${JSON.stringify(chunk('前半段'))}\n\n`);
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
+      res.write(`data: ${JSON.stringify(chunk('你好！👋 '))}\n\n`);
+      // 隔开一点时间再发第二块：这样执行器真的会分成多次 read，增量事件才有多条（节流 60ms）
+      setTimeout(() => {
+        res.write(`data: ${JSON.stringify(chunk('请问有什么我可以帮你的吗？'))}\n\n`);
+      }, 90);
+      setTimeout(() => {
+        res.write(`data: ${JSON.stringify({
+          ...chunk(null, { finish_reason: 'stop' }),
+          usage: { prompt_tokens: 2, completion_tokens: 8, total_tokens: 10,
+            prompt_tokens_details: null, completion_tokens_details: null }
+        })}\n\n`);
+        res.end('data: [DONE]\n\n');
+      }, 180);
+      return;
+    }
+
     // ---------- 重命名模型（DeepSeek Responses API：/responses，不是 chat/completions） ----------
     if (req.method === 'POST' && url === '/responses') {
       if (parsed.model === 'err-rename') return send(401, { error: { message: 'Authentication Fails', type: 'authentication_error' } });
@@ -1359,6 +1405,90 @@ async function main() {
       '「显示 / 隐藏主界面」：可见就藏、不可见就唤回');
     check(sc.planWindowToggle({ visible: true, minimized: false, trayAvailable: false }) === 'minimize',
       '「显示 / 隐藏主界面」兜底：托盘不可用时退回最小化（绝不把窗口藏进虚空）');
+  }
+
+  console.log('\n[27] 对话生成：Grsai 文本模型（OpenAI 兼容 chat/completions，流式）');
+  {
+    const messages = [
+      { role: 'user', text: '你好' },
+      { role: 'assistant', text: '你好！有什么可以帮你的？' },
+      { role: 'user', text: '这张图里有什么', images: [`data:image/png;base64,${PNG.toString('base64')}`] }
+    ];
+    const { events, term } = await runScenario('chat_stream', {
+      protocol: 'grsai-chat', model: 'gemini-3.5-flash', text: true, stream: true,
+      baseUrl: `http://127.0.0.1:${PORT}/v1`, messages,
+      prompt: undefined, images: undefined, params: undefined
+    });
+
+    check(term && term.type === 'result' && term.ok === true, '流式对话返回 result');
+    check(term && term.images.length === 0, '文本协议不产出图片');
+    check(term && term.texts.join('') === '你好！👋 请问有什么我可以帮你的吗？', '收尾正文 = 增量拼起来的全文');
+    const deltas = events.filter((e) => e.type === 'delta');
+    check(deltas.length >= 2, `增量分多次下发（实际 ${deltas.length} 条）`);
+    check(deltas.map((d) => d.text).join('') === '你好！👋 请问有什么我可以帮你的吗？', '增量拼起来等于全文');
+    check(events.some((e) => e.type === 'status' && e.streaming === true), '开始时发 streaming 状态事件（界面据此切「生成中」）');
+    check(!!(term && term.usage && term.usage.total_tokens === 10), 'usage 透传（10 tokens）');
+
+    const req = lastTo('/chat/completions');
+    check(!!req && req.body.stream === true, '请求体 stream:true');
+    check(!!req && req.body.model === 'gemini-3.5-flash', '请求体带模型 id');
+    check(!!req && Array.isArray(req.body.messages) && req.body.messages.length === 3, '整段上下文（3 条）全量发送、不截断');
+    check(!!req && req.headers.authorization === 'Bearer sk-test', 'Bearer 鉴权头');
+    const withImg = req && req.body.messages[2];
+    check(!!withImg && Array.isArray(withImg.content)
+      && withImg.content[0].type === 'text' && withImg.content[0].text === '这张图里有什么', '带图消息：文字在前');
+    check(!!withImg && withImg.content[1] && withImg.content[1].type === 'image_url'
+      && /^data:image\/png;base64,/.test(withImg.content[1].image_url.url), '带图消息：图片在后，按 base64 data URL 发送');
+    check(!!(req && typeof req.body.messages[0].content === 'string'), '纯文字消息用字符串 content');
+    check(!!(req && req.body.messages[1].role === 'assistant'), '助手回复也在上下文里（多轮）');
+  }
+
+  console.log('\n[28] 对话生成：服务端忽略 stream:true（整包 JSON 兜底）');
+  {
+    const { term } = await runScenario('chat_json', {
+      protocol: 'grsai-chat', model: 'json-model', text: true, stream: true,
+      baseUrl: `http://127.0.0.1:${PORT}/v1`, messages: [{ role: 'user', text: '你好' }]
+    });
+    check(term && term.type === 'result' && term.texts[0] === '整包 JSON 也能吃下', '整包 JSON 也能解析出正文');
+  }
+
+  console.log('\n[29] 对话生成：HTTP 错误 / 「停止生成」保留已收到的内容');
+  {
+    const { term } = await runScenario('chat_err', {
+      protocol: 'grsai-chat', model: 'err-chat', text: true, stream: true,
+      baseUrl: `http://127.0.0.1:${PORT}/v1`, messages: [{ role: 'user', text: '你好' }]
+    });
+    check(term && term.type === 'error' && term.ok === false, 'HTTP 403 → error 事件');
+    check(!!(term && term.error && /403/.test(term.error.message) && term.error.code === 'forbidden'), 'HTTP 状态与错误码都透传');
+
+    // 流到一半「停止生成」：已收到的增量不回滚，且**不再**补一个 result
+    // （否则界面会把「已停止」覆盖成成功，这与用户按停止的意图相反）
+    const events = [];
+    runner.start({
+      jobId: 'job_chat_slow', conversationId: 'conv1', messageId: 'msg_chat_slow',
+      protocol: 'grsai-chat', model: 'slow-chat', apiKey: 'sk-test',
+      baseUrl: `http://127.0.0.1:${PORT}/v1`, timeoutSec: 30, text: true, stream: true,
+      messages: [{ role: 'user', text: '你好' }], cacheDir: CACHE
+    }, (ev) => events.push(ev));
+
+    const firstDelta = await waitForEvent(events, (e) => e.messageId === 'msg_chat_slow' && e.type === 'delta');
+    check(!!firstDelta && firstDelta.text === '前半段', '停止前已经收到第一段增量');
+    await runner.cancel('job_chat_slow', (ev) => events.push(ev));
+    const stopped = await waitForEvent(events, (e) => e.messageId === 'msg_chat_slow' && e.type === 'cancelled');
+    check(!!stopped, '停止后发 cancelled 事件');
+    await new Promise((r) => setTimeout(r, 250));    // 留出窗口
+    check(!events.some((e) => e.messageId === 'msg_chat_slow' && e.type === 'result'),
+      '停止之后不再补 result（已收到的内容留在气泡里）');
+    check(runner.listActive().every((j) => j.jobId !== 'job_chat_slow'), '停止后没有残留活动任务');
+  }
+
+  console.log('\n[23] 对话生成：协议登记（文本 / 图像两条链互不干扰）');
+  {
+    const p = registry.listProtocols().find((x) => x.id === 'grsai-chat');
+    check(!!p && p.available === true && p.isText === true && p.stream === true, 'grsai-chat 已注册且标为流式文本协议');
+    check(!!p && (p.sizeOptions || []).length === 0, '文本协议没有尺寸候选（输入区据此隐藏尺寸选择器）');
+    check(registry.listProtocols().filter((x) => x.isText).length === 1, '文本协议只有这一个，图像那四个不受影响');
+    check(!!(p && p.defaultBaseUrl === 'https://grsai.dakka.com.cn/v1'), '文本协议默认地址 = grsai.dakka.com.cn/v1');
   }
 
   console.log(`\n========== 结果: ${pass} 通过, ${fail} 失败 ==========`);

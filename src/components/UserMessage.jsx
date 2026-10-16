@@ -14,12 +14,23 @@ import HighlightText from './HighlightText.jsx';
 import { MAX_IMAGES } from './Composer.jsx';
 
 /**
+ * 「对话生成」模式下禁用「在当前对话重发 / 编辑重发」的原因（按钮 title 与逻辑兜底提示共用一句话）。
+ * 文本模式下整段对话会作为上下文发出去（见 AIDEV.md §4.20）：在同一对话里再插一条历史内容，
+ * 会让这段上下文出现重复/错位的输入，所以要重发只能「新对话发送」分叉到新对话。
+ */
+const TEXT_MODE_NO_RESEND = '对话生成模式下不支持在当前对话重发/编辑重发：会造成上下文混乱，请用「新对话发送」分叉到新对话';
+
+/**
  * @param marks 全局搜索在**这条消息里**的命中区间（`lib/search.js#messageMarks` 算出）；
  *   没在搜索 / 这条没命中时是 undefined 或空数组 —— 此时渲染结果与不做搜索时完全一致。
  */
 export default function UserMessage({ conv, msg, marks = null, flash = false }) {
   const { state, dispatch } = useApp();
   const toast = useToast();
+  // 「对话生成」模式（设置 → 基础设置 →「生成模式」）：同一个对话是串行的整段上下文，
+  // 因此「当前对话发送 / 编辑并重新发送」这两个入口一律禁用（不是隐藏 —— 让用户看得见原因），
+  // 唯一保留的再发路径是下面那个「新对话发送」（它会把上下文带进新对话，见 AIDEV.md §4.20）。
+  const textMode = !!(state.settings && state.settings.generationMode === 'text');
   // 编辑中的气泡也是「图片接收区域」之一：指针拖到它上面时不弹左右解析区，交给这里接收补图
   const { registerReceiver } = usePromptReuse();
   const [editing, setEditing] = useState(false);
@@ -64,6 +75,7 @@ export default function UserMessage({ conv, msg, marks = null, flash = false }) 
   };
 
   const startEdit = () => {
+    if (textMode) { toast(TEXT_MODE_NO_RESEND, 'warn'); return; }
     setDraftText(msg.text);
     setKept(msg.images || []);
     setSizeOverride(null);      // 尺寸默认跟随下方输入框的当前值
@@ -170,6 +182,8 @@ export default function UserMessage({ conv, msg, marks = null, flash = false }) 
   };
 
   const confirmEdit = async () => {
+    // 打开编辑气泡后用户又切到了「对话生成」模式：原地重发同样会打乱上下文，这里兜底关掉编辑态
+    if (textMode) { setEditing(false); toast(TEXT_MODE_NO_RESEND, 'warn'); return; }
     if (!draftText.trim() && kept.length === 0) { toast('内容不能为空', 'warn'); return; }
     // 点「确定并重新发送」这一刻再取一次输入区设置：气泡打开期间改了下方的模型 / 尺寸也要用最新的
     const finalTarget = resolveResendTarget({
@@ -221,6 +235,8 @@ export default function UserMessage({ conv, msg, marks = null, flash = false }) 
    *   注意：按住 Ctrl / Shift 点击走的是另一条路（cloneBubble：只拷进输入框、不发请求）。
    */
   const resendBubble = async (where) => {
+    // 「在当前对话再发一遍」在文本模式下禁用（按钮已是 disabled，这里再兜一层，防快捷键 / 程序化调用绕过）
+    if (where === 'current' && textMode) { toast(TEXT_MODE_NO_RESEND, 'warn'); return; }
     if (resendingAgain) return;
     if (!String(msg.text || '').trim() && !(msg.images || []).length) { toast('这条消息没有可发送的内容', 'warn'); return; }
     const t = resolveResendTarget({
@@ -314,6 +330,10 @@ export default function UserMessage({ conv, msg, marks = null, flash = false }) 
    * 克隆只做「读文件 + 填输入框」，不发任何请求（见 AIDEV.md §4.13.1），因此它**不受**
    * 「正在再发一遍」的拦截：`resendingAgain` 只挡普通点击（防一次点击发出两个请求）。
    * 否则上一拍还在提交时，用户按住修饰键点下去会毫无反应 —— 而按钮并没有真的 disabled。
+   *
+   * 例外是「对话生成」模式：「当前对话发送」整个按钮 disabled（见文末 msg-actions），
+   * 连它的修饰键克隆也一起停用 —— 从文本模式下的这条气泡再往同一对话里塞内容正是要避免的事；
+   * 想复用这条内容可以用「新对话发送」（含它的修饰键克隆）或「复制文字」。
    */
   const onSendButtonClick = (where) => (e) => {
     if (e.button !== 0) return;              // 只认左键（中键 / 右键另有系统行为）
@@ -406,7 +426,12 @@ export default function UserMessage({ conv, msg, marks = null, flash = false }) 
           </div>
           <div className="edit-actions">
             <button className="ghost-btn" onClick={() => setEditing(false)}>取消</button>
-            <button className="send-btn" disabled={resending} onClick={confirmEdit}>
+            <button
+              className="send-btn"
+              title={textMode ? TEXT_MODE_NO_RESEND : '确定并重新发送（原地覆盖这条用户消息，并删除它的旧回复）'}
+              disabled={resending || textMode}
+              onClick={confirmEdit}
+            >
               {resending ? '发送中…' : '确定并重新发送'}
             </button>
           </div>
@@ -463,7 +488,9 @@ export default function UserMessage({ conv, msg, marks = null, flash = false }) 
             （新对话那一支先开一个标签再放进去），等用户编辑后自己发。
             所以这里**不用** disabled 属性：置灰只表示「上一拍还在提交、普通点击会再发一个请求」，
             按住修饰键的克隆不受影响（保留响应性），样式见 .icon-btn.is-pending。
-            aria-disabled 只是给辅助技术一个提示（不改变可点性，克隆仍然可用）。 */}
+            aria-disabled 只是给辅助技术一个提示（不改变可点性，克隆仍然可用）。
+            **例外**：「对话生成」模式下的「当前对话发送」用真的 disabled（见上面的 TEXT_MODE_NO_RESEND），
+            这里必须真禁用 —— 文本模式最怕的就是把历史内容再插回同一个对话的上下文里。 */}
         <button
           className={`icon-btn${resendingAgain ? ' is-pending' : ''}`}
           title="新对话发送（按住 Ctrl / Shift 点击 = 把文字与图片复制到新对话的输入框，先不发送）"
@@ -472,12 +499,18 @@ export default function UserMessage({ conv, msg, marks = null, flash = false }) 
         ><Icon name="chatPlus" size={16} /></button>
         <button
           className={`icon-btn${resendingAgain ? ' is-pending' : ''}`}
-          title="当前对话发送（按住 Ctrl / Shift 点击 = 把文字与图片复制到下方输入框，先不发送）"
+          title={textMode ? TEXT_MODE_NO_RESEND : '当前对话发送（按住 Ctrl / Shift 点击 = 把文字与图片复制到下方输入框，先不发送）'}
           aria-disabled={resendingAgain ? 'true' : 'false'}
+          disabled={textMode}
           onClick={(e) => onSendButtonClick('current')(e)}
         ><Icon name="send" size={16} /></button>
         {msg.text && <button className="icon-btn" title="复制文字" onClick={copyText}><Icon name="copy" size={16} /></button>}
-        <button className="icon-btn" title="编辑并重新发送" onClick={startEdit}><Icon name="pencil" size={16} /></button>
+        <button
+          className="icon-btn"
+          title={textMode ? TEXT_MODE_NO_RESEND : '编辑并重新发送'}
+          disabled={textMode}
+          onClick={startEdit}
+        ><Icon name="pencil" size={16} /></button>
         <button className="icon-btn" title="删除该条消息" onClick={remove}><Icon name="trash" size={16} /></button>
       </div>
     </div>

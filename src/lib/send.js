@@ -1,9 +1,15 @@
 /*
  * 发送与重发的公共逻辑。
- * 同一个对话不携带上下文：每次请求只包含当前这一条输入（上下文长度为 0）。
+ *
+ * 两种生成模式（在「设置 → 基础设置 → 生成模式」切换）：
+ *   · 图片生成（默认）：同一个对话**不携带上下文**，每次请求只包含当前这一条输入（上下文长度为 0）。
+ *   · 对话生成：走文本模型（Grsai 系列，OpenAI 兼容 chat/completions，流式），把当前对话里
+ *     **文本模式的全部消息**按时间顺序作为 messages 发出去；暂时没有最大上下文限制（见 buildTextMessages）。
+ * 图像侧的那几条路径（sendNew / resendEdited / sendBubbleAgain）行为一字未改。
  *
  * 请求模式只有「同步」一种（见 AIDEV.md §4.12）：提交后阻塞等待返回。但**同一个对话里可以
  * 同时等好几个请求** —— 每次发送各占一个 jobId（= 助手消息 id），互不阻塞、互不影响。
+ * 唯一的例外是对话生成：那边**严格串行**（上一条没回来不允许再发），否则上下文会乱。
  *
  * 重发不是「照原样再发一次」：模型 / 尺寸 / 参数取**输入区当前设置**（resolveResendTarget），
  * 用户在下方把模型换成 B、改了分辨率，编辑重发 / 气泡重发就用 B 与当前分辨率（见 AIDEV.md §4.7）。
@@ -18,6 +24,7 @@
 import { uid, formatBytes } from './util.js';
 import { compressIfNeeded, dataUrlBytes } from './images.js';
 import { resolveModel, normalizeSize, isValidSize } from './models.js';
+import { resolveTextModel } from './textModels.js';
 import { maybeAutoTitle } from './title.js';
 import { makeConversation } from './store.jsx';
 
@@ -317,15 +324,233 @@ export async function sendBubbleAgain({ dispatch, state, conv, msg, params, mode
 /**
  * 「新对话发送」：先建一个新对话，再把气泡内容发进去。
  * 新对话会立刻成为当前标签（与点「新建对话」一致），于是能直接看到它在等结果。
+ *
+ * 两种模式的语义不同 —— 对话生成模式下这是**唯一**保留的「重新请求」入口：
+ *   · 图片生成：不携带上下文，只把这一条气泡的内容再发一遍（sendBubbleAgain）。
+ *   · 对话生成：**分叉** —— 把该气泡及其之前的文本模式消息整体复制进新对话，再在新对话里重新请求。
  * @returns {Promise<{conv:object, userMsg:object, asst:object}>} conv = 新建的会话
  */
 export async function sendBubbleToNewConversation({ dispatch, state, msg, params, modelId, log }) {
   const { conv, counter } = makeConversation(state.conversations.tabCounter);
   dispatch({ type: 'CONV_ADD', conv, counter });
+  if (isTextMode(state.settings)) {
+    const r = await forkTextConversation({ dispatch, state, conv, msg, log });
+    return { conv, ...r };
+  }
   const r = await sendBubbleAgain({ dispatch, state, conv, msg, params, modelId, log });
   return { conv, ...r };
 }
 
 export function dataUrlSize(dataUrl) {
   return dataUrlBytes(dataUrl);
+}
+
+// =====================================================================================
+// 对话生成模式（文本模型）
+// =====================================================================================
+
+/** 消息上的模式标记：只有对话生成模式下产生的消息才参与文本模型的上下文 */
+export const TEXT_MODE = 'text';
+
+/** 当前设置是不是「对话生成」模式（设置 → 基础设置 → 生成模式） */
+export function isTextMode(settings) {
+  return !!(settings && settings.generationMode === 'text');
+}
+
+/** 一条消息是否属于对话生成模式 */
+function isTextMessage(m) {
+  return !!m && m.mode === TEXT_MODE;
+}
+
+/**
+ * 这个会话里、按时间顺序参与上下文的文本消息。
+ * **图像模式的消息一律不进上下文**（用户明确要求）：两种模式的产物混在一段对话里，
+ * 让文本模型去读图像提示词与生成结果，只会让上下文变脏、请求变大。
+ */
+function textHistoryOf(conv) {
+  return ((conv && conv.messages) || []).filter(isTextMessage);
+}
+
+/** 消息 id → 它所属的会话（分叉要知道「上下文从哪来」；调用方只给得出消息本身） */
+function findOwnerConversation(state, msgId) {
+  const list = (state.conversations && state.conversations.conversations) || [];
+  return list.find((c) => (c.messages || []).some((m) => m.id === msgId)) || null;
+}
+
+/** 文本模型解析（与主进程 electron/src/textModelSeries.js 同口径；没配 Key 就直接拦在这里） */
+function pickTextModel(settings, textModelSeries, modelId) {
+  const resolved = resolveTextModel(settings, textModelSeries, modelId);
+  if (!resolved) throw new Error('没有可用的文本模型，请先在「设置 → 文本模型」中配置 Grsai 系列。');
+  if (!resolved.hasKey) {
+    throw new Error(`「${resolved.seriesLabel} · ${resolved.sourceLabel}」尚未配置 API Key，请先在「设置 → 文本模型」中填写。`);
+  }
+  return resolved;
+}
+
+/** 消息记录里的模型引用（与图像侧的 modelRef 同形：界面显示 name，重发按 id 定位模型） */
+function textModelRef(resolved) {
+  return {
+    id: resolved.modelId,
+    name: resolved.name || resolved.modelId,
+    seriesId: resolved.seriesId,
+    sourceId: resolved.sourceId,
+    protocol: resolved.protocol
+  };
+}
+
+/**
+ * 助手占位（流式）：streaming 先置 true，气泡一出现就是「生成中 + 光标」的形态；
+ * 增量正文由主进程的 delta 事件追加进来（App.jsx#onApiEvent → store.jsx#MSG_APPEND_TEXT），
+ * 收尾的 result 事件会用它带来的全文覆盖一次。
+ */
+function makeTextAssistantPlaceholder({ parentId, resolved }) {
+  return {
+    id: uid('m'),
+    role: 'assistant',
+    mode: TEXT_MODE,
+    parentId,
+    status: 'pending',
+    taskStatus: null,
+    images: [],
+    texts: [],
+    error: null,
+    streaming: true,
+    createdAt: Date.now(),
+    meta: {
+      protocol: resolved.protocol,
+      model: resolved.name || resolved.modelId,
+      modelId: resolved.modelId,
+      seriesId: resolved.seriesId,
+      sourceId: resolved.sourceId
+    }
+  };
+}
+
+/**
+ * 把一串消息组装成发给文本模型的 messages。
+ *   · 助手消息只发正文（texts 拼起来）；
+ *   · 用户消息发文字 + **当时附的图**：按消息记录里的 file 读回 data URL，并走一遍
+ *     「发送前图片压缩」（与图像那条链同一个设置）—— base64 是直接进请求体的，原图太占地方；
+ *     文件已被清理 / 读不回来的那张跳过，但文字照发。
+ *   · **不截断**：暂时没有最大上下文限制，整段对话都发（用户明确要求）。
+ */
+async function buildTextMessages(messages, settings, log) {
+  const out = [];
+  for (const m of (messages || [])) {
+    if (!isTextMessage(m)) continue;
+    if (m.role === 'assistant') {
+      const text = (m.texts || []).join('\n').trim();
+      if (text) out.push({ role: 'assistant', text });
+      continue;
+    }
+    const text = String(m.text || '');
+    const images = [];
+    for (const img of (m.images || [])) {
+      if (!img || !img.file) continue;
+      try {
+        const r = await window.stab.readAttachment(img.file);
+        if (!r || !r.ok || !r.dataUrl) continue;
+        const c = await compressIfNeeded(r.dataUrl, r.mime || img.mime, {
+          enabled: settings.compressEnabled, maxMB: settings.compressMaxMB
+        });
+        images.push(c.dataUrl);
+        if (c.compressed && log) {
+          log('info', `对话生成：图片已压缩 ${formatBytes(c.originalBytes)} → ${formatBytes(c.finalBytes)}`, { name: img.name });
+        }
+      } catch (e) { /* 读不回来就只发文字 */ }
+    }
+    // 空消息不进上下文：多轮里出现空条目会让模型困惑，也没有信息量
+    if (!text.trim() && !images.length) continue;
+    out.push({ role: 'user', text, images });
+  }
+  return out;
+}
+
+/** 真正把一次对话生成请求发出去：组装上下文 → 交给主进程（增量经事件流回来） */
+async function dispatchTextRequest({ state, conv, history, asst, resolved, log }) {
+  const messages = await buildTextMessages(history, state.settings, log);
+  if (!messages.length) throw new Error('没有可发送的内容。');
+  const imageCount = messages.reduce((n, m) => n + ((m.images && m.images.length) || 0), 0);
+  log('info', '对话生成：发送上下文', { messages: messages.length, images: imageCount, model: resolved.modelId });
+  await window.stab.chat({
+    conversationId: conv.id,
+    messageId: asst.id,
+    modelId: resolved.modelId,
+    messages
+  });
+}
+
+/**
+ * 对话生成模式的「发送」：新增一条用户消息 + 一条助手占位，然后把整段对话的文本上下文发出去。
+ * 与 sendNew 的差别：不带尺寸 / 参数（文本模式没有这两样），且**携带上下文**。
+ */
+export async function sendNewText({ dispatch, state, conv, text, attachments, modelId, log }) {
+  const resolved = pickTextModel(state.settings, state.textModelSeries, modelId);
+  const userMsg = {
+    id: uid('m'),
+    role: 'user',
+    mode: TEXT_MODE,
+    text: text || '',
+    // 与图像侧同一套图片描述（file / name / srcName / mime / 宽高）：真正的 base64 在发送时按 file 读回
+    images: (attachments || []).map((a) => ({
+      file: a.file, name: a.name, srcName: a.srcName || '', mime: a.mime, width: a.width, height: a.height
+    })),
+    params: null,
+    model: textModelRef(resolved),
+    createdAt: Date.now()
+  };
+  const asst = makeTextAssistantPlaceholder({ parentId: userMsg.id, resolved });
+
+  dispatch({ type: 'MSG_ADD', convId: conv.id, messages: [userMsg, asst] });
+  dispatch({ type: 'BUSY_SET', convId: conv.id, jobId: asst.id });
+
+  // 会话标签自动命名：与图像模式保持一致（走重命名模型；没配 Key 时截取首条文字）
+  maybeAutoTitle({ dispatch, state, conv, text, log }).catch(() => {});
+
+  await dispatchTextRequest({ state, conv, history: [...textHistoryOf(conv), userMsg], asst, resolved, log });
+  return { userMsg, asst };
+}
+
+/**
+ * 对话生成模式的「新对话发送」= **分叉**：
+ * 把源对话里该气泡**及其之前**的文本模式消息整体复制进（刚建好的）新对话，然后在新对话里重新请求，
+ * 助手回复挂在那条被复制过来的用户消息下面。
+ *
+ * 为什么必须这样：文本模式的上下文就是整段对话 —— 「换个对话重发」如果不把上下文一起搬过去，
+ * 新对话里根本不知道在问什么。这也正是「不支持当前对话重发、只留新对话发送」的另一面。
+ *
+ * 模型取**这条消息当时用的那个文本模型**（分叉的语义是重放这段对话）；它一定还在内置清单里，
+ * 因为文本模型清单是随包内置的、不会消失。调用方传来的 modelId 只当兜底。
+ */
+export async function forkTextConversation({ dispatch, state, conv, msg, log }) {
+  const source = findOwnerConversation(state, msg && msg.id);
+  const srcMessages = (source && source.messages) || [];
+  const cut = srcMessages.findIndex((m) => m.id === (msg && msg.id));
+  const upto = srcMessages.slice(0, cut < 0 ? srcMessages.length : cut + 1).filter(isTextMessage);
+  if (!upto.length) throw new Error('这条消息已不可用（找不到它的上下文），无法在新对话里重发。');
+
+  // 复制成新对话自己的消息：**换新 id** —— 两个对话不共用消息 id，避免搜索命中 / 定位串味
+  const copied = upto.map((m) => ({
+    ...m,
+    id: uid('m'),
+    mode: TEXT_MODE,
+    parentId: null,
+    meta: m.meta ? { ...m.meta } : m.meta,
+    ...(m.role === 'assistant' ? { status: 'success', streaming: false, error: null } : {})
+  }));
+  // 助手回复挂在「被复制过来的最后一条用户消息」下面：它就是这次要重新问的那一条
+  const lastUser = [...copied].reverse().find((m) => m.role === 'user') || copied[copied.length - 1];
+
+  const wanted = (lastUser.model && lastUser.model.id) || state.settings.textModelId || '';
+  const resolved = pickTextModel(state.settings, state.textModelSeries, wanted);
+  const asst = makeTextAssistantPlaceholder({ parentId: lastUser.id, resolved });
+
+  dispatch({ type: 'MSG_ADD', convId: conv.id, messages: [...copied, asst] });
+  dispatch({ type: 'BUSY_SET', convId: conv.id, jobId: asst.id });
+
+  const firstText = (copied.find((m) => m.role === 'user') || {}).text || '';
+  maybeAutoTitle({ dispatch, state, conv, text: firstText, log }).catch(() => {});
+
+  await dispatchTextRequest({ state, conv, history: copied, asst, resolved, log });
+  return { userMsg: lastUser, asst };
 }

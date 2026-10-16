@@ -19,6 +19,9 @@ An **Electron + React + Vite** desktop AI image generation & editing workbench, 
   | **GPT Image series** (gpt-image-2 / 2.5 …) | Grsai · NewApi |
 
 - Except for the async option on Qwen, every source is **synchronous**: one blocking request that waits for the image
+- **Two generation modes**: **Image** (the default — text-to-image / image-to-image above) and **Chat** (talk to a text
+  model: streaming replies, image / multi-image questions, the whole conversation as context; configured under
+  **Settings → Text model**, switched under **Settings → Basic → Generation mode**)
 - A **protocol adapter** architecture lets you keep adding series / alternative API request & parsing rules
 
 > For AI / developers, the in-depth development & debugging guide lives in **[AIDEV.md](./AIDEV.md)** (Chinese).
@@ -30,24 +33,26 @@ An **Electron + React + Vite** desktop AI image generation & editing workbench, 
 ```
 stabstab/
 ├── electron/               # Electron main process (main.js + preload.js)
-│   ├── assets/             # Window icon + built-in model-series.json
+│   ├── assets/             # Window icon + built-in config: model-series.json (images) / text-model-series.json (text)
 │   └── src/
-│       ├── api/            # Protocol adapters (dashscope / seedream / newapi-images / grsai) + registry + runner
+│       ├── api/            # Protocol adapters (dashscope / seedream / newapi-images / grsai / grsai-chat) + registry + runner
 │       ├── paths.js        # Data-root resolution (installed → user dir, portable → next to exe) + legacy migration
 │       ├── logger.js       # File logging (<data>/log/app-YYYYMMDD.log)
 │       ├── store.js        # Settings / conversations JSON persistence (atomic write + legacy migration)
 │       ├── modelSeries.js  # Model-series config IO & resolution (authoritative for requests)
+│       ├── textModelSeries.js # Text-model-series config IO & resolution (authoritative for chat requests)
 │       └── imageutil.js    # Image dimension sniffing / cache download
 ├── src/                    # React renderer (Vite)
 │   ├── components/         # Sidebar, chat, messages, composer, settings, lightbox, toasts
-│   ├── lib/                # State store, model resolution, image compression, send logic
+│   ├── lib/                # State store, model resolution (models.js / textModels.js), image compression, send logic
 │   └── styles/app.css      # Light / dark theme styles
 ├── build/                  # Logo (icon.svg / icon.png / icon.ico)
 ├── scripts/
 │   ├── test-api.js         # Backend end-to-end tests (mock HTTP servers per protocol)
 │   ├── gen-logo.js         # Generate the logo (Penrose triangle / Monument Valley style)
 │   ├── package.sh          # Ubuntu one-click packaging
-│   └── package.cmd         # Windows one-click packaging
+│   ├── package.cmd         # Windows one-click packaging (cleans stale release\ output first)
+│   └── clean-release.ps1   # pre-package cleanup + locked-file diagnostics (helper: lib/RmFileLock.cs)
 ├── AIDEV.md                # AI / developer continuation guide
 └── electron-builder.yml    # Packaging config
 ```
@@ -155,8 +160,9 @@ App data lives in a single `stabstab-data/` directory whose **location depends o
 ```
 stabstab-data/
 ├── conversations.json   # Conversations & history (text + image references)
-├── settings.json        # Settings (model series & models, API keys, theme, timeout, ...)
-├── model-series.json    # Built-in model-series definitions (series / API sources / default URLs / sync-async switch)
+├── settings.json        # Settings (model series & models, API keys, theme, timeout, generation mode, ...)
+├── model-series.json    # Built-in model-series definitions (series / API sources / default URLs / size options)
+├── text-model-series.json # Text-model series for Chat mode (series / sources / built-in model list / default model)
 ├── rename-model.json    # Title-model config (prompt template / temperature / Top-P / default URL & model)
 ├── .migration.json      # Legacy-data migration record (source directory, whether the copy finished)
 ├── cache/               # Generated result images (downloaded immediately from API URLs)
@@ -168,6 +174,10 @@ stabstab-data/
 - **Your config survives uninstall and overwrite installs**: data sits in the system user directory (portable builds keep it next to the executable) while the installer only removes the install directory. Earlier versions kept data next to the executable; the first upgrade **migrates it automatically** (including your image history, copy-only — originals are never deleted), and the Windows installer grabs a copy before deleting the old directory (progress is printed in the installer's details pane).
 - The main page offers a one-click “open cache directory” button; **deleting `cache/` frees space and does not affect the next run** (result images in history show a "image cleared" placeholder).
 - `model-series.json` can be hand-edited (e.g. point a source at your own relay); it takes effect after restart, and deleting it re-creates it from the built-in defaults.
+- `text-model-series.json` is a **separate configuration for Chat mode** (never shared with `model-series.json`): it holds the
+  text-model series, their API sources and the **built-in model list**; hand-editable, takes effect after restart. In
+  Settings → Text model you can only set the per-source **API key / URL** and **which built-in model to use** — to add or
+  remove models, edit this JSON.
 - To find the data directory in use, check the startup log — it records `dataRoot`, and `migratedFrom` when a migration happened.
 
 ---
@@ -175,7 +185,7 @@ stabstab-data/
 ## Features
 
 - **Conversation management**: left-side tabs (numeric names 1234… by default), new / rename / delete / delete-all; the "⋯" menu per tab.
-- **No context**: each request contains only the current single input — context length is always 0.
+- **No context**: each request contains only the current single input — context length is always 0 **(image mode; see Chat mode below)**.
 - **Message actions**: edit a past user input in place and resend (auto-deletes the old reply, overwrites in place). A resend always uses the **model and parameters currently selected in the composer** (switch to model B or change the resolution below and the resend follows it; the edit bubble can also override the size for that single resend); delete a single message; copy text / image; result images show their resolution.
 - **Image input**: paste (common formats), drag into the composer, or click "+" for multi-select; up to 3 images; pure image / pure text / text+image all supported.
 - **Image preview**: click any input/result image to zoom, scroll to zoom, drag to pan, ESC to close, arrow keys to switch.
@@ -185,6 +195,8 @@ stabstab-data/
 - **Sync mode (default)**: the current conversation must wait for the API response before sending again (send button disabled, re-enabled on timeout); multiple tabs wait independently; a yellow dot marks results arriving on other tabs and disappears once opened.
 - **Async mode**: **Qwen series only** (`X-DashScope-Async` submit → task polling with exponential backoff 3s → ×1.5 → 15s cap), status card + cancel button (only PENDING can be cancelled), auto-resume after app restart; all other series are always synchronous.
 - **Timeout**: single request timeout defaults to 300 s, configurable in Settings.
+- **Chat mode** (Settings → Basic → Generation mode → Chat): the chat page talks to a **text model** instead of an image
+  model — see "Chat Mode (Text Model)" below.
 - **Logging**: key events are written to `stabstab-data/log/` for troubleshooting.
 
 ---
@@ -197,6 +209,9 @@ Settings → Image model is organised by **model series** and starts empty:
 2. Inside the series card, click "Add model", type the **model id** (the grey placeholder shows examples such as `gpt-image-2` or `doubao-seedream-5-0-pro-260628`) and choose its **API source**;
 3. Fill in the **API Key** and **API URL** per source (the URL is pre-filled from the built-in default, editable, with a "restore default" button);
 4. The radio button on the left of each model row marks the **global default model** (the one pre-selected in the composer).
+
+> This section covers the **image** chain only. The text models used by Chat mode live under **Settings → Text model**
+> (a separate config file and a separate set of settings fields, see "Chat Mode (Text Model)" below); the two never interfere.
 
 Other notes:
 
@@ -213,6 +228,36 @@ Other notes:
 3. Add a series (or a `sources[]` entry) in `electron/assets/model-series.json` whose `protocol` is the adapter id — the series/source dropdowns pick it up automatically.
 
 The `reserved` list in `registry.js` shows "reserved but not implemented" protocols (placeholder, disabled). See [AIDEV.md §0 and §7](./AIDEV.md).
+
+---
+
+## Chat Mode (Text Model)
+
+Switch **Settings → Basic → Generation mode** to **Chat** and the chat page stops generating images and starts talking to
+a **text model**:
+
+- **Text models only**: the model picker lists text models and the size / advanced-parameter panel is hidden (text models
+  have neither). Configure it under **Settings → Text model**: the built-in **Grsai series** (10 gemini models, default
+  `gemini-3.5-flash`), where each source takes an **API key** (the "Get API Key" link jumps to the sign-up page) and an
+  **API URL** (defaults to the built-in `https://grsai.dakka.com.cn/v1`, editable for your own relay, "restore default" reverts).
+- **Streaming replies**: the answer is rendered token by token (`POST {url}/chat/completions`, SSE) instead of waiting for
+  the whole completion.
+- **Questions can carry images**: it is the same composer — paste / drag / multi-select up to 3 images, sent together
+  (converted to base64).
+- **Full context**: every Chat-mode message in the conversation is sent in order as `messages`, with **no truncation and no
+  summarising**, so the model remembers what was said. Token usage therefore grows with the number of turns — fork a new
+  conversation for long threads.
+- **Strictly serial inside one conversation**: you cannot send the next message before the current reply finishes. Two
+  simultaneous requests would each answer from the same, still-incomplete history, so parallelism is deliberately not
+  offered here (image mode still runs several requests in parallel, unaffected).
+- **Re-sending inside the conversation is intentionally unavailable**: for past bubbles, "Send to current conversation"
+  and "Edit & resend" are **disabled** in Chat mode (greyed out, with a tooltip explaining why) — re-inserting old content
+  into the same context makes the model contradict itself. To send something again use **"Send to new conversation"**,
+  which forks the context into a **new tab**. In image mode both buttons behave exactly as before.
+
+The model list and series definitions live in `text-model-series.json` inside the data directory (shipped built in, copied
+on first run, hand-editable, takes effect after restart). API keys are stored only in the local `settings.json` under
+`textSourceConfig` — a completely separate field from the image chain (`model-series.json` / `sourceConfig`).
 
 ---
 
@@ -246,6 +291,13 @@ The `reserved` list in `registry.js` shows "reserved but not implemented" protoc
 - Body: `{model, prompt, images?, aspectRatio?}`; `images` accepts base64 data URLs and http URLs, `aspectRatio` accepts ratios like `16:9` or pixel values like `1024x1024`
 - Supported model ids: `gpt-image-2`, `gpt-image-2-vip`, `gpt-image-2.5`, `gpt-image-2.5-flare`, `gpt-image-2.5-sunburst` (you type them yourself)
 - Response: `results[].url` inside the SSE stream, or JSON `{code:0,data:{results:[{url}]}}`; if the server only returns a task id, the app automatically polls the result endpoint
+
+**Text model · Grsai series (Chat mode)**:
+
+- `POST {baseUrl}/chat/completions` (default `https://grsai.dakka.com.cn/v1/chat/completions`), header `Authorization: Bearer sk-xxx`
+- Body: `{model, stream:true, messages}` where `messages` is the whole conversation (`[{role:'user'|'assistant', content:…}]`); the response is a **streaming** SSE with incremental deltas
+- Images travel as `image_url.url` base64 data URLs (`data:<mime>;base64,<data>`); multiple images and multiple turns are supported
+- The model list ships in `electron/assets/text-model-series.json` (10 gemini models, default `gemini-3.5-flash`)
 
 ---
 

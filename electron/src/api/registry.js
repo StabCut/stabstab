@@ -13,12 +13,14 @@ const dashscope = require('./dashscope');
 const seedream = require('./seedream');
 const newapiImages = require('./newapi-images');
 const grsai = require('./grsai');
+const grsaiChat = require('./grsai-chat');
 
 const adapters = {
   [dashscope.id]: dashscope,        // qwen 系列·官方（DashScope 多模态，同步）
   [seedream.id]: seedream,          // Doubao Seedream 系列·官方（火山方舟 Ark）
   [newapiImages.id]: newapiImages,  // Doubao Seedream / GPT Image 系列·New API（OpenAI 兼容）
-  [grsai.id]: grsai                 // GPT Image 系列·Grsai
+  [grsai.id]: grsai,                // GPT Image 系列·Grsai
+  [grsaiChat.id]: grsaiChat         // 文本模型·Grsai（OpenAI 兼容 chat/completions，流式，见 text-model-series.json）
 };
 
 const reserved = [
@@ -36,6 +38,10 @@ function listProtocols() {
     available: true,
     // 只有同步一种请求模式：没有 supportsAsync（见 AIDEV.md §4.12）
     supportsImageInput: a.supportsImageInput !== false,
+    // 文本协议（对话生成）与图像协议共用这张表，但界面按 isText 分开用：
+    // 图像那套（尺寸 / 参数 / 模型选择器）不看 isText 的协议
+    isText: !!a.isText,
+    stream: !!a.stream,
     defaultBaseUrl: a.defaultBaseUrl,
     defaultModel: a.defaultModel,
     modelPlaceholder: a.modelPlaceholder || '',

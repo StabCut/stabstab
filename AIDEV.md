@@ -30,6 +30,10 @@ settings.json（用户数据：添加了哪些系列、系列里有哪些模型�
   （老版本数据里的这两个字段在 `modelSeries.mergeSeries` 里被丢弃）。所有系列一律「单次请求阻塞等待图片返回」。
 - 发请求时**由主进程按 `modelId` 反查**协议 / 来源 / 密钥 / 地址（`electron/src/modelSeries.js#resolveModel`），渲染进程只传 `modelId`——渲染进程不持有权威凭据副本。
 - 渲染进程侧的同一套解析在 `src/lib/models.js`（供下拉框、尺寸列表、参数面板、提示文案使用）。**改规则时两处都要改**。
+- **「对话生成」模式（文本模型）是另一条完全隔离的链**：配置文件是 `text-model-series.json`，settings 侧是
+  `generationMode` / `textModelId` / `textSourceConfig` —— 与上面这套（图像）**一行不共用、互不读写**；
+  解析入口是 `electron/src/textModelSeries.js#resolveTextModel`（权威）与 `src/lib/textModels.js#resolveTextModel`
+  （界面），同样「两处同口径」。见 **§4.20** 与 **§5.2.1**。
 
 ---
 
@@ -48,6 +52,9 @@ settings.json（用户数据：添加了哪些系列、系列里有哪些模型�
   标签「⋯」菜单里还有**生成重命名**：手动再调一次重命名模型重算标签名（不满意自动命名 / 当时失效时用，见 §4.4）。
 - **模型系列 → API 来源 → 协议适配器**：内置 3 个系列（Qwen / Doubao Seedream / GPT Image），
   模型 id 由用户填写；每个「系列·来源」独立保存 API Key 与 API 地址。
+- **两种生成模式**（设置 → 基础设置 →「生成模式」）：**图片生成**（默认，就是上面这套文生图 / 图生图）与
+  **对话生成**（接文本模型：流式回答、支持多图提问、把整段对话作为上下文发出、同一对话严格串行）。
+  两条链的配置与解析完全隔离（`text-model-series.json` + `textSourceConfig`），见 §4.20。
 - **只有同步模式 + 同对话并行等待（伪异步）**：请求提交后阻塞等待图片返回；**等待期间输入框不锁定**，
   同一个对话里可以连续发出多个请求，每个请求各占一个 jobId、各自等待、互不干扰（见 §4.12）。
   用户气泡上还有「新对话发送 / 当前对话发送」两个按钮，把这条内容原样再发一遍（见 §4.13）。
@@ -78,6 +85,7 @@ stabstab/
 │   ├── assets/
 │   │   ├── icon.png                   # 运行时窗口图标（打包进 asar）
 │   │   ├── model-series.json          # ★ 内置模型系列定义（系列 / 来源 / 默认地址 / 尺寸）
+│   │   ├── text-model-series.json     # ★ 内置「文本模型系列」定义（「对话生成」模式：系列 / 来源 / 内置模型清单 / 默认模型，见 §4.20）
 │   │   └── rename-model.json          # ★ 内置重命名模型配置（标题提示模板 / 温度 / Top-P / 默认地址）
 │   └── src/
 │       ├── paths.js                   # ★ 数据根目录解析（用户目录 / 便携 exe 同级 / dev-data）+ 旧数据迁移，见 §5.6
@@ -86,6 +94,7 @@ stabstab/
 │       ├── closeBehavior.js           # ★ 关闭窗口行为（直接退出 / 最小化到托盘）的取值规整 + 默认值规则（纯函数）
 │       ├── shortcuts.js               # ★ 全局快捷键：组合键解析 / 内部重复检测 / 真注册与试探性冲突检测，见 §4.17
 │       ├── modelSeries.js             # ★ 模型系列配置读写与解析（resolveModel = 发请求的权威口径）
+│       ├── textModelSeries.js         # ★ 文本模型系列配置读写与解析（resolveTextModel = 「对话生成」发请求的权威口径，与图像那条链完全隔离，见 §4.20）
 │       ├── renameModel.js             # ★ 重命名模型：rename-model.json 读写 + DeepSeek Responses API 调用
 │       ├── imageutil.js               # PNG/JPEG/GIF/WEBP 尺寸嗅探、缓存下载（含 data:base64 结果）
 │       ├── promptmeta.js              # ★ 图片提示词元数据：PNG iTXt / JPEG XMP(APP1) / WebP XMP 分块 读写（含输入图文件名 picN）
@@ -101,6 +110,7 @@ stabstab/
 │           ├── seedream.js            # Doubao Seedream 系列·官方（火山方舟 images/generations）
 │           ├── newapi-images.js       # Seedream / GPT Image 系列·New API（OpenAI 兼容图像生成）
 │           ├── grsai.js               # GPT Image 系列·Grsai（SSE 同步 / 只给任务 id 时协议内部查询结果）
+│           ├── grsai-chat.js          # ★ 文本对话（「对话生成」模式·Grsai 来源）：流式 SSE /chat/completions（见 §4.20）
 │           └── runner.js              # 请求执行器：提交/任务兜底查询/下载/事件/取消（协议无关）
 ├── src/                               # 渲染进程（React，经 Vite 构建）
 │   ├── main.jsx                       # 入口 + 全局错误捕获上报
@@ -113,7 +123,7 @@ stabstab/
 │   │   ├── Composer.jsx               # 输入框：粘贴/拖入/多选、size/高级参数、发送（等待中也能发）/停止等待、附加提示词解析、逐标签草稿搬运、接收气泡拷来的草稿（见 §4.13.1）
 │   │   ├── SizePicker.jsx             # ★ 尺寸选择器：候选尺寸（sizeOptions）+ 末尾「自定义…」（两个数字 + 可点的 ×⇄: + 比例与方框示例，见 §4.10）
 │   │   ├── PromptDrop.jsx             # ★ 全窗口左右解析分区（曲线分隔）+ 「图片提示词」查看弹窗
-│   │   ├── SettingsModal.jsx          # 设置：图像模型 / 文本模型 / 基础 / 重命名模型 / 高级 / 数据管理 六页（导航顺序只由文件顶部 TABS 决定；基础页含「全局快捷键」，见 §4.17；文本模型页设置内容待定）
+│   │   ├── SettingsModal.jsx          # 设置：图像模型 / 文本模型 / 基础 / 重命名模型 / 高级 / 数据管理 六页（导航顺序只由文件顶部 TABS 决定；基础页含「生成模式」与「全局快捷键」，见 §4.20 / §4.17；文本模型页 = 文本系列的来源级密钥与内置模型选择）
 │   │   ├── ShortcutRecorder.jsx       # ★ 全局快捷键录制框（点一下再按键；Esc 取消录制、退格清除）+ 状态行
 │   │   ├── ConfirmDialog.jsx          # ★ 二次确认弹窗（Enter 确定 / Esc 取消；图标沿用调用方那一个），见 §4.18
 │   │   ├── Lightbox.jsx               # 全屏图片预览：滚轮缩放/拖动/ESC
@@ -122,6 +132,7 @@ stabstab/
 │       ├── store.jsx                  # React Context + reducer 全局状态 + 防抖落盘（含逐标签草稿 drafts，仅内存）
 │       ├── promptReuse.jsx            # ★ 解析分区显隐状态机（图片接收区域是一组元素：输入框 + 编辑气泡）+ 元数据解析 + 待复用提示词（临时状态）
 │       ├── models.js                  # ★ 模型系列/模型解析（界面侧，与主进程同口径）+ 尺寸/比例纯函数（sizeLabel / ratioText / sizeRatioOf）
+│       ├── textModels.js              # ★ 文本模型系列/模型解析（界面侧，「对话生成」模式；与 electron/src/textModelSeries.js 同口径，见 §4.20）
 │       ├── shortcuts.js               # ★ 全局快捷键（界面侧）：动作文案 + 键盘事件→accelerator + 显示写法 + 保存前重复提示（与主进程同口径，见 §4.17）
 │       ├── title.js                   # ★ 会话标签自动命名（首条文字 → 重命名模型 → 回退截取）+ 手动「生成重命名」
 │       ├── send.js                    # 发送/重发公共逻辑（无上下文、消息配对、压缩、参数过滤、重发取哪套设置）
@@ -896,12 +907,63 @@ API 返回的文字都能命中，结果按命中处列出，点一下定位到�
 
 ---
 
+### 4.20 「对话生成」模式（文本模型：整段上下文 + 同一对话严格串行）
+
+`settings.generationMode`（`'image' | 'text'`，默认 `'image'`）决定聊天页是「生成图片」还是「跟文本模型对话」，
+开关在**设置 → 基础设置 →「生成模式」**（图片生成 / 对话生成）。它只影响界面列哪套模型、显示哪些控件，
+以及发送时带不带上下文 —— 两条链的**数据与解析完全隔离**：
+
+```
+electron/assets/text-model-series.json（随包内置，只读）
+   └── 首次启动复制到 <dataRoot>/text-model-series.json（唯一可写，可手工编辑，重启生效）
+          └── series[] → sources[] → protocol:'grsai-chat' → electron/src/api/grsai-chat.js
+settings.json（文本侧三个字段，与图像侧的同名概念各存各的）
+   ├── generationMode    'image' | 'text'
+   ├── textModelId       '' = 用该系列的 defaultModelId
+   └── textSourceConfig  { '<seriesId>.<sourceId>': { apiKey, baseUrl } }
+[发一次] lib/send.js → window.stab.chat({conversationId, messageId, modelId, messages})
+   ├── messages = 本对话里**文本模式**的用户 / 助手消息，按顺序、带图片（data URL），**不做任何截断**
+   └── 主进程按 modelId 反查协议 / 来源 / 密钥 / 地址（textModelSeries.js#resolveTextModel = 权威口径）
+```
+
+- **为什么要单开一条链、单开一份 json**：图像那条链里挂的是「图像模型 id + 尺寸候选 + 图像参数」，
+  文本模型既没有尺寸、参数也不一样。混在一份配置里，设置页、模型下拉、参数面板、发请求到处都要分叉判断；
+  拆开之后升级只动其中一份、用户手工改坏文本那份也不影响图像生成，反过来同样成立。
+  代价是「两套概念长得像」（`sourceConfig` vs `textSourceConfig`），所以键一律带 `text` 前缀、注释里到处点明。
+- **解析两处同口径**：`electron/src/textModelSeries.js#resolveTextModel`（发请求时的权威）与
+  `src/lib/textModels.js#resolveTextModel`（界面下拉框 / 设置页）必须一起改 —— 与 `resolveModel` 同一套路。
+  已知差异只有一处：界面侧会把下拉框的复合值（`<系列>.<来源>::<模型>`）剥成模型 id，并且对「未知 / 脏 id」
+  回落到清单里**真实存在**的那个 id（参数 → `settings.textModelId` → 系列 `defaultModelId` → 清单第一个）；
+  主进程那份对未知 id 原样返回。
+- **界面变化**：图片生成（默认）= 模型选择器只列图像模型、显示尺寸与参数；对话生成 = 只列文本模型
+  （在「文本模型」页配置与选择）、隐藏尺寸与参数。输入框是同一个：多图提问照旧（粘贴 / 拖入 / 多选）。
+- **设置页「文本模型」页写哪两个字段**：内置模型清单渲染成一排单选项，选中即写 `settings.textModelId`
+  （当前生效的那个标「内置默认」= 它同时是该系列的 `defaultModelId`，一次都没选过时就用它）；
+  每个来源一块（沿用图像页同一套 `.source-cfg` 标记）写 `settings.textSourceConfig['<系列>.<来源>']` 的
+  `apiKey` / `baseUrl`。清单本身**不能增删**（页面上直接写明），要增删就改数据目录的 `text-model-series.json`。
+- **上下文 = 整段对话**：这是与图像模式最大的不同 —— 图像模式每次只发当前这一条输入（不变量 1），
+  文本模式把该对话里所有**文本模式**的消息按顺序作为 `messages` 发出去，**不截断、不摘要、不设条数上限**，
+  于是 token 消耗随轮数线性增长。这是刻意的取舍：对话要「记得住」，而不是每次让模型重新自我介绍。
+- **同一个对话严格串行**：文本模式下一轮回答结束前发不出下一轮（并发的两个请求会各自基于「同一段还不完整的
+  历史」生成，回答顺序与上下文顺序对不上，用户看到的就是答非所问）。图像模式不受影响，仍是 §4.12 的伪异步多请求并行。
+- **重发 / 编辑重发禁用**：用户气泡的「当前对话发送」与「编辑并重新发送」在文本模式下一律 `disabled`
+  （**不隐藏**，悬停就能看到原因），因为它们会把历史内容再插回同一段上下文里造成错位；唯一保留的再发路径是
+  **「新对话发送」**（把上下文带进新对话分叉，见 §4.13 / 不变量 40）。注意这是**真的 `disabled`**，
+  连该按钮的 Ctrl/Shift 克隆分支一起停用 —— 与不变量 30「提交中只做视觉置灰」不冲突：
+  那是「正在提交」的临时样式，这里是「模式本身不允许」。
+- **回归**：`src/lib/textModels.js` 是纯函数、无 React 依赖，可直接断言（下拉列表 / 复合 id /
+  未知 id 回落 / 地址与密钥优先级 / 空配置回 `null`）；设置页「文本模型」页与气泡禁用规则的渲染断言
+  可按 §9.3 那套 esbuild + 无头窗口的方式补。
+
+---
+
 ## 5. 持久化数据结构（Schema）
 ### 5.1 `settings.json`
 
 ```jsonc
 {
   "theme": "system",            // system | light | dark
+  "generationMode": "image",    // 生成模式：image = 图片生成（默认）| text = 对话生成（见 §4.20）
   "defaultSavePath": "",        // 空 = 用 <data>/downloads
   "requestTimeoutSec": 300,     // 单次请求超时（秒）
   "compressEnabled": true,      // 图片自动压缩开关
@@ -925,7 +987,12 @@ API 返回的文字都能命中，结果按命中处列出，点一下定位到�
     "qwen.official": { "apiKey": "", "baseUrl": "" }   // baseUrl 为空 = 用 json 里的默认地址
   },
   "defaultModelId": "m_xxx",    // 全局默认模型；没有模型时为字符串
-  "renameModel": {              // 「重命名模型」：会话标签自动命名的凭据（其余参数见 5.5 rename-model.json）
+  "textModelId": "",            // 「对话生成」选中的文本模型 id；空 = 用该系列的 defaultModelId（见 §4.20 / §5.2.1）
+                                //   不属于任何系列内置清单时保存即清空（回落到系列默认，主进程同口径）
+  "textSourceConfig": {         // 「对话生成」的密钥 / 地址覆盖（**与上面的 sourceConfig 各存各的，互不读写**）
+    "grsai-text.grsai": { "apiKey": "", "baseUrl": "" }   // 键 = <文本系列 id>.<来源 id>；baseUrl 空 = 用 json 里的默认地址
+  },
+  "renameModel": {              // 「重命名模型」：会话标签自动命名的凭据（其余参数见 §5.3 rename-model.json）
     "apiKey": "",               // DeepSeek 开放平台的 Key；为空 = 不做模型命名，直接截取首条文字
     "baseUrl": "",              // 空 = 用 rename-model.json 里的默认地址（https://api.deepseek.com）
     "modelId": ""               // 空 = 用 rename-model.json 里的默认模型（deepseek-flash）
@@ -936,6 +1003,8 @@ API 返回的文字都能命中，结果按命中处列出，点一下定位到�
 > **默认不预置任何模型系列**：全新安装时 `modelGroups` 为空；v1 旧结构（`api` / `models` / `requestMode`）由
 > `store.migrateLegacySettings` 迁移时**也不会自动带出系列或模型**——只把旧 API Key / 自定义地址归位到
 > `sourceConfig['<系列>.<来源>']`，用户自己添加该系列后即可直接生效（迁移后 `modelGroups` 仍为 `[]`、`defaultModelId` 为 `''`）。
+> 文本侧同理：`textModelSeries` 是**内置**的（随包发布，见 §5.2.1），所以「对话生成」开箱就能选模型，
+> 但 `textModelId` 默认为空（= 用系列的 `defaultModelId`）、`textSourceConfig` 为空（= 还没填 Key）。
 
 ### 5.2 `model-series.json`（内置模型系列定义）
 
@@ -978,6 +1047,46 @@ API 返回的文字都能命中，结果按命中处列出，点一下定位到�
 
 内置的三个系列：`qwen`（官方 DashScope 一个来源）、`doubao-seedream`（官方 Ark / New API）、`gpt-image`（Grsai / New API）。
 三个系列都**只有同步**，配置里没有 `requestMode` / `supportsAsync` 这样的字段。
+
+### 5.2.1 `text-model-series.json`（「对话生成」模式的文本模型系列定义）
+
+与 §5.2 **完全隔离**的另一份配置：`electron/assets/text-model-series.json` 随包发布（只读），首次启动复制一份到
+`<dataRoot>/text-model-series.json`（唯一可写，可手工编辑，重启生效）；数据目录里的这份删掉再重启会从内置配置重新生成。
+它只服务「对话生成」模式（见 §4.20），与 `model-series.json` / `settings.modelGroups` / `settings.sourceConfig` 一行不共用。
+
+```jsonc
+{
+  "version": 1,
+  "series": [
+    {
+      "id": "grsai-text",
+      "label": "Grsai 系列",
+      "description": "……（设置页显示在系列标题下）",
+      "builtin": true,
+      "protocol": "grsai-chat",              // 绑定 registry 里的适配器 id（永远以内置为准，副本改不动）
+      "defaultModelId": "gemini-3.5-flash",  // 用户没选过时的默认模型（选中项记在 settings.textModelId）
+      "models": [ { "id": "gemini-3.8-flash" }, { "id": "gemini-3.5-flash" }, "……" ],  // 内置模型清单（下拉顺序 = 此顺序）
+      "sources": [
+        {
+          "id": "grsai",
+          "label": "Grsai（国内节点）",
+          "protocol": "grsai-chat",
+          "baseUrl": "https://grsai.dakka.com.cn/v1",   // 实际请求 POST {baseUrl}/chat/completions
+          "apiKeyUrl": "https://grsai.ai/zh/dashboard/api-keys",
+          "hint": "……（设置页显示的协议要点）"
+        }
+      ]
+    }
+  ]
+}
+```
+
+- 合并规则（`textModelSeries.js#mergeConfig`，与 `modelSeries.js` 同口径）：**系列的成员与协议永远以内置为准**；
+  副本可覆盖文案与默认值（`label` / `description` / `defaultModelId` / `hidden`、来源的 `label` / `baseUrl` / `hint` / `apiKeyUrl`）；
+  `models` 取**并集**（内置在前，副本追加的接在后面 —— **只能增不能删**，否则首次落地的那份副本会永久压住升级新增的模型）；
+  副本里非内置 id 的系列原样保留，但它必须自带 `protocol` 与 `sources`，否则直接丢弃（没法发请求）。
+- 设置页这一栏只有「来源级密钥 / 地址」与「用哪个内置模型」两件事，**不能增删模型**（要增删就手工改这份 json）。
+- 密钥永远在 `settings.json`（`textSourceConfig['<系列>.<来源>']`），不写进本文件；本文件也不存任何用户选中项。
 
 ### 5.3 `rename-model.json`（重命名模型配置：标题提示模板 / 温度 / Top-P / 默认地址）
 
@@ -1153,7 +1262,9 @@ ss-export/
 
 ## 6. 关键不变量（改代码时严禁破坏）
 
-1. **无上下文**：每次请求 `input.messages` 只含当前一条用户输入，绝不拼接历史消息。
+1. **图像模式无上下文**：图片生成（`generationMode = 'image'`）时每次请求 `input.messages` 只含当前一条用户输入，
+   绝不拼接历史消息。**唯一例外是「对话生成」模式**（`generationMode = 'text'`）：它按设计发送整段对话的文本模式消息
+   （`window.stab.chat` 的 `messages`）。两组口径不得互相渗透 —— 图像那条路径上永远不许出现历史消息（见 §4.20 与不变量 38~40）。
 2. **jobId === assistant 消息 id**：`runner` 的 `activeJobs` 以 `messageId` 为键；取消、停止等待都依赖此约定。
 3. **user↔assistant 配对**：assistant 消息的 `parentId` 指向其用户消息；「编辑重发」通过 `MSG_EDIT_PREPARE` 删除 `parentId===userMsgId` 的旧回复。
 4. **图片 base64 格式**：`data:<mime>;base64,<data>`（各协议统一用这个格式接收输入图）。
@@ -1218,6 +1329,8 @@ ss-export/
     只能把内容原封不动拷进输入框草稿（`pushComposerDraft` + `announceComposerDraft`，落到 Composer 的
     `applyDraft`），并保持两个按钮可点（提交中只做视觉置灰 `.is-pending`，不用 `disabled` ——
     否则按住修饰键的克隆会被一起挡掉）。见 §4.13 / §4.13.1。
+    **例外**：「对话生成」模式下「当前对话发送」与「编辑并重新发送」必须**真的 `disabled`**（不隐藏、带原因 title，
+    连该按钮的 Ctrl/Shift 克隆一起停用）—— 那是「文本模式不允许」的模式限制，不是提交中的临时置灰（见 §4.20 / 不变量 40）。
 31. **导出包名 + 包内目录协议是导入的两道硬校验**：包名必须 `ss-YYYYMMDD-HHmm.zip`（`BAD_NAME`），
     解压后 `ss-export/` 里必须齐备 manifest 与允许的条目（`BAD_STRUCTURE`），**分别报错、不得合并成一类**；
     导出时若用户在「另存为」里改了名，必须写回协议名（否则这个包以后导不回来）。解压只能落在
@@ -1253,6 +1366,22 @@ ss-export/
     点按钮只**打开**确认弹窗，真正的删除只在用户确认后执行；`ConfirmDialog` 的键盘约定
     （window 捕获阶段拦 Enter / Esc、输入法组字中的回车不算、`doneRef` 闸重复触发）**不得**去掉；
     弹窗图标沿用触发它的那个图标（删除继续用 `trash`），不要换成警告三角。
+38. **文本模型那条链与图像链完全隔离**（见 §4.20）：配置文件是 `<dataRoot>/text-model-series.json`
+    （内置 `electron/assets/text-model-series.json` 首次启动复制过去），settings 侧是
+    `generationMode` / `textModelId` / `textSourceConfig` —— **不得**把文本系列塞进 `modelSeries`、
+    **不得**把文本密钥写进 `settings.sourceConfig`、也不得让 `models.js#resolveModel` 去认文本模型 id；
+    接口一律走 `<seriesId>.<sourceId>` 键（`textModels.js#textSourceKey`），前缀 `text` 不许省。
+    解析口径两处同口径：`electron/src/textModelSeries.js#resolveTextModel`（权威）与
+    `src/lib/textModels.js#resolveTextModel`（界面）—— 改一处必须改另一处。
+39. **`generationMode` 只认两个值且不改变图像路径**：保存时按 `'image' | 'text'` 规整，
+    其余（含老数据里没有这个字段）一律回 `'image'`；`'image'` 时所有行为与加这个开关之前完全一致
+    （模型只列图像、显示尺寸与参数、每次只发当前一条输入、多请求并行）。文本模式才发送**整段对话**的
+    文本模式消息（不截断、不摘要），且同一对话**严格串行**。见 §4.20。
+40. **文本模式下不许把历史内容再插回同一段上下文**（见 §4.20）：`generationMode = 'text'` 时，
+    用户气泡的「当前对话发送」（`sendBubbleAgain` 的 current 分支）与「编辑并重新发送」
+    （`startEdit` / `resendEdited`）必须 `disabled` + 原因 title（**不隐藏**），且每条进入路径都要堵住
+    （按钮、编辑气泡的「确定并重新发送」、Ctrl/Shift 克隆、逻辑兜底）；
+    **唯一保留的再发路径是「新对话发送」**（`sendBubbleToNewConversation`，把上下文带进新对话分叉）。
 
 ---
 
@@ -1494,7 +1623,9 @@ node_modules\.bin\electron dev-data\qa\search-dom-test.js  # 搜索面板真实�
 | 改 size 列表 | `electron/assets/model-series.json` 的 `sources[].sizeOptions`（或适配器的 `sizeOptions` 兜底）；老用户的数据目录副本靠 `mergeSizeOptions` 的并集自动看到新项（只能增不能删，见 §5.2） |
 | 改比例 / 方框示例、比例模式 | `src/components/SizePicker.jsx`（`SizeRatioPreview` / `toggleRatioMode` / `counterpart`）+ `src/lib/models.js` 的 `ratioText` / `sizeRatioOf` / `sizeLabel`；回归 `dev-data/qa/size-picker-test/` |
 | 改「图像模型」页结构 | `src/components/SettingsModal.jsx`（系列卡片 / 模型行 / 来源级 API Key 与地址） |
-| 改「文本模型」页结构（**设置内容待定**） | `src/components/SettingsModal.jsx` 里 `tab === 'text'` 那段：目前只是占位说明，**不读写任何设置字段** |
+| 改「文本模型」页结构 | `src/components/SettingsModal.jsx` 里 `tab === 'text'` 那段（系列卡片 + 来源级 API Key / 地址 + 内置模型单选项）；解析在 `src/lib/textModels.js`，配置在 `electron/assets/text-model-series.json`（见 §4.20 / §5.2.1） |
+| 改「对话生成」模式的规则（上下文 / 串行 / 界面差异） | `src/lib/send.js`（怎么组装 `messages`）+ `src/components/UserMessage.jsx`（重发入口禁用）+ 设置页基础页的「生成模式」开关；**权威解析在 `electron/src/textModelSeries.js`**（见 §4.20，不变量 38~40） |
+| 改文本模型解析规则 | `electron/src/textModelSeries.js#resolveTextModel` **与** `src/lib/textModels.js#resolveTextModel`（两处同口径） |
 | 改设置页左侧导航的顺序 / 名称 | `src/components/SettingsModal.jsx` 顶部的 `TABS` 数组 —— **只有它决定导航顺序与名称**（各页正文是并列的 `tab === 'x'` 分支，同一时刻只渲染一段，正文在文件里的先后不影响显示） |
 | 改标题生成提示模板 / 温度 / Top-P / 默认地址 | `electron/assets/rename-model.json`（随包默认）或数据目录的 `rename-model.json`（可手工编辑，重启生效；设置页滑动条也写它） |
 | 改标签命名时机与回退 | `src/lib/title.js#maybeAutoTitle/fallbackTitle` + `src/lib/send.js`（触发点）+ `src/lib/store.jsx` 的 `CONV_RENAME_AUTO` 守卫 |
@@ -1535,7 +1666,8 @@ node_modules\.bin\electron dev-data\qa\search-dom-test.js  # 搜索面板真实�
 
 ## 11. 安全与凭据注意事项
 
-- API Key 只存于本机 `settings.json`（图片模型在 `sourceConfig['<系列>.<来源>']`，重命名模型在 `renameModel.apiKey`），
+- API Key 只存于本机 `settings.json`（图片模型在 `sourceConfig['<系列>.<来源>']`，文本模型在
+  `textSourceConfig['<系列>.<来源>']`，重命名模型在 `renameModel.apiKey`），
   日志**不打印** Key，也不打印完整 base64（只记字节数）；重命名请求的日志只记模型 / 字数 / 耗时 / 生成的标题。
 - `runner` 日志会记录模型名、协议、图片数量、size、耗时、错误码/信息，便于排查但脱敏。
 - 提交代码时不要把 `dev-data/`、`stabstab-data/`、`release/`、`node_modules/` 纳入版本控制（已在 `.gitignore`）。

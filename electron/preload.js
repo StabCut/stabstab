@@ -16,6 +16,9 @@ contextBridge.exposeInMainWorld('stab', {
   // ---- 生成请求 ----
   // 每个请求独立：generate 立即返回，结果经 onApiEvent 推送；cancelJob 只中止指定的那一个。
   generate: (opts) => ipcRenderer.invoke('api:generate', opts),
+  // 文本对话（「对话生成」模式）：opts = {conversationId, messageId, modelId, messages[]}，
+  // messages 是已排好序的多轮上下文（role/text/images，图片为 data URL），事件同样走 onApiEvent。
+  chat: (opts) => ipcRenderer.invoke('text:chat', opts),
   cancelJob: (jobId) => ipcRenderer.invoke('api:cancel', jobId),
   onApiEvent: (cb) => {
     const handler = (_e, data) => cb(data);

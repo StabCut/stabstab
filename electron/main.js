@@ -19,6 +19,7 @@ const store = require('./src/store');
 const closeBehavior = require('./src/closeBehavior');
 const shortcutsLib = require('./src/shortcuts');
 const modelSeriesLib = require('./src/modelSeries');
+const textModelSeriesLib = require('./src/textModelSeries');
 const renameModel = require('./src/renameModel');
 const registry = require('./src/api/registry');
 const runner = require('./src/api/runner');
@@ -66,6 +67,7 @@ let isQuitting = false;     // 正在退出（托盘菜单「退出程序」/ �
 let PATHS = null;
 let settings = null;
 let modelSeries = null;     // 内置模型系列配置（含来源 / 默认地址 / 尺寸；只有同步一种请求模式）
+let textModelSeries = null; // 文本模型系列配置（「对话生成」模式；与图像模型完全隔离，见 electron/assets/text-model-series.json）
 let renameConfig = null;    // 重命名模型配置（提示模板 / 温度 / Top-P / 默认地址，见 electron/assets/rename-model.json）
 let conversations = null;   // 主进程内存副本（权威数据由渲染进程通过 state:save 同步）
 let hiddenToTray = false;   // 窗口此刻是不是「藏在托盘里」（隐藏期间托盘绝不允许被撤掉，否则没有回到界面的入口）
@@ -568,6 +570,7 @@ function registerIpc() {
       platform: process.platform,
       settings,
       modelSeries,
+      textModelSeries,                          // 文本模型系列（「对话生成」模式：系列 / 来源 / 内置模型清单 / 默认模型）
       renameConfig,                             // 重命名模型：提示模板 / 温度 / Top-P / 默认地址 / 默认模型
       conversations,
       paths: {
@@ -578,6 +581,7 @@ function registerIpc() {
         log: PATHS.log,
         downloads: PATHS.downloads,
         modelSeriesFile: PATHS.modelSeries,
+        textModelFile: PATHS.textModelSeries,     // 文本模型系列配置（可手工编辑，重启生效）
         renameModelFile: PATHS.renameModel,
         migratedFrom: PATHS.migratedFrom,         // 本次启动前迁移过的旧数据目录（没有则 null）
         usedFallback: PATHS.usedFallback
@@ -589,7 +593,8 @@ function registerIpc() {
   ipcMain.handle('state:save', (_e, payload) => {
     try {
       if (payload && payload.settings) {
-        settings = store.normalizeModelGroups({ ...settings, ...payload.settings }, modelSeries);
+        // 文本模型系列配置一并传进规整器：文本侧的未知系列 / 未知模型与图像侧无关（两套配置互相隔离）
+        settings = store.normalizeModelGroups({ ...settings, ...payload.settings }, modelSeries, textModelSeries);
         store.saveSettings(PATHS.settings, settings);
         nativeTheme.themeSource = settings.theme === 'system' ? 'system' : (settings.theme === 'dark' ? 'dark' : 'light');
         // 关闭窗口行为可能刚被改过：立即让托盘图标与之对齐（改完就生效，不必重启）
@@ -600,6 +605,10 @@ function registerIpc() {
       if (payload && payload.modelSeries) {
         // 只允许改「隐藏哪些系列」以及自定义系列，内置结构由 merge 保证不被破坏
         modelSeries = modelSeriesLib.save(PATHS.modelSeries, payload.modelSeries);
+      }
+      if (payload && payload.textModelSeries) {
+        // 文本模型系列（「对话生成」）：同上，内置协议与成员以程序内置为准，副本只能改文案 / 追加模型
+        textModelSeries = textModelSeriesLib.save(PATHS.textModelSeries, payload.textModelSeries);
       }
       if (payload && payload.renameConfig) {
         // 重命名模型：提示模板 / 温度 / Top-P（存在数据目录的 rename-model.json，可手工编辑）
@@ -683,6 +692,65 @@ function registerIpc() {
   });
 
   ipcMain.handle('api:cancel', (_e, jobId) => runner.cancel(jobId, sendEvent));
+
+  // ---- 文本对话生成（「对话生成」模式 = 文本模型）----
+  // 与 api:generate 同形：渲染进程只传「模型 id + 已排好序的多轮上下文」，协议 / 来源 / 密钥 / 地址
+  // 在这里统一解析（主进程才是权威口径）；结果同样经 api:event 推给渲染进程，每个请求一个 jobId（= 助手消息 id）。
+  // messages 里的图片**已经是 data URL 字符串**（渲染进程在调用前就把附件转好了，与图像侧的 images 一样），
+  // 所以本进程不读任何图片文件，messages 原样透传给适配器。
+  ipcMain.handle('text:chat', (_e, opts) => {
+    const base = { conversationId: opts.conversationId, messageId: opts.messageId };
+    const messages = Array.isArray(opts.messages) ? opts.messages : [];
+    // 没有可发送的文字就直接报错：别让适配器对着空 messages 发一次请求
+    // （只带图片不带文字也算空 —— 渲染进程的发送按钮本来就要求有文字）
+    const hasUserText = messages.some((m) => m && m.role === 'user' && typeof m.text === 'string' && m.text.trim());
+    if (!messages.length || !hasUserText) {
+      sendEvent({
+        ...base, type: 'error', ok: false,
+        error: { code: 'EMPTY_INPUT', message: '没有可发送的内容：请输入文字后再发送。' }
+      });
+      return { jobId: opts.messageId };
+    }
+
+    const resolved = textModelSeriesLib.resolveTextModel(settings, textModelSeries, opts.modelId);
+    if (!resolved.found) {
+      sendEvent({
+        ...base, type: 'error', ok: false,
+        error: { code: 'NO_TEXT_MODEL', message: '未找到可用的文本模型：它可能已被删除。请在「设置 → 文本模型」中重新选择模型。' }
+      });
+      return { jobId: opts.messageId };
+    }
+    if (!resolved.protocol) {
+      sendEvent({
+        ...base, type: 'error', ok: false,
+        error: { code: 'NO_TEXT_PROTOCOL', message: `文本模型「${resolved.modelId}」所属来源没有可用的协议适配器。请在「设置 → 文本模型」中检查来源。` }
+      });
+      return { jobId: opts.messageId };
+    }
+    if (!resolved.hasKey) {
+      sendEvent({
+        ...base, type: 'error', ok: false,
+        error: { code: 'NO_API_KEY', message: `尚未配置 API Key：请在「设置 → 文本模型 → ${resolved.seriesLabel} → ${resolved.sourceLabel}」中填写。` }
+      });
+      return { jobId: opts.messageId };
+    }
+
+    // stream / text / messages 由文本协议适配器消费（流式 SSE 增量推送），这里原样透传
+    return runner.start({
+      ...opts,
+      messages,
+      jobId: opts.messageId,
+      protocol: resolved.protocol,
+      model: resolved.modelId,
+      seriesId: resolved.seriesId,
+      sourceId: resolved.sourceId,
+      baseUrl: resolved.baseUrl,
+      apiKey: resolved.apiKey,
+      stream: true,
+      text: true,
+      timeoutSec: settings.requestTimeoutSec
+    }, sendEvent);
+  });
 
   // ---- 会话标签自动命名（重命名模型）----
   // 渲染进程只把「首条用户文字」传进来；密钥 / 地址 / 模型 id / 提示模板 / 温度 / Top-P 由主进程决定。
@@ -838,6 +906,7 @@ function registerIpc() {
       settings,
       conversations,
       modelSeries,
+      textModelSeries,
       renameConfig,
       paths: PATHS,
       appVersion: app.getVersion(),
@@ -864,22 +933,24 @@ function registerIpc() {
     const r = await dataTransfer.importData({
       zipPath: ret.filePaths[0],
       paths: PATHS,                                   // 解压到 <data>/cache/ss-import-*（导入结束即清理）
-      current: { settings, modelSeries, renameConfig, conversations },
+      current: { settings, modelSeries, textModelSeries, renameConfig, conversations },
       dirExists: (p) => {
         try { return fs.statSync(p).isDirectory(); } catch (e) { return false; }
       }
     });
     if (!r.ok) return r;                              // {ok:false, code, message}
 
-    // 落盘 + 更新内存：四份数据一起换（写失败就整体报错，内存保持原样）
+    // 落盘 + 更新内存：五份数据一起换（写失败就整体报错，内存保持原样）
     try {
       const nextSeries = modelSeriesLib.save(PATHS.modelSeries, r.merged.modelSeries);
+      const nextTextSeries = textModelSeriesLib.save(PATHS.textModelSeries, r.merged.textModelSeries);
       const nextRename = renameModel.save(PATHS.renameModel, r.merged.renameConfig);
       const nextSettings = r.merged.settings;
       store.saveSettings(PATHS.settings, nextSettings);
       store.saveConversations(PATHS.conversations, r.merged.conversations);
       settings = nextSettings;
       modelSeries = nextSeries;
+      textModelSeries = nextTextSeries;
       renameConfig = nextRename;
       conversations = r.merged.conversations;
       nativeTheme.themeSource = settings.theme === 'system' ? 'system' : (settings.theme === 'dark' ? 'dark' : 'light');
@@ -897,7 +968,7 @@ function registerIpc() {
       summary: r.merged.summary,
       notes: r.merged.notes,
       // 渲染进程据此整体替换本地状态（随后由既有的防抖落盘保持一致）
-      state: { settings, modelSeries, renameConfig, conversations }
+      state: { settings, modelSeries, textModelSeries, renameConfig, conversations }
     };
   });
 
@@ -1027,8 +1098,9 @@ if (!gotLock) {
     logDataRootInfo();
 
     modelSeries = modelSeriesLib.load(PATHS.modelSeries);
+    textModelSeries = textModelSeriesLib.load(PATHS.textModelSeries);
     renameConfig = renameModel.load(PATHS.renameModel);
-    const loaded = store.loadSettings(PATHS.settings, modelSeries);
+    const loaded = store.loadSettings(PATHS.settings, modelSeries, textModelSeries);
     settings = loaded.settings;
     if (loaded.migrated) {
       try { store.saveSettings(PATHS.settings, settings); } catch (e) { log.warn('迁移后的设置落盘失败', { error: e.message }); }

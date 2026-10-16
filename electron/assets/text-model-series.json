@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "_readme": [
+    "StabStab 内置「文本模型系列」配置（随程序打包；首次启动会复制到数据目录 <dataRoot>/text-model-series.json，之后以数据目录中的副本为准，可手工编辑，重启生效）。",
+    "与图像模型完全隔离：本文件与 model-series.json 那条链（model-series.json / settings.modelGroups / settings.sourceConfig）一行不共用、互不干扰；文本模型的系列、来源、密钥、选中项全部走本文件与 settings 里的 textSourceConfig / textModelId。",
+    "series[]            —— 内置文本模型系列（用户不能真正删除，只能 hidden）",
+    "series[].protocol   —— 该系列的默认协议；sources[].protocol 优先（协议适配器一一绑定，且永远以本文件的定义为准）",
+    "series[].models[]   —— 内置模型清单（设置页下拉框顺序即此顺序）；用户可在设置里再添加别的模型 id，合并规则是「只能增不能删」：内置顺序在前，副本里追加的 id 按原顺序跟在后面（与 model-series.json 的 sizeOptions 同一套做法）",
+    "series[].defaultModelId —— 默认选中的模型（用户没选过任何模型时用它；选中项记在 settings.textModelId）",
+    "sources[].baseUrl   —— 该来源的默认 API 地址；实际请求地址是 POST {baseUrl}/chat/completions（用户可在设置里填覆盖地址）",
+    "sources[].apiKeyUrl —— 申请 API Key 的页面（设置页「获取 Key」链接）",
+    "hidden               —— true = 用户已从「文本模型」列表移除（可随时重新添加）"
+  ],
+  "series": [
+    {
+      "id": "grsai-text",
+      "label": "Grsai 系列",
+      "description": "Grsai 文本模型（gemini 系列）。OpenAI 兼容：POST {baseUrl}/chat/completions，流式返回 SSE；支持多轮 messages 与图片（base64 data URL）。",
+      "builtin": true,
+      "protocol": "grsai-chat",
+      "defaultModelId": "gemini-3.5-flash",
+      "models": [
+        { "id": "gemini-3.8-flash" },
+        { "id": "gemini-3.7-flash" },
+        { "id": "gemini-3.5-flash-lite" },
+        { "id": "gemini-3.5-flash" },
+        { "id": "gemini-3.1-pro" },
+        { "id": "gemini-3.1-flash-lite" },
+        { "id": "gemini-3-pro" },
+        { "id": "gemini-3-flash" },
+        { "id": "gemini-2.5-pro" },
+        { "id": "gemini-2.5-flash" }
+      ],
+      "sources": [
+        {
+          "id": "grsai",
+          "label": "Grsai（国内节点）",
+          "protocol": "grsai-chat",
+          "baseUrl": "https://grsai.dakka.com.cn/v1",
+          "apiKeyUrl": "https://grsai.ai/zh/dashboard/api-keys",
+          "hint": "流式：POST {baseUrl}/chat/completions（默认 https://grsai.dakka.com.cn/v1/chat/completions），Authorization: Bearer sk-xxx，body {model,stream:true,messages}；图片按 image_url.url 传 base64 data URL；支持多图与多轮 messages。"
+        }
+      ]
+    }
+  ]
+}
